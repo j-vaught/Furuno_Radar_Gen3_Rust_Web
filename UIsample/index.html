@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Radar Command Interface</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: auto;
+            background: #fff;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+        }
+
+        input[type="text"], select {
+            width: 100%;
+            padding: 8px 12px;
+            box-sizing: border-box;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        .inputs-container {
+            margin-top: 20px;
+        }
+
+        .input-field {
+            margin-bottom: 10px;
+        }
+
+        .input-field label {
+            margin-bottom: 3px;
+            font-weight: bold;
+        }
+
+        .input-field input, .input-field select {
+            width: 100%;
+            padding: 6px 10px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+
+        button {
+            padding: 10px 15px;
+            background-color: #28a745;
+            border: none;
+            color: #fff;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background-color: #218838;
+        }
+
+        .message {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            display: none;
+        }
+
+        .message.success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+
+        .message.error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+
+        @media (max-width: 600px) {
+            button {
+                width: 100%;
+                margin-bottom: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Radar Command Interface</h1>
+    <div class="container">
+        <div class="form-group">
+            <label for="radarNo">Radar Number:</label>
+            <input type="text" id="radarNo" placeholder="Enter Radar Number" required>
+        </div>
+
+        <div class="form-group">
+            <label for="commandSelect">Select Command:</label>
+            <select id="commandSelect">
+                <option value="">-- Select a Command --</option>
+            </select>
+        </div>
+
+        <div class="inputs-container" id="inputsContainer">
+            <!-- Dynamic input fields will appear here -->
+        </div>
+
+        <button id="executeButton">Execute Command</button>
+        <button id="clearButton">Clear</button>
+
+        <div class="message" id="messageBox"></div>
+    </div>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            const commandSelect = document.getElementById('commandSelect');
+            const inputsContainer = document.getElementById('inputsContainer');
+            const executeButton = document.getElementById('executeButton');
+            const clearButton = document.getElementById('clearButton');
+            const messageBox = document.getElementById('messageBox');
+
+            let commands = [];
+
+            // Fetch commands from the server
+            fetch('/getCommands')
+                .then(response => response.json())
+                .then(data => {
+                    commands = data.commands;
+                    populateCommandSelect(commands);
+                })
+                .catch(error => {
+                    showMessage("Error fetching commands: " + error, "error");
+                });
+
+            // Populate the command selection dropdown
+            function populateCommandSelect(commands) {
+                commands.forEach(cmd => {
+                    const option = document.createElement('option');
+                    option.value = cmd.name;
+                    option.textContent = `${cmd.comNumber}: ${cmd.name}`;
+                    commandSelect.appendChild(option);
+                });
+            }
+
+            // Handle command selection
+            commandSelect.addEventListener('change', function() {
+                const selectedCommand = commands.find(cmd => cmd.name === this.value);
+                generateInputFields(selectedCommand);
+            });
+
+            // Generate input fields based on the selected command
+            function generateInputFields(command) {
+                inputsContainer.innerHTML = ''; // Clear previous inputs
+
+                if (!command) return;
+
+                for (let i = 0; i < command.numberOfInputs; i++) {
+                    const inputDiv = document.createElement('div');
+                    inputDiv.className = 'input-field';
+
+                    const label = document.createElement('label');
+                    label.textContent = `Param${i + 1} (${command.dataTypes[i]}):`;
+                    label.setAttribute('for', `param${i + 1}`);
+
+                    let inputElement;
+                    if (command.dataTypes[i].toLowerCase().includes("short") || 
+                        command.dataTypes[i].toLowerCase().includes("int") ||
+                        command.dataTypes[i].toLowerCase().includes("long") ||
+                        command.dataTypes[i].toLowerCase().includes("unsigned")) {
+                        inputElement = document.createElement('input');
+                        inputElement.type = 'number';
+                        inputElement.id = `param${i + 1}`;
+                        inputElement.name = `Param${i + 1}`;
+                    } else {
+                        // Default to text input for other data types
+                        inputElement = document.createElement('input');
+                        inputElement.type = 'text';
+                        inputElement.id = `param${i + 1}`;
+                        inputElement.name = `Param${i + 1}`;
+                    }
+
+                    inputDiv.appendChild(label);
+                    inputDiv.appendChild(inputElement);
+                    inputsContainer.appendChild(inputDiv);
+                }
+            }
+
+            // Handle Execute Command button click
+            executeButton.addEventListener('click', function() {
+                const radarNo = document.getElementById('radarNo').value.trim();
+                const commandName = commandSelect.value;
+
+                if (!radarNo) {
+                    showMessage("Please enter the Radar Number.", "error");
+                    return;
+                }
+
+                if (!commandName) {
+                    showMessage("Please select a command.", "error");
+                    return;
+                }
+
+                const selectedCommand = commands.find(cmd => cmd.name === commandName);
+                const params = { radarNo, command: commandName };
+
+                // Collect parameters
+                for (let i = 0; i < selectedCommand.numberOfInputs; i++) {
+                    const paramValue = document.getElementById(`param${i + 1}`).value.trim();
+                    if (paramValue === "") {
+                        showMessage(`Please enter value for Param${i + 1}.`, "error");
+                        return;
+                    }
+                    params[`Param${i + 1}`] = paramValue;
+                }
+
+                // Prepare the payload
+                const payload = {
+                    action: "set",
+                    params: params
+                };
+
+                // Send POST request to executeCommand
+                fetch('/executeCommand', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === "success") {
+                        showMessage(data.message, "success");
+                    } else {
+                        showMessage(data.message, "error");
+                    }
+                })
+                .catch(error => {
+                    showMessage("Error executing command: " + error, "error");
+                });
+            });
+
+            // Handle Clear button click
+            clearButton.addEventListener('click', function() {
+                document.getElementById('radarNo').value = '';
+                commandSelect.value = '';
+                inputsContainer.innerHTML = '';
+                messageBox.style.display = 'none';
+            });
+
+            // Function to display messages
+            function showMessage(message, type) {
+                messageBox.textContent = message;
+                messageBox.className = 'message ' + type;
+                messageBox.style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>

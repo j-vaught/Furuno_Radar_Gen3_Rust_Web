@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Furuno NXT DR-4D Control</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    /* helper */
+    .row{display:flex;gap:.4rem;flex-wrap:wrap;align-items:center}
+    .row label{white-space:nowrap}
+    .mini{width:4rem}
+    details>summary{cursor:pointer;margin:.4rem 0;font-weight:600}
+  </style>
+</head>
+<body>
+<header><h1>Furuno&nbsp;NXT&nbsp;DR-4D&nbsp;Radar Control</h1></header>
+
+<main>
+
+<!-- ========================================================== -->
+<!--  LIVE IMAGE                                                -->
+<!-- ========================================================== -->
+<div class="card full">
+  <h3>Live Radar Image</h3>
+  <img id="radarImage" src="/newest_png" alt="No radar image">
+</div>
+
+<!-- ========================================================== -->
+<!--  POWER PANEL                                               -->
+<!-- ========================================================== -->
+<div class="card">
+  <fieldset>
+    <legend>⚡ Power</legend>
+    <div class="row">
+      <label>Radar No</label><input type="number" id="radarNo" value="0" class="mini">
+      <button onclick="toggleEcho('on')">TX ON</button>
+      <button onclick="toggleEcho('off')">STBY</button>
+      <a href="#" onclick="refreshTx();return false;">🔄</a>
+    </div>
+    <div id="txResult" class="resultBox"></div>
+  </fieldset>
+</div>
+
+<!-- ========================================================== -->
+<!--  RANGE / PULSE PANEL                                       -->
+<!-- ========================================================== -->
+<div class="card">
+  <fieldset>
+    <legend>📶 Range & Pulse</legend>
+
+    <!-- quick combo -->
+    <div class="row">
+      <label>Range</label>
+      <select id="rangeIndex">
+        <option value="21">0.0625 NM</option><option value="0" selected>0.125 NM</option>
+        <option value="1">0.25 NM</option><option value="2">0.5 NM</option>
+        <option value="3">0.75 NM</option><option value="4">1 NM</option>
+        <option value="5">1.5 NM</option><option value="6">2 NM</option>
+        <option value="7">3 NM</option><option value="8">4 NM</option>
+        <option value="9">6 NM</option><option value="10">8 NM</option>
+        <option value="11">12 NM</option><option value="12">16 NM</option>
+        <option value="13">24 NM</option><option value="14">32 NM</option>
+        <option value="19">36 NM</option>
+      </select>
+
+      <label>Pulse</label>
+      <select id="pwPulse">
+        <option value="0">S1</option><option value="1">S2</option>
+        <option value="2">M1</option><option value="3">M2</option>
+        <option value="4">M3</option><option value="5">L</option>
+      </select>
+
+      <button onclick="applyRangePulse()">Apply Both</button>
+      <a href="#" onclick="refreshRange();return false;">🔄</a>
+    </div>
+
+    <!-- individual controls -->
+    <details>
+      <summary>More&hellip;</summary>
+      <div class="row">
+        <button onclick="setRange()">Set&nbsp;Range&nbsp;only</button>
+        <button onclick="setPulse()">Set&nbsp;Pulse&nbsp;only</button>
+      </div>
+    </details>
+
+    <div id="rangeResult" class="resultBox"></div>
+  </fieldset>
+</div>
+
+<!-- ========================================================== -->
+<!--  GAIN PANEL                                                -->
+<!-- ========================================================== -->
+<div class="card">
+  <fieldset>
+    <legend>🎚 Gain</legend>
+
+    <div class="row">
+      <label>Manual (0-100)</label>
+      <input type="number" id="gainManual" value="50" min="0" max="100" class="mini">
+      <button onclick="setGainManual()">Set</button>
+      <a href="#" onclick="refreshGain();return false;">🔄</a>
+    </div>
+
+    <details>
+      <summary>Auto / A-C SEA / A-C RAIN / STC</summary>
+
+      <!-- auto gain -->
+      <div class="row">
+        <label>Auto value</label><input id="gainAuto" type="number" value="30" min="0" max="100" class="mini">
+        <button onclick="setGainAuto()">Set Auto</button>
+      </div>
+
+      <!-- STC -->
+      <div class="row">
+        <label>STC near</label><input id="nearStc"  type="number" value="0" min="0" max="4" class="mini">
+        <label>mid</label><input  id="midStc"   type="number" value="0" min="0" max="3" class="mini">
+        <label>far</label><input  id="farStc"   type="number" value="0" min="0" max="2" class="mini">
+        <button onclick="setSTC()">Set STC</button>
+      </div>
+
+      <!-- A/C SEA -->
+      <div class="row">
+        <label>SEA M/A</label>
+        <input id="seaMan" type="number" value="20" min="0" max="100" class="mini">
+        <input id="seaAuto" type="number" value="30" min="0" max="100" class="mini">
+        <button onclick="setACSEA()">Set SEA</button>
+      </div>
+
+      <!-- A/C RAIN -->
+      <div class="row">
+        <label>RAIN M/A</label>
+        <input id="rainMan" type="number" value="40" min="0" max="100" class="mini">
+        <input id="rainAuto" type="number" value="50" min="0" max="100" class="mini">
+        <button onclick="setACRAIN()">Set RAIN</button>
+      </div>
+    </details>
+
+    <div id="gainResult" class="resultBox"></div>
+  </fieldset>
+</div>
+
+<!-- ========================================================== -->
+<!--  DISPLAY PANEL                                             -->
+<!-- ========================================================== -->
+<div class="card">
+  <fieldset>
+    <legend>🖥 Display</legend>
+    <div class="row">
+      <label>Sweep lines</label>
+      <select id="sweepMode">
+        <option value="3" selected>1024</option>
+        <option value="0">2048</option><option value="1">4096</option>
+        <option value="2">8192</option><option value="4">720</option>
+      </select>
+
+      <label>Interpolation</label>
+      <select id="interpEnable">
+        <option value="1" selected>On</option><option value="0">Off</option>
+      </select>
+
+      <button onclick="applySweepInterp()">Apply</button>
+      <a href="#" onclick="refreshDisplay();return false;">🔄</a>
+    </div>
+
+    <details>
+      <summary>Antenna RPM</summary>
+      <div class="row">
+        <label>HI RPM</label>
+        <select id="hiRpm"><option value="0">Off</option><option value="1">On</option></select>
+        <label>RollSpd</label>
+        <select id="rollSpd"><option value="2">Auto</option><option value="0">LO</option><option value="1">HI</option></select>
+        <button onclick="setAntennaRev()">Set</button>
+      </div>
+    </details>
+
+    <div id="displayResult" class="resultBox"></div>
+  </fieldset>
+</div>
+
+</main>
+
+<!-- ========================================================== -->
+<!-- INFO OVERLAY                                               -->
+<!-- ========================================================== -->
+<div id="infoIcon">ℹ️</div>
+<div id="infoCard">
+  <div class="info-header"><span>System Info</span><button id="closeInfo">&times;</button></div>
+  <div class="info-content">
+    <p>IP: <span id="ipAddress">–</span></p>
+    <p>Terminal: <span id="terminalOutput">–</span></p>
+    <p>Newest PNG: <span id="newestPng">–</span></p>
+  </div>
+</div>
+
+<!-- ========================================================== -->
+<!-- JAVASCRIPT  (only calls      existing routes)              -->
+<!-- ========================================================== -->
+<script>
+/* tiny helpers */
+const v=id=>document.getElementById(id).value;
+const setHtml=(id,html)=>{document.getElementById(id).innerHTML=html;};
+
+/* live image every 2 s */
+setInterval(()=>{
+  const img=new Image();
+  img.onload=()=>{document.getElementById('radarImage').src=img.src;};
+  img.src='/newest_png?rand='+Date.now();
+},2000);
+
+/* info overlay */
+document.getElementById('infoIcon').onclick=()=>{
+  document.getElementById('infoCard').style.display='block';
+  fetch('/get_system_info').then(r=>r.json()).then(d=>{
+    setHtml('ipAddress',d.ip||'–');
+    setHtml('terminalOutput',d.terminal||'–');
+    setHtml('newestPng',d.newest_png||'–');
+  });
+};
+document.getElementById('closeInfo').onclick=()=>{document.getElementById('infoCard').style.display='none';};
+
+/* ---------- POWER ---------- */
+function toggleEcho(mode){
+  fetch(`/toggle_echo?radarNo=${v('radarNo')}&mode=${mode}`)
+    .then(r=>r.text()).then(t=>setHtml('txResult',t));
+}
+function refreshTx(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=TX`)
+    .then(r=>r.text()).then(t=>setHtml('txResult',t));
+}
+
+/* ---------- RANGE / PULSE ---------- */
+function applyRangePulse(){ setRange(()=>setPulse()); }
+function setRange(cb){
+  fetch(`/set_range?radarNo=${v('radarNo')}&rangeIndex=${v('rangeIndex')}&rangeUnit=0`)
+    .then(r=>r.text()).then(t=>{setHtml('rangeResult',t); if(cb)cb();});
+}
+function setPulse(){
+  fetch(`/set_pulse_width?radarNo=${v('radarNo')}&pulse=${v('pwPulse')}`
+       + `&rangeIndex=${v('rangeIndex')}&rangeUnit=0`)
+    .then(r=>r.text()).then(t=>setHtml('rangeResult',t));
+}
+function refreshRange(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=RANGE`)
+    .then(r=>r.text()).then(t=>setHtml('rangeResult',t));
+}
+
+/* ---------- GAIN & CLUTTER ---------- */
+function setGainManual(){
+  fetch(`/set_gain?radarNo=${v('radarNo')}&status=0&manualValue=${v('gainManual')}&autoValue=0`)
+    .then(r=>r.text()).then(t=>setHtml('gainResult',t));
+}
+function setGainAuto(){
+  fetch(`/set_gain?radarNo=${v('radarNo')}&status=1&manualValue=0&autoValue=${v('gainAuto')}`)
+    .then(r=>r.text()).then(t=>setHtml('gainResult',t));
+}
+function setSTC(){
+  const n=v('nearStc'), m=v('midStc'), f=v('farStc'), r=v('radarNo');
+  fetch(`/set_near_stc?radarNo=${r}&value=${n}`)
+  .then(()=>fetch(`/set_middle_stc?radarNo=${r}&value=${m}`))
+  .then(()=>fetch(`/set_far_stc?radarNo=${r}&value=${f}`))
+  .then(r=>r.text()).then(t=>setHtml('gainResult',t));
+}
+function setACSEA(){
+  fetch(`/set_acsea?radarNo=${v('radarNo')}&status=1&manual=${v('seaMan')}&auto=${v('seaAuto')}&mode=0`)
+    .then(r=>r.text()).then(t=>setHtml('gainResult',t));
+}
+function setACRAIN(){
+  fetch(`/set_acrain?radarNo=${v('radarNo')}&status=1&manual=${v('rainMan')}&auto=${v('rainAuto')}&ftcMode=0&rainMode=0`)
+    .then(r=>r.text()).then(t=>setHtml('gainResult',t));
+}
+function refreshGain(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=GAIN`)
+    .then(r=>r.text()).then(t=>setHtml('gainResult',t));
+}
+
+/* ---------- DISPLAY ---------- */
+function applySweepInterp(){
+  fetch(`/set_sweep_total?mode=${v('sweepMode')}`)
+  .then(()=>fetch(`/set_interpolation?enable=${v('interpEnable')}`))
+  .then(r=>r.text()).then(t=>setHtml('displayResult',t));
+}
+function setAntennaRev(){
+  fetch(`/set_antenna_revolution?radarNo=${v('radarNo')}&rollSpeed=${v('rollSpd')}&hiRpm=${v('hiRpm')}`)
+    .then(r=>r.text()).then(t=>setHtml('displayResult',t));
+}
+function refreshDisplay(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=SWEEP`)
+    .then(r=>r.text()).then(t=>setHtml('displayResult',t));
+}
+</script>
+</body></html>

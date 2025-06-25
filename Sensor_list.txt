@@ -1,0 +1,29 @@
+//Do not change this text.
+//Use this file to detect available sensors.
+//
+//Radar
+0359235  ,Radar, Sensor : "DRS4A/6A/12A/25A/2D/4D"
+0359367  ,Radar, Sensor : "DRS4DL+"
+0359360  ,Radar, Sensor : "DRS2D-NXT/4D-NXT"
+0359421  ,Radar, Sensor : "DRS6A-NXT/12A-NXT/25A-NXT"
+0359512  ,Radar, Sensor : "DRS6A-NXT/12A-NXT/25A-NXT(JPN)"
+0359355  ,Radar, Sensor : "DRS6AX-CLASS/12AX-CLASS/25AX-CLASS"
+0359255  ,Radar, Sensor : "FAR-1417/1427/1467DS"
+0359321  ,Radar, Sensor : "RCB-001/FAR-14x7"
+0359344  ,Radar, Sensor : "FAR-15x8/15x3"
+0359204  ,Radar, Sensor : "FAR-2xx7/FCR-2xx7/FCR-2xx9"
+0359472  ,Radar, Sensor : "FAR-2x58/2x68"
+0359477  ,Radar, Sensor : "FAR-2228-NXT/3220-NXT"
+0359286  ,Radar, Sensor : "FAR-2x38S-NXT/3x30S-SSD"
+0359281  ,Radar, Sensor : "FAR-2x18/2x28/2x38S/3x10/3x20/3x30S"
+P0359274 ,Radar, Sensor : "RHRS-2014"
+0359517  ,Radar, Sensor : "DRS4DX-Class"
+0359571  ,Radar, Sensor : "DRS4DLX-Class"
+0359584  ,Radar, Sensor : "FSR-1900"
+// Etr
+0252353  ,Etr  , Sensor : "DFF1"
+0252405  ,Etr  , Sensor : "DFF1-UHD"
+0252362  ,Etr  , Sensor : "DFF3"
+0252379  ,Etr  , Sensor : "BBDS1"
+0252440  ,Etr  , Sensor : "DFF-3D"
+0252480  ,Etr  , Sensor : "DFF3-UHD"
