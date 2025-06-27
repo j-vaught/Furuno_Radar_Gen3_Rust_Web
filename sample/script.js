@@ -1,6 +1,8 @@
 /* tiny helpers */
 const v=id=>document.getElementById(id).value;
 const setHtml=(id,html)=>{document.getElementById(id).innerHTML=html;};
+let calibrationActive = false;
+
 
 /* live image every 2 s */
 setInterval(()=>{
@@ -16,7 +18,24 @@ document.getElementById('infoIcon').onclick=()=>{
     setHtml('newestPng',d.newest_png||'–');
   });
 };
+
+function setCardCalibrationUI(disabled) {
+  document.querySelectorAll('.calib-lock-card').forEach(card => {
+    if (disabled) {
+      card.classList.add('disabled');
+      // Optional: Set disabled attr for accessibility
+      card.querySelectorAll('input, button, select, textarea').forEach(el => el.disabled = true);
+    } else {
+      card.classList.remove('disabled');
+      card.querySelectorAll('input, button, select, textarea').forEach(el => el.disabled = false);
+    }
+  });
+}
+
 document.getElementById('closeInfo').onclick=()=>{document.getElementById('infoCard').style.display='none';};
+document.getElementById('beginCalBtn').onclick = beginCalibration;
+document.getElementById('stopCalBtn').onclick = stopCalibration;
+
 
 /* ---------- POWER ---------- */
 function toggleEcho(mode){
@@ -26,6 +45,42 @@ function toggleEcho(mode){
 function refreshTx(){
   fetch(`/get_current?radarNo=${v('radarNo')}&command=TX`)
     .then(r=>r.text()).then(t=>setHtml('txResult',t));
+}
+
+function beginCalibration() {
+  fetch('/begin_calibration')
+    .then(r => r.text())
+    .then(t => setHtml('txResult', t));
+  setCardCalibrationUI(true);  // disables cards
+  calibrationActive = true;
+}
+
+function stopCalibration() {
+  fetch('/stop_pattern')
+    .then(r => r.text())
+    .then(t => setHtml('txResult', t));
+  setCardCalibrationUI(false); // re-enables cards
+  calibrationActive = false;
+}
+
+
+/* ---------- Pattern ramping ---------- */
+function startGainSweep() {
+  const steps = v('gainSweepSteps').trim();
+  const repeat = v('gainSweepRepeat');
+  if (!steps) {
+    setHtml('gainSweepResult', 'Please enter steps!');
+    return;
+  }
+  setHtml('gainSweepResult', 'Starting...');
+  fetch(`/run_pattern?steps=${encodeURIComponent(steps)}&repeat=${repeat}`)
+    .then(r => r.text()).then(t => setHtml('gainSweepResult', t));
+}
+
+function stopGainSweep() {
+  setHtml('gainSweepResult', 'Stopping...');
+  fetch('/stop_pattern')
+    .then(r => r.text()).then(t => setHtml('gainSweepResult', t));
 }
 
 /* ---------- RANGE / PULSE ---------- */
@@ -71,22 +126,6 @@ function setACRAIN(){
 function refreshGain(){
   fetch(`/get_current?radarNo=${v('radarNo')}&command=GAIN`)
     .then(r=>r.text()).then(t=>setHtml('gainResult',t));
-}
-
-/* ---------- GAIN-SWEEP ---------- */
-function startGainSweep(){
-  const seq = document.getElementById('gainSeq').value.trim();
-  if(!seq){ alert('Sequence is empty'); return; }
-  fetch(`/start_gain_sweep?seq=${encodeURIComponent(seq)}&radarNo=${v('radarNo')}`)
-    .then(r=>r.text()).then(t=>setHtml('gainSweepResult',t));
-}
-function stopGainSweep(){
-  fetch('/stop_gain_sweep')
-    .then(r=>r.text()).then(t=>setHtml('gainSweepResult',t));
-}
-function refreshGainSweep(){
-  /* optional – there’s no “status” endpoint yet, so just re-ping start */
-  startGainSweep();
 }
 
 

@@ -255,3 +255,39 @@ ul li:hover {
   font-size: 1.2em;
   cursor: pointer;
 }
+
+
+.card.disabled {
+  pointer-events: none;
+  opacity: 0.55;
+  filter: grayscale(80%);
+}
+.card.disabled input,
+.card.disabled button,
+.card.disabled select {
+  background: #eee !important;
+  color: #888 !important;
+}
+
+
+/* Helper classes */
+.row {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.row label {
+  white-space: nowrap;
+}
+
+.mini {
+  width: 4rem;
+}
+
+details > summary {
+  cursor: pointer;
+  margin: 0.4rem 0;
+  font-weight: 600;
+}

@@ -22,8 +22,13 @@ sudo g++ -O2 -Wall -I../include \
     -o web_server.o \
     -DUSE_BOOST_WEB_INTERFACE=1
 
+# Compile pattern_control.cpp into an object file
+sudo g++ -O2 -Wall -I../include \
+    -c pattern_control.cpp \
+    -o pattern_control.o
+
 # Link the object files into the final executable 'main'
-sudo g++ -o main main.o web_server.o stb_image_write.o -Wall \
+sudo g++ -o main main.o web_server.o stb_image_write.o pattern_control.o -Wall \
     -L../lib -lNAVNETDLL \
     -lboost_system -lboost_thread \
     -lpthread -lm -ldl

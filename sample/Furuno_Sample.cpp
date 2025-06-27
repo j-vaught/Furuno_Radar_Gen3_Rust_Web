@@ -70,7 +70,7 @@ struct RadarEchoData {
     Furuno::UINT8  echo[1024];
 };
 std::vector<RadarEchoData> radarEchoBuffer;
-static Furuno::INT16 lastSweepAngle = -1;
+Furuno::INT16 lastSweepAngle = -1;
 
 // ───────────────────────────────────────────────────────────────
 // Async Sweep Writing (CSV + PNG) Threading
