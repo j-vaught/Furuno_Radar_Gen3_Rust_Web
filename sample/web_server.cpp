@@ -31,6 +31,7 @@ struct RangeGainStep {
     uint16_t repeat;
 };
 
+constexpr int REPEAT = 10; // Default repeat count for each step in the pattern
 extern std::atomic<bool> patternActive;
 extern void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepeats = -1);
 extern void StopPattern();
@@ -574,7 +575,7 @@ static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::
         Furuno::RmcSetACSEA(0, 0, 0, 0, 0); // Disable A/C SEA
         Furuno::RmcSetACRAIN(0, 0, 0, 0, 0, 0); // Disable A/C RAIN
 
-        auto pattern = GenerateRampPattern({21, 0, 1, 2, 3}, 0, 99, 1);
+        auto pattern = GenerateRampPattern({21, 0, 1, 2, 3}, 0, 99, 5);
         int repeats = 1; // One cycle of the whole pattern
 
         // Run in detached thread so HTTP handler returns immediately

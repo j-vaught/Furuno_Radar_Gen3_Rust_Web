@@ -220,7 +220,9 @@ static void __stdcall RadarEchoCallback(
 
     // Custom gain for this pulse
     Furuno::UINT16 gain = 0;
-    Furuno::RmcGetCustomGAIN(no, nullptr, nullptr, &gain, nullptr);
+    Furuno::UINT16 mode = 0;
+    Furuno::UINT16 autom = 0;
+    int ret = Furuno::RmcGetGAIN(no, &mode, &gain, &autom);
 
     // Store radar echo data
     radarEchoBuffer.push_back({status, sweep_len, scale, range, angle, gain, {}});
@@ -314,6 +316,12 @@ static int ReadLicenseFile(const char *path, char vendorlic[4][VENDOR_TXT_LINE_C
 void WriteEchoImage(const std::vector<RadarEchoData>& dataBuffer, const std::string& filename) {
     if (dataBuffer.empty()) return;
 
+    // Ensure directory exists
+    fs::path filepath(filename);
+    fs::path dir = filepath.parent_path();
+    if (!dir.empty() && !fs::exists(dir)) {
+        fs::create_directories(dir);
+    }
     // Find max sweep length
     int maxRadius = 0;
     for (const auto& e : dataBuffer) if (e.sweep_len > maxRadius) maxRadius = e.sweep_len;
@@ -341,6 +349,14 @@ void WriteEchoImage(const std::vector<RadarEchoData>& dataBuffer, const std::str
 }
 
 void WriteEchoCSV(const std::vector<RadarEchoData>& dataBuffer, const std::string& filename) {
+    
+    // Ensure directory exists
+    fs::path filepath(filename);
+    fs::path dir = filepath.parent_path();
+    if (!dir.empty() && !fs::exists(dir)) {
+        fs::create_directories(dir);
+    }
+    
     std::ofstream file(filename);
     if (!file) {
         std::cerr << "Error opening file: " << filename << std::endl;
