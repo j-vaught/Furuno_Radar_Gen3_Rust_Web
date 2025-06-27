@@ -253,6 +253,7 @@ static void __stdcall RadarEchoCallback(
             std::lock_guard<std::mutex> lock(sweepQueueMutex);
             sweepQueue.push(std::move(job));
         }
+        
         sweepQueueCV.notify_one();
 
         radarEchoBuffer.clear();

@@ -1,7 +1,10 @@
-//sample/web_server.cpp
+// sample/web_server.cpp
 
 #ifdef USE_BOOST_WEB_INTERFACE
 
+//--------------------------------------
+// Includes
+//--------------------------------------
 #include <boost/asio.hpp>
 #include <thread>
 #include <string>
@@ -9,16 +12,31 @@
 #include <map>
 #include <fstream>
 #include <sstream>
-#include <vector>
-#include <algorithm>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <atomic>
+#include <filesystem>
+#include <condition_variable>
 
-namespace Furuno
-{
-#include "nndll.h"
-#include <lasterror.h>
+namespace Furuno {
+    #include "nndll.h"
+    #include <lasterror.h>
 }
+
+namespace fs = std::filesystem;
+
+//--------------------------------------
+// Gain-sweep globals
+//--------------------------------------
+static std::vector<int>        g_gainSeq;
+static std::atomic<bool>       g_sweepActive{false};
+static std::thread             g_sweepThread;
+static std::mutex              g_dirMutex; 
+
+//--------------------------------------
+// Function Declarations
+//--------------------------------------
+static void HttpSession(boost::asio::ip::tcp::socket socket);
 
 
 //--------------------------------------
@@ -34,7 +52,7 @@ static std::string LoadFileContent(const std::string &filepath) {
     return buffer.str();
 }
 
-// Parse query parameters from URL
+// Parse query parameters from a URL into a map
 static std::map<std::string, std::string> ParseQueryParams(const std::string &path) {
     std::map<std::string, std::string> params;
     auto questionPos = path.find('?');
@@ -58,7 +76,7 @@ static std::map<std::string, std::string> ParseQueryParams(const std::string &pa
     return params;
 }
 
-// Build and write a minimal HTTP response
+// Write a minimal HTTP response to the socket
 static void WriteHttpResponse(boost::asio::ip::tcp::socket &socket,
                               const std::string &body,
                               const std::string &contentType = "text/html")
@@ -101,8 +119,95 @@ static std::string FindNewestPNGFile(const std::string &directory) {
     return newestFile;
 }
 
+static void WaitForNextSweep(const std::string& lastPng)
+{
+    while (g_sweepActive)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::string newest = FindNewestPNGFile("frames");
+        if (!newest.empty() && newest != lastPng) break;
+    }
+}
+
+static void GainSweepWorker(std::vector<int> seq, int radarNo)
+{
+    size_t idx = 0;
+    std::string lastPng = FindNewestPNGFile("frames");
+
+    while (g_sweepActive)
+    {
+        int gain = seq[idx];
+
+        // set gain (manual mode)
+        Furuno::RmcSetGAIN(
+            radarNo,
+            /*status*/      static_cast<Furuno::UINT16>(0),   // 0 = manual
+            /*manualValue*/ static_cast<Furuno::UINT16>(gain),
+            /*autoValue*/   static_cast<Furuno::UINT16>(0)
+        );
+
+        // wait until next full rotation is captured
+        WaitForNextSweep(lastPng);
+        lastPng = FindNewestPNGFile("frames");
+
+        // next gain (wrap-around)
+        idx = (idx + 1) % seq.size();
+    }
+}
+
+static void StartGainSweep(const std::vector<int>& seq, int radarNo)
+{
+    if (g_sweepActive) return;         // already running
+    g_gainSeq  = seq;
+    g_sweepActive = true;
+    g_sweepThread =
+        std::thread(GainSweepWorker, g_gainSeq, radarNo);
+    g_sweepThread.detach();
+}
+
+static void StopGainSweep()
+{
+    g_sweepActive = false;
+}
+
+
 //--------------------------------------
-// Per-connection HTTP Session
+// Main Web Server Loop
+//--------------------------------------
+static void RunHttpServer(unsigned short port) {
+    try {
+        boost::asio::io_context ioc;
+        boost::asio::ip::tcp::acceptor acceptor{
+            ioc, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), port)
+        };
+
+        std::cout << "[WebServer] Listening on port " << port << "...\n";
+
+        for (;;) {
+            boost::asio::ip::tcp::socket socket{ioc};
+            acceptor.accept(socket); // blocking accept
+            HttpSession(std::move(socket));
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "[WebServer] Exception: " << e.what() << "\n";
+    }
+}
+
+
+//--------------------------------------
+// Server Startup Entry Point
+//--------------------------------------
+void StartWebServerThread() {
+    static std::thread webThread([]{
+        RunHttpServer(8080);
+    });
+    webThread.detach(); // run in background
+}
+
+
+//--------------------------------------
+// HTTP Request Routing & Handling
+// One connection, one request (called per client)
 //--------------------------------------
 static void HttpSession(boost::asio::ip::tcp::socket socket) {
     try {
@@ -129,46 +234,69 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
             return;
         }
 
-        //--------------------------------------
-        // 1) Home page 
-        //--------------------------------------
+        // ================================
+        //  STATIC ASSETS
+        // ================================
         if (path == "/") {
             std::string homePage = LoadFileContent("index.html");
             WriteHttpResponse(socket, homePage, "text/html");
             return;
         }
-        if (path == "/styles.css") {
+        if (path.rfind("/styles.css", 0) == 0) {
             std::string cssContent = LoadFileContent("styles.css");
             WriteHttpResponse(socket, cssContent, "text/css");
             return;
         }
-        
-        //--------------------------------------
-        // NEW: /get_system_info endpoint
-        //--------------------------------------
-        if (path == "/get_system_info") {
-            // Get local IP address from the socket's local endpoint
-            boost::system::error_code ip_ec;
+        if (path.rfind("/script.js", 0) == 0) {
+            std::string jsContent = LoadFileContent("script.js");
+            WriteHttpResponse(socket, jsContent, "application/javascript");
+            return;
+        }
+
+        // ================================
+        //  UTILITY ENDPOINTS
+        // ================================
+        if (path.rfind("/get_system_info", 0) == 0) {
+            boost::system::error_code ip_ec;// Get local IP address from the socket's local endpoint
             std::string ip = socket.local_endpoint(ip_ec).address().to_string();
             if (ip_ec) {
                 ip = "Unavailable";
             }
-            // Placeholder for terminal output. You can modify this to read from a log file or similar.
-            std::string terminal = "Terminal output placeholder";
-            // Get the newest PNG filename
             std::string newest = FindNewestPNGFile("frames");
 
             std::ostringstream oss;
             oss << "{\"ip\": \"" << ip << "\", "
-                << "\"terminal\": \"" << terminal << "\", "
                 << "\"newest_png\": \"" << newest << "\"}";
             WriteHttpResponse(socket, oss.str(), "application/json");
             return;
         }
-        
-        //--------------------------------------
-        // 2) /set_gain
-        //--------------------------------------
+        if (path.rfind("/newest_png", 0) == 0) {
+            std::string newest = FindNewestPNGFile("frames");
+            if (newest.empty()) {
+                WriteHttpResponse(socket, "No PNG found.\r\n", "text/plain");
+                return;
+            }
+            std::ifstream ifs("frames/" + newest, std::ios::binary);
+            if (!ifs) {
+                WriteHttpResponse(socket, "Cannot open the PNG.\r\n", "text/plain");
+                return;
+            }
+            std::vector<char> buf((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+            std::string header =
+                "HTTP/1.1 200 OK\r\n"
+                "Content-Type: image/png\r\n"
+                "Connection: close\r\n"
+                "Content-Length: " + std::to_string(buf.size()) + "\r\n\r\n";
+            boost::system::error_code e;
+            boost::asio::write(socket, boost::asio::buffer(header), e);
+            boost::asio::write(socket, boost::asio::buffer(buf.data(), buf.size()), e);
+            return;
+        }
+
+
+        // ================================
+        //  RADAR SETTERS
+        // ================================
         if (path.rfind("/set_gain", 0) == 0) {
             auto params = ParseQueryParams(path);
             int radarNo     = std::stoi(params["radarNo"]);
@@ -188,10 +316,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
             WriteHttpResponse(socket, resp);
             return;
         }
-
-        //--------------------------------------
-        // 3) /set_range
-        //--------------------------------------
         if (path.rfind("/set_range", 0) == 0) {
             auto params = ParseQueryParams(path);
             int radarNo    = std::stoi(params["radarNo"]);
@@ -209,10 +333,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
             WriteHttpResponse(socket, resp);
             return;
         }
-
-        //--------------------------------------
-        // 4) /set_pulse_width?radarNo=&pulse=&rangeIndex=&rangeUnit=
-        //--------------------------------------
         if (path.rfind("/set_pulse_width", 0) == 0) {
             auto p = ParseQueryParams(path);
             int radarNo    = std::stoi(p["radarNo"]);
@@ -230,10 +350,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
                 + std::to_string(ret) + "</p>");
             return;
         }
-
-        //--------------------------------------
-        // 5) /set_near_stc?radarNo=&value=
-        //--------------------------------------
         if (path.rfind("/set_near_stc", 0) == 0) {
             auto p = ParseQueryParams(path);
             int radarNo = std::stoi(p["radarNo"]);
@@ -247,10 +363,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
                 + std::to_string(ret) + "</p>");
             return;
         }
-
-        //--------------------------------------
-        // 6) /set_middle_stc?radarNo=&value=
-        //--------------------------------------
         if (path.rfind("/set_middle_stc", 0) == 0) {
             auto p = ParseQueryParams(path);
             int radarNo = std::stoi(p["radarNo"]);
@@ -264,10 +376,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
                 + std::to_string(ret) + "</p>");
             return;
         }
-
-        //--------------------------------------
-        // 7) /set_far_stc?radarNo=&value=
-        //--------------------------------------
         if (path.rfind("/set_far_stc", 0) == 0) {
             auto p = ParseQueryParams(path);
             int radarNo = std::stoi(p["radarNo"]);
@@ -281,10 +389,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
                 + std::to_string(ret) + "</p>");
             return;
         }
-
-        //--------------------------------------
-        // 8) /set_antenna_revolution?radarNo=&rollSpeed=&hiRpm=
-        //--------------------------------------
         if (path.rfind("/set_antenna_revolution", 0) == 0) {
             auto p = ParseQueryParams(path);
             int radarNo   = std::stoi(p["radarNo"]);
@@ -300,10 +404,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
                 + std::to_string(ret) + "</p>");
             return;
         }
-
-        //--------------------------------------
-        // 9) /set_acsea?radarNo=&status=&manual=&auto=&mode=
-        //--------------------------------------
         if (path.rfind("/set_acsea", 0) == 0) {
             auto p = ParseQueryParams(path);
             int radarNo = std::stoi(p["radarNo"]);
@@ -323,10 +423,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
                 + std::to_string(ret) + "</p>");
             return;
         }
-
-        //--------------------------------------
-        // 10) /set_acrain?radarNo=&status=&manual=&auto=&ftcMode=&rainMode=
-        //--------------------------------------
         if (path.rfind("/set_acrain", 0) == 0) {
             auto p = ParseQueryParams(path);
             int radarNo = std::stoi(p["radarNo"]);
@@ -348,9 +444,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
                 + std::to_string(ret) + "</p>");
             return;
         }
-        //--------------------------------------
-        // 4) /toggle_echo?mode=on|off
-        //--------------------------------------
         if (path.rfind("/toggle_echo", 0) == 0) {
             auto params = ParseQueryParams(path);
             int radarNo = std::stoi(params["radarNo"]);
@@ -379,38 +472,63 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
             WriteHttpResponse(socket, resp);
             return;
         }
+        if (path.rfind("/set_sweep_total", 0) == 0) {
+            auto p   = ParseQueryParams(path);
+            int mode = std::stoi(p["mode"]);             // 0-4
 
-        //--------------------------------------
-        // 5) /download?file=<some_csv>
-        //--------------------------------------
-        if (path.rfind("/download", 0) == 0) {
-            auto params = ParseQueryParams(path);
-            std::string fname = params["file"];
-            std::string fullpath = std::string("data/") + fname;
-            std::ifstream ifs(fullpath, std::ios::binary);
-            if (!ifs) {
-                std::string resp = "<h2>Error</h2><p>Cannot open file: " + fname + "</p>";
-                WriteHttpResponse(socket, resp);
+            // RAW Furuno call – no wrapper
+            int ret = Furuno::RmSetEchoSweepTotal(static_cast<Furuno::INT16>(mode));
+
+            std::string body = "<h2>Set Sweep Total</h2><p>mode = "
+                            + std::to_string(mode) + " → API returned "
+                            + std::to_string(ret)  + "</p>";
+            WriteHttpResponse(socket, body);
+            return;
+        }
+        if (path.rfind("/set_interpolation", 0) == 0) {
+            auto p     = ParseQueryParams(path);
+            int enable = std::stoi(p["enable"]);         // 0 or 1
+
+            // RAW Furuno call – no wrapper
+            int ret = Furuno::RmSetEchoInterpolationFunc(
+                        static_cast<Furuno::INT16>(enable));
+
+            std::string body = "<h2>Set Interpolation</h2><p>enable = "
+                            + std::to_string(enable) + " → API returned "
+                            + std::to_string(ret)    + "</p>";
+            WriteHttpResponse(socket, body);
+            return;
+        }
+        if (path.rfind("/start_gain_sweep", 0) == 0) {
+            auto p = ParseQueryParams(path);
+            std::string seqStr = p["seq"];          // "1,3,5,7,9,11"
+            int radarNo = p.count("radarNo") ? std::stoi(p["radarNo"]) : 0;
+
+            std::vector<int> seq;
+            std::stringstream ss(seqStr);
+            std::string token;
+            while (std::getline(ss, token, ',')) {
+                if (!token.empty()) seq.push_back(std::stoi(token));
+            }
+            if (seq.empty()) {
+                WriteHttpResponse(socket, "<h2>Error</h2><p>Empty sequence</p>");
                 return;
             }
-            std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-
-            std::string response;
-            response += "HTTP/1.1 200 OK\r\n";
-            response += "Content-Type: text/csv\r\n";
-            response += "Content-Disposition: attachment; filename=\"" + fname + "\"\r\n";
-            response += "Connection: close\r\n";
-            response += "Content-Length: " + std::to_string(content.size()) + "\r\n\r\n";
-            response += content;
-
-            boost::system::error_code e;
-            boost::asio::write(socket, boost::asio::buffer(response), e);
+            StartGainSweep(seq, radarNo);
+            WriteHttpResponse(socket,
+                "<h2>Gain sweep started</h2>"
+                "<p>Sequence: " + seqStr + "</p>");
+            return;
+        }
+        if (path.rfind("/stop_gain_sweep", 0) == 0) {
+            StopGainSweep();
+            WriteHttpResponse(socket, "<h2>Gain sweep stopped</h2>");
             return;
         }
 
-        //--------------------------------------
-        // 6) /get_current?command=ALL&radarNo=0
-        //--------------------------------------
+        // ================================
+        //  RADAR GETTERS
+        // ================================
         if (path.rfind("/get_current", 0) == 0) {
             auto params  = ParseQueryParams(path);
             std::string cmd   = params["command"];
@@ -427,7 +545,7 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
                 << "<p>RadarNo=" << radar << "</p>\n";
 
             if (cmd == "ALL" || cmd == "RANGE") {
-                // RmcGetRange  — gets range code + unit :contentReference[oaicite:0]{index=0}
+                // RmcGetRange  — gets range code + unit
                 ret = Furuno::RmcGetRange(radar, &i16_1, &u16_1);
                 report << "<p>RmcGetRange returned " << ret
                     << " → code=" << i16_1
@@ -436,7 +554,7 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
             }
 
             if (cmd == "ALL" || cmd == "GAIN") {
-                // RmcGetCustomGAIN — gets manual+auto gain :contentReference[oaicite:1]{index=1}
+                // RmcGetCustomGAIN — gets manual+auto gain
                 ret = Furuno::RmcGetCustomGAIN(radar, &pic, &u16_1, &u16_2, &u16_3);
                 report << "<p>RmcGetCustomGAIN returned " << ret
                     << " → mode=" << u16_1
@@ -446,7 +564,7 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
             }
 
             if (cmd == "ALL" || cmd == "PULSE") {
-                // RmcGetPulseWidth — gets pulse width & PRF :contentReference[oaicite:2]{index=2}
+                // RmcGetPulseWidth — gets pulse width & PRF
                 Furuno::INT16 pulse, range;
                 Furuno::INT32 picPW;
                 ret = Furuno::RmcGetPulseWidth(radar, &pulse, &range, &u16_1, &picPW);
@@ -457,7 +575,7 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
             }
 
             if (cmd == "ALL" || cmd == "STC") {
-                // RmcGetNear/Middle/FarSTC — gets STC curves :contentReference[oaicite:3]{index=3}
+                // RmcGetNear/Middle/FarSTC — gets STC curves
                 ret = Furuno::RmcGetNearSTC   (radar, &u16_1);
                 ret = Furuno::RmcGetMiddleSTC (radar, &u16_2);
                 ret = Furuno::RmcGetFarSTC    (radar, &u16_3);
@@ -468,7 +586,7 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
             }
 
             if (cmd == "ALL" || cmd == "ANTREV") {
-                // RmcGetAntennaRevolution — roll-speed & high-RPM :contentReference[oaicite:4]{index=4}
+                // RmcGetAntennaRevolution — roll-speed & high-RPM
                 ret = Furuno::RmcGetAntennaRevolution(radar, &u16_1, &u16_2);
                 report << "<p>RmcGetAntennaRevolution returned " << ret
                     << " → rollSpeed=" << u16_1
@@ -477,7 +595,7 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
             }
 
             if (cmd == "ALL" || cmd == "ACSEA") {
-                // RmcGetACSEA — sea clutter manual/auto/mode :contentReference[oaicite:5]{index=5}
+                // RmcGetACSEA — sea clutter manual/auto/mode
                 ret = Furuno::RmcGetACSEA(radar, &u16_1, &u16_2, &u16_3, &u16_4);
                 report << "<p>RmcGetACSEA returned " << ret
                     << " → status=" << u16_1
@@ -499,130 +617,23 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
                 if (cmd != "ALL") {WriteHttpResponse(socket, report.str()); return; }
             }
 
-            // If we reach here, it was "ALL"
+            // If we reach here, teh command was "ALL"
             WriteHttpResponse(socket, report.str());
             return;
         }
 
 
-        //--------------------------------------
-        // 7) /newest_png
-        //--------------------------------------
-        if (path.rfind("/newest_png", 0) == 0) {
-            std::string newest = FindNewestPNGFile("frames");
-            if (newest.empty()) {
-                std::string resp = "HTTP/1.1 404 Not Found\r\n"
-                                   "Content-Type: text/plain\r\n"
-                                   "Connection: close\r\n\r\n"
-                                   "No PNG found.\r\n";
-                boost::system::error_code e;
-                boost::asio::write(socket, boost::asio::buffer(resp), e);
-                return;
-            }
-            
-            std::ifstream ifs(std::string("frames/") + newest, std::ios::binary);
-            
-            if (!ifs) {
-                std::string resp = "HTTP/1.1 404 Not Found\r\n"
-                                   "Content-Type: text/plain\r\n"
-                                   "Connection: close\r\n\r\n"
-                                   "Cannot open the PNG.\r\n";
-                boost::system::error_code e;
-                boost::asio::write(socket, boost::asio::buffer(resp), e);
-                return;
-            }
-            std::vector<char> buf((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
-
-            std::string header = "HTTP/1.1 200 OK\r\n"
-                                 "Content-Type: image/png\r\n"
-                                 "Connection: close\r\n"
-                                 "Content-Length: " + std::to_string(buf.size()) + "\r\n\r\n";
-
-            boost::system::error_code e;
-            boost::asio::write(socket, boost::asio::buffer(header), e);
-            boost::asio::write(socket, boost::asio::buffer(buf.data(), buf.size()), e);
-            return;
-        }
-
-        // ------------------------------------------------------------
-        //  /set_sweep_total?mode=0..4
-        // ------------------------------------------------------------
-        if (path.rfind("/set_sweep_total", 0) == 0) {
-            auto p   = ParseQueryParams(path);
-            int mode = std::stoi(p["mode"]);             // 0-4
-
-            // RAW Furuno call – no wrapper
-            int ret = Furuno::RmSetEchoSweepTotal(static_cast<Furuno::INT16>(mode));
-
-            std::string body = "<h2>Set Sweep Total</h2><p>mode = "
-                            + std::to_string(mode) + " → API returned "
-                            + std::to_string(ret)  + "</p>";
-            WriteHttpResponse(socket, body);
-            return;
-        }
-
-        // ------------------------------------------------------------
-        //  /set_interpolation?enable=0|1
-        // ------------------------------------------------------------
-        if (path.rfind("/set_interpolation", 0) == 0) {
-            auto p     = ParseQueryParams(path);
-            int enable = std::stoi(p["enable"]);         // 0 or 1
-
-            // RAW Furuno call – no wrapper
-            int ret = Furuno::RmSetEchoInterpolationFunc(
-                        static_cast<Furuno::INT16>(enable));
-
-            std::string body = "<h2>Set Interpolation</h2><p>enable = "
-                            + std::to_string(enable) + " → API returned "
-                            + std::to_string(ret)    + "</p>";
-            WriteHttpResponse(socket, body);
-            return;
-        }
-
-
-        //--------------------------------------
-        // Fallback: 404 Not Found
-        //--------------------------------------
+        // ================================
+        //  FALLBACK: 404 NOT FOUND
+        // ================================
         {
             std::string resp = "<h2>Not Found</h2><p>Try <a href=\"/\">Home</a></p>";
             WriteHttpResponse(socket, resp);
         }
 
     } catch(...) {
-        // If anything fails, ignore for simplicity
+        // If anything fails... ignore and keep moving forward lol
     }
-}
-
-//--------------------------------------
-// Runs forever, accepting connections
-//--------------------------------------
-static void RunHttpServer(unsigned short port) {
-    try {
-        boost::asio::io_context ioc;
-        boost::asio::ip::tcp::acceptor acceptor{
-            ioc, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), port)
-        };
-
-        std::cout << "[WebServer] Listening on port " << port << "...\n";
-
-        for (;;) {
-            boost::asio::ip::tcp::socket socket{ioc};
-            acceptor.accept(socket); // blocking accept
-            HttpSession(std::move(socket));
-        }
-    } catch (const std::exception &e) {
-        std::cerr << "[WebServer] Exception: " << e.what() << "\n";
-    }
-}
-
-//--------------------------------------
-// Launch server on background thread
-//--------------------------------------
-void StartWebServerThread() {
-    static std::thread webThread([]{
-        RunHttpServer(8080);
-    });
-    webThread.detach(); // run in background
 }
 
 #endif // USE_BOOST_WEB_INTERFACE
