@@ -1,3 +1,5 @@
+//sample/Furuno_Sample.cpp
+
 #define _CRT_SECURE_NO_WARNINGS
 
 // --- Project/local headers ---
@@ -33,6 +35,12 @@ namespace Furuno {
 #include <atomic>
 #include <algorithm>
 #include <filesystem>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
+#include <atomic>
+
 
 // ───────────────────────────────────────────────────────────────
 // Using Declarations & Namespace Aliases
@@ -50,27 +58,6 @@ namespace fs = std::filesystem;
 #define DEVICE_ID_KEYWORD        ("device id")
 
 // ───────────────────────────────────────────────────────────────
-// Performance Counters
-// ───────────────────────────────────────────────────────────────
-namespace Perf {
-    static std::atomic<uint64_t> bytesPerSec{0};
-    static std::atomic<uint32_t> linesPerSec{0};
-    static std::atomic<uint64_t> lastPrintUs{0};
-}
-
-// ───────────────────────────────────────────────────────────────
-// Gain Pattern State
-// ───────────────────────────────────────────────────────────────
-namespace GainControl {
-    std::atomic<bool> updateGain = false;
-    std::atomic<bool> rotationToggle = false;
-    std::atomic<size_t> currentGainIndex = 0;
-	const int gainPattern[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,60,70,80,90,99};
-    const size_t gainPatternCount = sizeof(gainPattern) / sizeof(gainPattern[0]);
-    std::atomic<bool> stopGainControlThread = false;
-}
-
-// ───────────────────────────────────────────────────────────────
 // Radar Echo Data
 // ───────────────────────────────────────────────────────────────
 struct RadarEchoData {
@@ -84,6 +71,21 @@ struct RadarEchoData {
 };
 std::vector<RadarEchoData> radarEchoBuffer;
 static Furuno::INT16 lastSweepAngle = -1;
+
+// ───────────────────────────────────────────────────────────────
+// Async Sweep Writing (CSV + PNG) Threading
+// ───────────────────────────────────────────────────────────────
+struct SweepWriteJob {
+    std::vector<RadarEchoData> data;
+    std::string csvFilename;
+    std::string pngFilename;
+};
+
+std::queue<SweepWriteJob> sweepQueue;
+std::mutex sweepQueueMutex;
+std::condition_variable sweepQueueCV;
+std::atomic<bool> sweepThreadRunning{true};
+std::thread sweepWriter;
 
 // ───────────────────────────────────────────────────────────────
 // Global/Module State
@@ -103,6 +105,8 @@ static int ReadLicenseFile(const char*, char[4][VENDOR_TXT_LINE_CHAR_MAX]);
 void GainControlThread();
 void WriteEchoImage(const std::vector<RadarEchoData>&, const std::string&);
 void WriteEchoCSV(const std::vector<RadarEchoData>&, const std::string&);
+void SweepWriterThread();
+
 
 
 // ========== ENTRY POINT ==========
@@ -150,6 +154,8 @@ int main(int argc, char *argv[]) {
     StartWebServerThread();
     #endif
 
+    sweepWriter = std::thread(SweepWriterThread);
+
     // --- Find the Radar Sensor ---
     for (int attempts = 0; attempts < 60; ++attempts) {
         Furuno::RmGetSensorHostCount(&radarHostCount);
@@ -165,32 +171,15 @@ int main(int argc, char *argv[]) {
         return -1;
 
     Furuno::RmSetRadarSource(0, radarHostName, 0);
-    std::thread gainThread(GainControlThread);
-    gainThread.detach();
 
     // --- Block forever ---
     while (true) std::this_thread::sleep_for(std::chrono::hours(24));
+
+    sweepThreadRunning = false;
+    sweepQueueCV.notify_all();
+    if (sweepWriter.joinable()) sweepWriter.join();
+
     return 0;
-}
-
-
-// ========== CORE RUNTIME ==========
-void GainControlThread() {
-	while (!GainControl::stopGainControlThread.load()) {
-		if (GainControl::updateGain.load()) {
-			GainControl::updateGain = false;
-			
-			size_t idx = GainControl::currentGainIndex.load();
-			int manualVal = GainControl::gainPattern[idx];
-			
-			Furuno::RmcSetGAIN(0, 0, (Furuno::UINT16)manualVal, 0);
-			
-			// Move to next index for next rotation
-			GainControl::currentGainIndex = (idx + 1) % GainControl::gainPatternCount;
-		}
-		
-		std::this_thread::sleep_for(std::chrono::milliseconds(10));
-	}
 }
 
 static void StartRadarModule() {
@@ -228,26 +217,6 @@ static void __stdcall RadarEchoCallback(
     Furuno::INT16 sweep_len, Furuno::INT16 scale, Furuno::INT16 range,
     Furuno::INT16 angle, Furuno::INT16 heading, Furuno::INT16 h_flg)
 {
-    // Perf counters (update atomics only once)
-    Perf::bytesPerSec += sweep_len;
-    Perf::linesPerSec++;
-
-    // Print stats every second
-    uint64_t nowUs = std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
-
-    if (nowUs - Perf::lastPrintUs > 1'000'000) {
-        struct rusage ru {};
-        getrusage(RUSAGE_SELF, &ru);
-        printf("sweep_len=%4d  lines=%5u  kB=%6.1f  CPU(u|s)=%.1f|%.1f\n",
-            sweep_len,
-            Perf::linesPerSec.load(),
-            Perf::bytesPerSec.load() / 1024.0,
-            ru.ru_utime.tv_sec + ru.ru_utime.tv_usec / 1e6,
-            ru.ru_stime.tv_sec + ru.ru_stime.tv_usec / 1e6);
-        Perf::bytesPerSec = Perf::linesPerSec = 0;
-        Perf::lastPrintUs = nowUs;
-    }
 
     // Custom gain for this pulse
     Furuno::UINT16 gain = 0;
@@ -274,12 +243,17 @@ static void __stdcall RadarEchoCallback(
         fs::path csvPath = fs::path("data") / (base + ".csv");
         fs::path pngPath = fs::path("frames") / (base + ".csv.png");
 
-        WriteEchoCSV(radarEchoBuffer, csvPath.string());
-        WriteEchoImage(radarEchoBuffer, pngPath.string());
+        // Instead of writing files here, move the buffer into a job:
+        SweepWriteJob job;
+        job.data = std::move(radarEchoBuffer); // move data!
+        job.csvFilename = csvPath.string();
+        job.pngFilename = pngPath.string();
 
-        // Trigger gain update every other rotation
-        if (!GainControl::rotationToggle.exchange(!GainControl::rotationToggle, std::memory_order_acq_rel))
-            GainControl::updateGain.store(true, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(sweepQueueMutex);
+            sweepQueue.push(std::move(job));
+        }
+        sweepQueueCV.notify_one();
 
         radarEchoBuffer.clear();
         lastSweepAngle = -1;
@@ -287,6 +261,7 @@ static void __stdcall RadarEchoCallback(
         lastSweepAngle = angle;
     }
 }
+
 
 static void __stdcall RadarCycleCallback(void) {
 	Furuno::INT32 connect = 0;
@@ -360,32 +335,6 @@ void WriteEchoImage(const std::vector<RadarEchoData>& dataBuffer, const std::str
         }
     }
 
-    // Detect gain change angles
-    int lastGain = -1, firstAngle = -1;
-    std::vector<int> gainChangeAngles;
-    for (const auto& entry : dataBuffer) {
-        if (firstAngle < 0) firstAngle = entry.angle;
-        if (lastGain < 0) lastGain = entry.gain;
-        else if (entry.gain != lastGain) gainChangeAngles.push_back(entry.angle), lastGain = entry.gain;
-    }
-
-    // Draw lines for gain changes
-    auto drawLine = [&](double angleRad, uint8_t r, uint8_t g, uint8_t b) {
-        for (int d = 0; d < maxRadius; ++d) {
-            int x = int(std::round(cx + d * std::cos(angleRad)));
-            int y = int(std::round(cy + d * std::sin(angleRad)));
-            if (x < 0 || x >= w || y < 0 || y >= h) continue;
-            int idx = (y * w + x) * 4;
-            px[idx] = r; px[idx + 1] = g; px[idx + 2] = b;
-        }
-    };
-    if (gainChangeAngles.empty() && firstAngle >= 0) {
-        drawLine((firstAngle / 8196.0) * TWO_PI, 0, 255, 0);
-    } else {
-        for (int angle : gainChangeAngles)
-            drawLine((angle / 8196.0) * TWO_PI, 255, 0, 0);
-    }
-
     if (!stbi_write_png(filename.c_str(), w, h, 4, px.data(), w * 4))
         fprintf(stderr, "Failed to write PNG: %s\n", filename.c_str());
 }
@@ -404,6 +353,20 @@ void WriteEchoCSV(const std::vector<RadarEchoData>& dataBuffer, const std::strin
     }
 }
 
+void SweepWriterThread() {
+    while (sweepThreadRunning) {
+        SweepWriteJob job;
+        {
+            std::unique_lock<std::mutex> lock(sweepQueueMutex);
+            sweepQueueCV.wait(lock, [] { return !sweepQueue.empty() || !sweepThreadRunning; });
+            if (!sweepThreadRunning && sweepQueue.empty()) break;
+            job = std::move(sweepQueue.front());
+            sweepQueue.pop();
+        }
+        WriteEchoCSV(job.data, job.csvFilename);
+        WriteEchoImage(job.data, job.pngFilename);
+    }
+}
 // ========== UTILITIES ==========
 
 static void PrintSensorList() {
