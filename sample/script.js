@@ -46,7 +46,6 @@ function refreshTx(){
   fetch(`/get_current?radarNo=${v('radarNo')}&command=TX`)
     .then(r=>r.text()).then(t=>setHtml('txResult',t));
 }
-
 function beginCalibration() {
   fetch('/begin_calibration')
     .then(r => r.text())
@@ -54,7 +53,6 @@ function beginCalibration() {
   setCardCalibrationUI(true);  // disables cards
   calibrationActive = true;
 }
-
 function stopCalibration() {
   fetch('/stop_pattern')
     .then(r => r.text())
@@ -62,6 +60,17 @@ function stopCalibration() {
   setCardCalibrationUI(false); // re-enables cards
   calibrationActive = false;
 }
+function beginRezboostCalibration() {
+  fetch('/run_ramp_pattern')
+    .then(resp => resp.text())
+    .then(html => {
+      document.getElementById('txResult').innerHTML = html;
+    })
+    .catch(err => {
+      document.getElementById('txResult').innerHTML = "<span style='color:red'>Error starting RezBoost calibration.</span>";
+    });
+}
+
 
 
 /* ---------- Pattern ramping ---------- */
@@ -126,6 +135,16 @@ function setACRAIN(){
 function refreshGain(){
   fetch(`/get_current?radarNo=${v('radarNo')}&command=GAIN`)
     .then(r=>r.text()).then(t=>setHtml('gainResult',t));
+}
+function setRezBoost() {
+  fetch(`/set_bearing_resolution?radarNo=${v('radarNo')}&mode=${v('rezboostMode')}`)
+    .then(r => r.text())
+    .then(t => setHtml('rezboostResult', t));
+}
+function refreshRezBoost() {
+  fetch(`/set_bearing_resolution?radarNo=${v('radarNo')}`)
+    .then(r => r.text())
+    .then(t => setHtml('rezboostResult', t));
 }
 
 

@@ -33,6 +33,7 @@
     </div>
     <div class="row" style="margin-top: 0.5em;">
       <button onclick="beginCalibration()">Begin Calibration</button>
+      <button onclick="beginRezboostCalibration()">Begin RezBoost calibration</button>
       <button onclick="stopCalibration()">TERMINATE</button>
     </div>
     <div id="txResult" class="resultBox"></div>
@@ -162,6 +163,26 @@
     <div id="gainResult" class="resultBox"></div>
   </fieldset>
 </div>
+<!-- ========================================================== -->
+<!--  REZBOOST / BEARING RESOLUTION PANEL                       -->
+<!-- ========================================================== -->
+<div class="card calib-lock-card" id="rezboostCard">
+  <fieldset>
+    <legend>RezBoost (Bearing Resolution)</legend>
+    <div class="row">
+      <label for="rezboostMode">Mode</label>
+      <select id="rezboostMode">
+        <option value="0">Off</option>
+        <option value="1">Low</option>
+        <option value="2">Medium</option>
+        <option value="3" selected>High</option>
+      </select>
+      <button onclick="setRezBoost()">Apply</button>
+      <button onclick="refreshRezBoost()">🔄</button>
+    </div>
+    <div id="rezboostResult" class="resultBox"></div>
+  </fieldset>
+</div>
 
 <!-- ========================================================== -->
 <!--  DISPLAY PANEL                                             -->
@@ -200,6 +221,8 @@
     <div id="displayResult" class="resultBox"></div>
   </fieldset>
 </div>
+
+
 
 </main>
 
