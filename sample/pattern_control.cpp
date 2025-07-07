@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <iostream>
 namespace fs = std::filesystem;
 
 // --- Furuno includes ---
@@ -125,3 +126,41 @@ void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepea
 void StopPattern() {
     patternActive = false;
 }
+
+
+// --- New-style (int-args) ramp pattern builder ---
+static std::vector<RangeGainStep> GenerateRampPattern(const std::vector<uint16_t>& ranges, uint16_t gainStart, uint16_t gainEnd, uint16_t repeatCount) {
+    std::vector<RangeGainStep> pattern;
+    for (auto range : ranges) {
+        for (uint16_t gain = gainStart; gain <= gainEnd; ++gain) {
+            pattern.push_back(RangeGainStep{range, gain, repeatCount});
+        }
+    }
+    // add a print here so i can see if it made it here
+    std::cout << "[PatternControl] Generated ramp pattern with " << pattern.size() << " steps.\n";
+    return pattern;
+}
+
+void RunRangeGainResolutionRampPattern(const std::vector<uint16_t>& ranges, uint16_t gainStart, uint16_t gainEnd, uint16_t repeatCount) {
+    constexpr int radarNo = 0;
+    Furuno::RmSetEchoSweepTotal(2);
+    Furuno::RmcSetACSEA(0,0,0,0,0);
+    Furuno::RmcSetACRAIN(0,0,0,0,0,0);
+
+    auto pattern = GenerateRampPattern(ranges, gainStart, gainEnd, repeatCount);
+
+    for (int rezBoost = 0; rezBoost <= 3; ++rezBoost) {
+        Furuno::RmSetEchoInterpolationFunc(1);
+        Furuno::RmcSetBearingResolutionSelect(radarNo, static_cast<uint16_t>(rezBoost));
+        Furuno::RmcSetTxStby(radarNo, 2,0,0,0); // TX
+        RunRangeGainPattern(pattern, 1);
+
+        Furuno::RmSetEchoInterpolationFunc(0);
+        Furuno::RmcSetTxStby(radarNo, 2,0,0,0); // TX
+        RunRangeGainPattern(pattern, 1);
+    }
+    Furuno::RmcSetTxStby(radarNo, 1,0,0,0); // STBY
+    std::puts("[Done] Calibration [rezboost, range, gain, interp]");
+}
+
+

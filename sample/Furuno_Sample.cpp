@@ -102,7 +102,6 @@ static void __stdcall EchoTileCallback(Furuno::INT32 radarNo, Furuno::INT16 head
 static void PrintSensorList(void);
 static void StartRadarModule();
 static int ReadLicenseFile(const char*, char[4][VENDOR_TXT_LINE_CHAR_MAX]);
-void GainControlThread();
 void WriteEchoImage(const std::vector<RadarEchoData>&, const std::string&);
 void WriteEchoCSV(const std::vector<RadarEchoData>&, const std::string&);
 void SweepWriterThread();

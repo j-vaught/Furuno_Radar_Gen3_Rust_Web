@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <cctype>
 
+
 namespace Furuno {
     #include "nndll.h"
     #include <lasterror.h>
@@ -33,8 +34,11 @@ struct RangeGainStep {
 
 constexpr int REPEAT = 10; // Default repeat count for each step in the pattern
 extern std::atomic<bool> patternActive;
+// i need to add a new function that goes through range, gain, and also rezboost(0-3) with interp on or off (8 total runs)
+
 extern void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepeats = -1);
 extern void StopPattern();
+extern void RunRangeGainResolutionRampPattern(const std::vector<uint16_t>& ranges, uint16_t gainStart, uint16_t gainEnd, uint16_t repeatCount);
 
 namespace fs = std::filesystem;
 
@@ -471,6 +475,55 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
         WriteHttpResponse(socket, body);
         return true;
     }
+    if (path.rfind("/set_bearing_resolution", 0) == 0) {
+        auto params  = ParseQueryParams(path);
+        int  radarNo = std::stoi(params["radarNo"]);
+
+        static const char* modeNames[] = { "Off", "Low", "Med", "High" };
+
+        // 1) Get current
+        Furuno::UINT16 currentMode = 0;
+        int retGet = Furuno::RmcGetBearingResolutionSelect(
+            static_cast<Furuno::UINT16>(radarNo),
+            &currentMode
+        );
+
+        // 2) Decide new mode (0–3)
+        int requested = params.count("mode")
+        ? std::clamp(std::stoi(params["mode"]), 0, 3)
+        : 3;
+        Furuno::UINT16 newMode = static_cast<Furuno::UINT16>(requested);
+
+        // 3) Set it
+        int retSet = Furuno::RmcSetBearingResolutionSelect(
+            static_cast<Furuno::UINT16>(radarNo),
+            newMode
+        );
+
+        // 4) Build friendly response
+        std::ostringstream resp;
+        resp << "<h2>RezBoost (Bearing Resolution)</h2>\n";
+
+        if (retGet == 0) {
+            resp << "<p><b>Read Current:</b> " 
+                << currentMode << " (" << modeNames[currentMode] << ") — OK</p>\n";
+        } else {
+            resp << "<p><b>Read Current:</b> Error code " 
+                << retGet << "</p>\n";
+        }
+
+        if (retSet == 0) {
+            resp << "<p><b>Set New:</b> " 
+                << newMode << " (" << modeNames[newMode] << ") — OK</p>\n";
+        } else {
+            resp << "<p><b>Set New:</b> Error code " 
+                << retSet << "</p>\n";
+        }
+
+        WriteHttpResponse(socket, resp.str());
+        return true;
+    }
+
     return false;
 }
 
@@ -578,18 +631,49 @@ static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::
         auto pattern = GenerateRampPattern({21, 0, 1, 2, 3}, 0, 99, 5);
         int repeats = 1; // One cycle of the whole pattern
 
+        //add a thing that calulcate totlal time expected to complete the calibrations. 
+        int totalTime = pattern.size() * repeats; // in seconds
+
+
         // Run in detached thread so HTTP handler returns immediately
         std::thread([pattern, repeats]() {
             RunRangeGainPattern(pattern, repeats);
         }).detach();
         // add a debug print here. did it make it here? if so was a pattern generated?
         std::cout << "[DEBUG] Calibration pattern started with " << pattern.size() << " steps.\n";
-        
-        WriteHttpResponse(socket, "<h2>Calibration sequencing started</h2>");
+        // add the total time to the response
+        std::ostringstream oss;
+        oss << "<h2>Calibration sequencing started</h2>\n"
+            << "<p>Total steps: " << pattern.size() << "</p>\n"
+            << "<p>Expected time: " << totalTime << " seconds</p>\n"
+            << "<p>Note: This will take a while, please wait...</p>\n";
+        WriteHttpResponse(socket, oss.str());
         return true;
     }
+    // NEW: /run_ramp_pattern  (hardcoded ramp)
+    if (path.rfind("/run_ramp_pattern", 0) == 0) {
+        // Your preferred ramp settings:
+        int gainStart = 0;
+        int gainEnd = 99;
+        int repeat = 5;
+
+        // Launch pattern in background
+        std::thread([gainStart, gainEnd, repeat]() {
+            RunRangeGainResolutionRampPattern({21,0,1,2,3}, gainStart, gainEnd, repeat);
+        }).detach();
+
+        std::ostringstream oss;
+        oss << "<h2>Ramp/Resolution Pattern started</h2>\n";
+        oss << "<br>Gain: " << gainStart << " to " << gainEnd
+            << "<br>Repeat: " << repeat << "</p>";
+        WriteHttpResponse(socket, oss.str());
+        return true;
+    }
+
     return false;
 }
+
+
 
 
 // ================================
@@ -726,7 +810,6 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
         if (HandleRadarSetters(path, socket))     return;
         if (HandlePatternControl(path, socket))   return;
         if (HandleRadarGetters(path, socket))     return;
-
         // fallback 404
         WriteHttpResponse(socket, "<h2>Not Found</h2><p>Home: <a href=\"/\">/</a></p>");
     } catch(...) {
