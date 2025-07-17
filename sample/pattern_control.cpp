@@ -24,6 +24,10 @@ struct RangeGainStep {
     uint16_t gain;
     uint16_t repeat;  // number of sweeps at this setting
 };
+// want to add control for horizontal beam width
+// want to add control for STC
+// want to add control for 
+
 
 std::atomic<bool> patternActive{false};
 
