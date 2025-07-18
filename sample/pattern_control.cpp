@@ -1,3 +1,5 @@
+// sample/pattern_control.cpp
+
 #include <vector>
 #include <atomic>
 #include <thread>

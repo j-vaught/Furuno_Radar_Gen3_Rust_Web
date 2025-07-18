@@ -650,22 +650,36 @@ static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::
         WriteHttpResponse(socket, oss.str());
         return true;
     }
-    // NEW: /run_ramp_pattern  (hardcoded ramp)
-    if (path.rfind("/run_ramp_pattern", 0) == 0) {
-        // Your preferred ramp settings:
-        int gainStart = 0;
-        int gainEnd = 99;
-        int repeat = 5;
+    if (path.rfind("/begin_calib_full", 0) == 0) {
+        // Calibration: Ranges = [21, 0, 1, 2, 3], Gains 0-99, Repeat 10
+        //need to set display and interpolation to 8196 and 0 respectively
+        // need to add STC, horixontal beam width, etc, etc
 
-        // Launch pattern in background
-        std::thread([gainStart, gainEnd, repeat]() {
-            RunRangeGainResolutionRampPattern({21,0,1,2,3}, gainStart, gainEnd, repeat);
+        Furuno::RmSetEchoSweepTotal(2); // Set sweeps to 8196
+        Furuno::RmSetEchoInterpolationFunc(0); // Disable interpolation
+        //need to set acsea and acrain to all 0 
+        Furuno::RmcSetACSEA(0, 0, 0, 0, 0); // Disable A/C SEA
+        Furuno::RmcSetACRAIN(0, 0, 0, 0, 0, 0); // Disable A/C RAIN
+
+        auto pattern = GenerateRampPattern({21, 0, 1, 2, 3}, 0, 99, 5);
+        int repeats = 1; // One cycle of the whole pattern
+
+        //add a thing that calulcate totlal time expected to complete the calibrations. 
+        int totalTime = pattern.size() * repeats; // in seconds
+
+
+        // Run in detached thread so HTTP handler returns immediately
+        std::thread([pattern, repeats]() {
+            RunRangeGainPattern(pattern, repeats);
         }).detach();
-
+        // add a debug print here. did it make it here? if so was a pattern generated?
+        std::cout << "[DEBUG] Calibration pattern started with " << pattern.size() << " steps.\n";
+        // add the total time to the response
         std::ostringstream oss;
-        oss << "<h2>Ramp/Resolution Pattern started</h2>\n";
-        oss << "<br>Gain: " << gainStart << " to " << gainEnd
-            << "<br>Repeat: " << repeat << "</p>";
+        oss << "<h2>Calibration sequencing started</h2>\n"
+            << "<p>Total steps: " << pattern.size() << "</p>\n"
+            << "<p>Expected time: " << totalTime << " seconds</p>\n"
+            << "<p>Note: This will take a while, please wait...</p>\n";
         WriteHttpResponse(socket, oss.str());
         return true;
     }
