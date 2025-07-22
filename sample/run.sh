@@ -37,4 +37,4 @@ sudo g++ -o main main.o web_server.o stb_image_write.o pattern_control.o -Wall \
 export LD_LIBRARY_PATH=../lib
 
 # Run the program (adjust arguments as needed)
-sudo ./main vendor.txt target.dat 172.31.1.100 PC1
+sudo LD_LIBRARY_PATH="../lib" ./main vendor.txt target.dat 172.31.1.100 PC1
