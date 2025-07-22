@@ -1,0 +1,293 @@
+/* CSS Variables for consistency */
+:root {
+  --primary: #333; /* Dark text for a clean look */
+  --primary-hover: #555; /* Slightly darker for hover effects */
+  --background-gradient: linear-gradient(135deg, #f8f8f8, #e0e0e0);
+  --card-bg: rgba(255, 255, 255, 0.9);
+  --card-border: rgba(0, 0, 0, 0.1);
+  --transition-speed: 0.3s;
+}
+
+/* Global Reset */
+* {
+  box-sizing: border-box;
+}
+
+/* Body styling */
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 0;
+  background: var(--background-gradient);
+  color: var(--primary);
+}
+
+/* Header with glass effect */
+header {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  color: var(--primary);
+  padding: 1.2em;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+/* Title styling */
+h1 {
+  margin: 0;
+  font-size: 1.8em;
+}
+
+/* Main content container */
+main {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 10px;
+}
+
+/* Card styling with frosted glass effect */
+.card {
+  position: relative; /* ensures proper positioning context */
+  overflow: hidden;   /* clips any overflowing image parts */
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 15px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+  padding: 20px;
+  flex: 1 1 300px;
+  min-width: 280px;
+  transition: transform var(--transition-speed) ease,
+              box-shadow var(--transition-speed) ease;
+  margin-bottom: 20px;
+}
+
+/* Card hover effect */
+.card:hover {
+  transform: translateY(-10px) scale(1.05);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+}
+
+/* Form Elements */
+fieldset {
+  border: none;
+  margin: 0;
+  padding: 0;
+  margin-bottom: 10px;
+}
+
+legend {
+  font-weight: bold;
+  margin-bottom: 10px;
+}
+
+label {
+  display: block;
+  margin: 8px 0 4px;
+}
+
+input[type="number"],
+select {
+  width: 100%;
+  padding: 10px;
+  margin-bottom: 12px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.8);
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+input[type="number"]:focus,
+select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 5px rgba(51, 51, 51, 0.5);
+  outline: none;
+}
+
+/* Buttons with fluid scaling and shadow */
+button {
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  padding: 0.8em 1.2em;
+  margin-right: 0.5em;
+  cursor: pointer;
+  border-radius: 10px;
+  font-size: 1em;
+  transition: background 0.3s, transform 0.2s;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+button:hover {
+  background: var(--primary-hover);
+  transform: scale(1.02);
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* Result box with a subtle glass feel */
+.resultBox {
+  background: rgba(241, 241, 241, 0.8);
+  padding: 1em;
+  border-radius: 8px;
+  margin-top: 0.5em;
+  min-height: 3em;
+  font-size: 1em;
+  color: #333;
+  border: 1px solid #ccc;
+  backdrop-filter: blur(5px);
+}
+
+/* Image styling */
+.card img {
+  width: 100%;
+  height: auto;
+  max-height: 1000px;
+  object-fit: contain;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  margin-top: 10px;
+}
+
+/* List styling */
+ul {
+  list-style-type: none;
+  padding-left: 0;
+  margin: 0;
+}
+
+ul li {
+  margin: 5px 0;
+  padding: 5px;
+  border-radius: 5px;
+  transition: background 0.2s;
+}
+
+ul li:hover {
+  background: rgba(13, 110, 253, 0.1);
+}
+
+/* Responsive design for mobile devices using pointer and hover detection */
+@media (pointer: coarse) and (hover: none) {
+  /* Increase overall font sizes */
+  body {
+    font-size: 200%; /* Doubles the base font size */
+  }
+  h1 {
+    font-size: 2em;
+  }
+  button {
+    font-size: 1.2em;
+    padding: 0.5em 1em;
+  }
+  input[type="number"],
+  select {
+    font-size: 1.2em;
+    padding: 12px;
+  }
+  
+  /* Layout adjustments */
+  main {
+    flex-direction: column;
+    gap: 10px;
+    padding: 30px;
+  }
+  .card {
+    flex: 1 1 90%;
+    min-width: 90%;
+    padding: 10px;
+    margin-bottom: 10px;
+  }
+  header {
+    padding: 1em;
+  }
+  button {
+    display: block;
+    width: 40%;
+    margin: 10px auto;
+  }
+}
+
+
+/* Info Icon (fixed in the top right corner) */
+#infoIcon {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 20%;
+  padding: 10px;
+  cursor: pointer;
+  z-index: 1000;
+  font-size: 1.5em;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+/* Info Card Overlay */
+#infoCard {
+  position: fixed;
+  top: 50px;
+  right: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+  padding: 15px;
+  width: 300px;
+  display: none; /* Hidden by default */
+  z-index: 1000;
+}
+
+/* Info Card Header */
+.info-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--card-border);
+  padding-bottom: 5px;
+  margin-bottom: 10px;
+}
+
+.info-header button {
+  border: none;
+  font-size: 1.2em;
+  cursor: pointer;
+}
+
+
+.card.disabled {
+  pointer-events: none;
+  opacity: 0.55;
+  filter: grayscale(80%);
+}
+.card.disabled input,
+.card.disabled button,
+.card.disabled select {
+  background: #eee !important;
+  color: #888 !important;
+}
+
+
+/* Helper classes */
+.row {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.row label {
+  white-space: nowrap;
+}
+
+.mini {
+  width: 4rem;
+}
+
+details > summary {
+  cursor: pointer;
+  margin: 0.4rem 0;
+  font-weight: 600;
+}

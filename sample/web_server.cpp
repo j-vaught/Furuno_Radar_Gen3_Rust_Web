@@ -32,13 +32,33 @@ struct RangeGainStep {
     uint16_t repeat;
 };
 
+struct ControlStep {
+    uint16_t range;
+    uint16_t gain;
+    uint16_t pulse_length;     // S1, S2, M1, M2, M3, L 
+    uint16_t rezBoost;         // 0, 1, 2, 3
+    uint16_t rotation_speed;   // Lo, Hi, Auto
+    uint16_t interpolation;    // 2048, 4096, 8192, 1024, 720
+    uint16_t repeat;           // number of sweeps at this setting
+};
+
 constexpr int REPEAT = 10; // Default repeat count for each step in the pattern
 extern std::atomic<bool> patternActive;
-// i need to add a new function that goes through range, gain, and also rezboost(0-3) with interp on or off (8 total runs)
 
 extern void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepeats = -1);
 extern void StopPattern();
-extern void RunRangeGainResolutionRampPattern(const std::vector<uint16_t>& ranges, uint16_t gainStart, uint16_t gainEnd, uint16_t repeatCount);
+extern void RunPattern(const std::vector<ControlStep>& pattern, int numRepeats = -1);
+extern std::vector<RangeGainStep> GenerateRampPattern(const std::vector<uint16_t>& ranges, uint16_t gainStart, uint16_t gainEnd, uint16_t repeatCount);
+extern std::vector<ControlStep> GeneratePattern(
+    const std::vector<uint16_t>& ranges,
+    const std::vector<uint16_t>& pulse_lengths,
+    const std::vector<uint16_t>& rezBoosts,
+    const std::vector<uint16_t>& rotation_speeds,
+    const std::vector<uint16_t>& interpolations,
+    uint16_t gainStart,
+    uint16_t gainEnd,
+    uint16_t repeatCount
+);
 
 namespace fs = std::filesystem;
 
@@ -128,6 +148,19 @@ static std::string FindNewestPNGFile(const std::string &directory) {
     return newestFile;
 }
 
+// Returns true if step values are within allowed ranges
+static bool IsValidControlStep(const ControlStep& s) {
+    bool ok = true;
+    if (s.range > 21)         { std::cerr << "[ERR] range " << s.range << " out of range 0-21\n"; ok = false; }
+    if (s.gain > 99)          { std::cerr << "[ERR] gain " << s.gain << " out of range 0-99\n"; ok = false; }
+    if (s.pulse_length > 5)   { std::cerr << "[ERR] pulse_length " << s.pulse_length << " out of range 0-5\n"; ok = false; }
+    if (s.rezBoost > 3)       { std::cerr << "[ERR] rezBoost " << s.rezBoost << " out of range 0-3\n"; ok = false; }
+    if (s.rotation_speed > 2) { std::cerr << "[ERR] rotation_speed " << s.rotation_speed << " out of range 0-2\n"; ok = false; }
+    if (s.interpolation > 5)  { std::cerr << "[ERR] interpolation " << s.interpolation << " out of range 0-5\n"; ok = false; }
+    // repeat: no explicit check
+    return ok;
+}
+
 // URL-decode helper
 static std::string UrlDecode(const std::string& str) {
     std::string ret;
@@ -153,19 +186,6 @@ static std::string UrlDecode(const std::string& str) {
         }
     }
     return ret;
-}
-
-// Pattern generator helper
-static std::vector<RangeGainStep> GenerateRampPattern(const std::vector<uint16_t>& ranges, uint16_t gainStart, uint16_t gainEnd, uint16_t repeatCount) {
-    std::vector<RangeGainStep> pattern;
-    for (auto range : ranges) {
-        for (uint16_t gain = gainStart; gain <= gainEnd; ++gain) {
-            pattern.push_back(RangeGainStep{range, gain, repeatCount});
-        }
-    }
-    // add a print here so i can see if it made it here
-    std::cout << "[PatternControl] Generated ramp pattern with " << pattern.size() << " steps.\n";
-    return pattern;
 }
 
 
@@ -551,8 +571,7 @@ static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::
         std::string steps = UrlDecode(rawSteps);
         std::cerr << "[DEBUG] Decoded steps = '" << steps << "'\n";
 
-        std::vector<RangeGainStep> pattern;
-        // parse repeats as before...
+        std::vector<ControlStep> pattern;
         int repeats = -1;
         if (params.count("repeat")) {
             try {
@@ -563,12 +582,12 @@ static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::
             }
         }
 
-        // Now split on ';'
+        // Split on ';'
         std::stringstream ss(steps);
         std::string stepItem;
-        int idx = 0;
+        int idx = 0, validSteps = 0, invalidSteps = 0;
         while (std::getline(ss, stepItem, ';')) {
-            std::cerr << "[DEBUG] Step #" << idx++ << ": raw='" << stepItem << "'\n";
+            std::cerr << "[DEBUG] Step #" << idx << ": raw='" << stepItem << "'\n";
             std::stringstream itemss(stepItem);
             std::string val;
             std::vector<int> nums;
@@ -582,18 +601,32 @@ static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::
                     std::cerr << "[ERROR]   stoi failed on '" << val << "': " << e.what() << "\n";
                 }
             }
-            if (nums.size() == 3) {
-                pattern.push_back(RangeGainStep{
+            if (nums.size() == 7) {
+                ControlStep cs{
                     static_cast<uint16_t>(nums[0]),
                     static_cast<uint16_t>(nums[1]),
-                    static_cast<uint16_t>(nums[2])
-                });
-                std::cerr << "[DEBUG]   -> Added RangeGainStep("
-                        << nums[0] << "," << nums[1] << "," << nums[2] << ")\n";
+                    static_cast<uint16_t>(nums[2]),
+                    static_cast<uint16_t>(nums[3]),
+                    static_cast<uint16_t>(nums[4]),
+                    static_cast<uint16_t>(nums[5]),
+                    static_cast<uint16_t>(nums[6])
+                };
+                if (IsValidControlStep(cs)) {
+                    pattern.push_back(cs);
+                    ++validSteps;
+                    std::cerr << "[DEBUG]   -> Added ControlStep("
+                            << nums[0] << "," << nums[1] << "," << nums[2] << ","
+                            << nums[3] << "," << nums[4] << "," << nums[5] << "," << nums[6] << ")\n";
+                } else {
+                    ++invalidSteps;
+                    std::cerr << "[WARN]   Invalid step: value(s) out of range\n";
+                }
             } else {
-                std::cerr << "[WARN]   Invalid step, expected 3 values but got "
+                ++invalidSteps;
+                std::cerr << "[WARN]   Invalid step, expected 7 values but got "
                         << nums.size() << "\n";
             }
+            ++idx;
         }
 
         if (pattern.empty()) {
@@ -602,11 +635,19 @@ static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::
             return true;
         }
 
+        std::ostringstream resp;
+        resp << "<h2>Pattern started</h2>";
+        resp << "<p>Accepted steps: " << validSteps << "</p>";
+        if (invalidSteps > 0) {
+            resp << "<p style='color:red'>Rejected invalid steps: " << invalidSteps << "</p>";
+        }
+
         // Run in detached thread
         std::thread([pattern, repeats]() {
-            RunRangeGainPattern(pattern, repeats);
+            RunPattern(pattern, repeats);
         }).detach();
-        WriteHttpResponse(socket, "<h2>Pattern started</h2>");
+
+        WriteHttpResponse(socket, resp.str());
         return true;
     }
 
@@ -620,28 +661,20 @@ static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::
         return true;
     }
     if (path.rfind("/begin_calibration", 0) == 0) {
-        // Calibration: Ranges = [21, 0, 1, 2, 3], Gains 0-99, Repeat 10
-        //need to set display and interpolation to 8196 and 0 respectively
-        Furuno::RmSetEchoSweepTotal(2); // Set sweeps to 8196
+        // Calibration: Ranges = [21, 0, 1, 2, 3], Gains 0-99, Repeat 5 times
         Furuno::RmSetEchoInterpolationFunc(0); // Disable interpolation
-        //need to set acsea and acrain to all 0 
         Furuno::RmcSetACSEA(0, 0, 0, 0, 0); // Disable A/C SEA
         Furuno::RmcSetACRAIN(0, 0, 0, 0, 0, 0); // Disable A/C RAIN
 
-        auto pattern = GenerateRampPattern({21, 0, 1, 2, 3}, 0, 99, 5);
+        auto pattern = GenerateRampPattern({21, 0, 1, 2, 3}, 0, 99, 5); //note that 21-2 use the S1 pulse, 3 uses the S2 pulse
         int repeats = 1; // One cycle of the whole pattern
 
-        //add a thing that calulcate totlal time expected to complete the calibrations. 
         int totalTime = pattern.size() * repeats; // in seconds
 
+        std::thread([pattern, repeats]() { RunRangeGainPattern(pattern, repeats); }).detach(); // Run in detached thread so HTTP handler returns immediately
 
-        // Run in detached thread so HTTP handler returns immediately
-        std::thread([pattern, repeats]() {
-            RunRangeGainPattern(pattern, repeats);
-        }).detach();
-        // add a debug print here. did it make it here? if so was a pattern generated?
         std::cout << "[DEBUG] Calibration pattern started with " << pattern.size() << " steps.\n";
-        // add the total time to the response
+
         std::ostringstream oss;
         oss << "<h2>Calibration sequencing started</h2>\n"
             << "<p>Total steps: " << pattern.size() << "</p>\n"
@@ -650,30 +683,44 @@ static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::
         WriteHttpResponse(socket, oss.str());
         return true;
     }
-    // NEW: /run_ramp_pattern  (hardcoded ramp)
-    if (path.rfind("/run_ramp_pattern", 0) == 0) {
-        // Your preferred ramp settings:
-        int gainStart = 0;
-        int gainEnd = 99;
-        int repeat = 5;
+    if (path.rfind("/begin_calib_full", 0) == 0) {
+        // Calibration: Ranges = [2,3,4,5], Gains 0-99, Repeat 5 times
+        Furuno::RmcSetACSEA(0, 0, 0, 0, 0); // Disable A/C SEA
+        Furuno::RmcSetACRAIN(0, 0, 0, 0, 0, 0); // Disable A/C RAIN
 
-        // Launch pattern in background
-        std::thread([gainStart, gainEnd, repeat]() {
-            RunRangeGainResolutionRampPattern({21,0,1,2,3}, gainStart, gainEnd, repeat);
-        }).detach();
+        auto pattern = GeneratePattern(
+            {2,3,4,5}, //ranges
+            {0,1,2,3,4,5}, //pulse lengths
+            {0,1,2,3}, //Rezboosts
+            {0,1,2}, //rotation speeds
+            {5,4,3,0,1,2}, //interpolations
+            0, // gain start
+            99, // gain end
+            5 // repeat count
+        );
+        /*
+        Codes are in order as used above: 
+            pulse_length;     // S1, S2, M1, M2, M3, L 
+            rezBoost;         // Off, Lo, Med, Hi
+            rotation_speed;   // Lo, Hi, Auto
+            interpolation;    // OFF, 2048, 4096, 8192, 1024, 720
+        */
+        int repeats = 1; // One cycle of the whole pattern
+        int totalTime = pattern.size() * repeats; // in seconds
 
+        std::thread([pattern, repeats]() { RunPattern(pattern, repeats); }).detach();// Run in detached thread so HTTP handler returns immediately
+        std::cout << "[DEBUG] Calibration pattern started with " << pattern.size() << " steps.\n";
         std::ostringstream oss;
-        oss << "<h2>Ramp/Resolution Pattern started</h2>\n";
-        oss << "<br>Gain: " << gainStart << " to " << gainEnd
-            << "<br>Repeat: " << repeat << "</p>";
+        oss << "<h2>Calibration sequencing started</h2>\n"
+            << "<p>Total steps: " << pattern.size() << "</p>\n"
+            << "<p>Expected time: " << totalTime << " seconds</p>\n"
+            << "<p>Note: This will take a while, please wait...</p>\n";
         WriteHttpResponse(socket, oss.str());
         return true;
     }
 
     return false;
 }
-
-
 
 
 // ================================
