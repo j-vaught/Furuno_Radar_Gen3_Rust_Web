@@ -84,6 +84,30 @@ sh run.sh
 
 ---
 
+## Network Settings
+
+To communicate with the radar, ensure the radar is powered on and your Raspberry Pi’s network is configured properly. Below are two ways to configure your IP address.
+
+### Using the Graphical Network Manager (Recommended)
+
+1. **Open the Network Menu**  
+   Click on the Wi-Fi or Internet icon on the taskbar.  
+   - Select **Advanced Options** (or **Network Settings**).  
+   - Choose **Ethernet** connection or the interface you plan to use.  
+   - Click the **Settings** icon.
+
+2. **Set IPv4 to Static**  
+   - Navigate to the **IPv4** tab.  
+   - Click **Add**.  
+   - Set **Address** to `172.31.1.100`.  
+   - Set **Netmask** to `255.255.255.0` *(or `255.255.0.0` if your radar requires a Class B subnet)*.  
+   - Set **Gateway** to `172.31.1.1` or whatever your radar requires.  
+
+3. **Save and Apply**  
+   Ensure IPv4 addressing is **Required** (or set to **Manual**).
+   
+---
+
 ## Uninstallation
 
 To remove NAVNETDLL completely:
