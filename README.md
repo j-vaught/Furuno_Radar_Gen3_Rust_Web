@@ -2,12 +2,6 @@
 
 ---
 
-## Overview
-
-This guide walks you through installing, configuring, and running NAVNETDLL, from a quick-start approach for most users to an advanced setup for custom builds and expert usage.
-
----
-
 ## Prerequisites
 
 * **Operating System:** Linux ARM (32‑ or 64‑bit)
