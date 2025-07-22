@@ -4,7 +4,7 @@
 
 ## Prerequisites
 
-* **Operating System:** Linux ARM (32‑ or 64‑bit)
+* **Operating System:** Linux ARM (32- or 64-bit)
 * **Tools:** `git`, `unzip`, `tar`, `g++`, `sudo` (for system installs)
 * **Permissions:** Ability to create directories under `/usr/lib` and adjust library paths.
 
@@ -42,7 +42,22 @@ sudo git clone https://github.com/j-vaught/RADAR_web.git /usr/lib/NAVNETDLL
 ls -l /usr/lib/NAVNETDLL
 ```
 
-### 3. Run the Sample
+### 3. Install Boost (WebServer)
+
+```bash
+sudo apt-get update
+sudo apt-get install libboost-all-dev
+```
+
+### 4. Set Ownership
+
+Make your user the owner of the sample directory so you can edit files later:
+
+```bash
+sudo chown -R $USER:$USER /usr/lib/NAVNETDLL/sample
+```
+
+### 5. Run the Sample
 
 ```bash
 cd /usr/lib/NAVNETDLL/sample
