@@ -49,17 +49,27 @@
     <legend>Gain/Range Pattern Sweep</legend>
     <div class="row">
       <label>Steps</label>
-      <input id="gainSweepSteps" class="mini" style="width:20rem" placeholder="0,20,10;1,30,5">
+      <textarea id="gainSweepSteps" class="mini" rows="10" style="height:4.5em; width:20rem;" placeholder="0,20,0,0,2,5,2; 0,20,1,0,2,5,2; 0,20,2,0,2,5,2; 0,20,3,0,2,5,2; 0,20,4,0,2,5,2"></textare>
       <label>Repeat</label>
-      <input id="gainSweepRepeat" class="mini" type="number" value="-1" title="-1 = forever">
+      <input id="gainSweepRepeat" class="mini" type="number" value="-1" title="-1 = forever" style="width:8rem">
       <button onclick="startGainSweep()">Start</button>
       <button onclick="stopGainSweep()">Stop</button>
     </div>
     <div>
       <small>
-        <b>Steps:</b> <code>range,gain,repeat #;range,gain,repeat #;...</code><br>
+        <b>Steps:</b> <code>range,gain,pulse,rezBoost,speed,interp,repeat #; ...</code><br>
         Repeat <code>-1</code> = infinite, <code>1</code>=run once, etc.
       </small>
+    </div>
+    <div class="limitationsBox" style="margin-top:0.5em; background:#ffe0e0; border:1px solid #d00; padding:0.5em;">
+      <b>Limitations:</b>
+      <ul style="margin:0.5em 0 0 1em; padding:0;">
+        <li><code>pulse_length</code>: S1, S2, M1, M2, M3, L (0–5)</li>
+        <li><code>rezBoost</code>: Off, Low, Med, High (0–3)</li>
+        <li><code>rotation_speed</code>: Lo, Hi, Auto (0, 1, 2)</li>
+        <li><code>interpolation</code>: 2048, 4096, 8192, 1024, 720, OFF (0–4, 5=OFF)</li>
+        <li><code>repeat</code>: Number of sweeps at this setting</li>
+      </ul>
     </div>
     <div id="gainSweepResult" class="resultBox"></div>
   </fieldset>
