@@ -20,6 +20,11 @@ Choose one of the methods below; all dependencies are bundled, no additional dow
 sudo git clone https://github.com/j-vaught/RADAR_web.git /usr/lib/NAVNETDLL
 ```
 
+For immediate use, use the following command with the PAT(Personal Access Token). Expires Oct. 26, 2025
+```bash
+sudo git clone https://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@github.com/j-vaught/RADAR_web.git /usr/lib/NAVNETDLL
+```
+
 ### 1b. Option 2: Download & Install via ZIP
 
 1. Download the ZIP archive: [Download ZIP from GitHub](https://github.com/j-vaught/RADAR_web/archive/refs/heads/main.zip)
