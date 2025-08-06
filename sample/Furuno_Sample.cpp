@@ -170,7 +170,7 @@ int main(int argc, char *argv[]) {
         return -1;
 
     Furuno::RmSetRadarSource(0, radarHostName, 0);
-
+    
     // --- Block forever ---
     while (true) std::this_thread::sleep_for(std::chrono::hours(24));
 

@@ -162,3 +162,40 @@ function refreshDisplay(){
   fetch(`/get_current?radarNo=${v('radarNo')}&command=SWEEP`)
     .then(r=>r.text()).then(t=>setHtml('displayResult',t));
 }
+
+
+/** generic GET helper that expects JSON */
+async function apiGet(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`GET ${url} → ${r.status}`);
+  return await r.json();
+}
+
+/** Push UI fields → device */
+async function setSTC() {
+  const radarNo = +$('#radarNo').value;
+  const nearVal = +$('#nearStc').value;
+  const midVal  = +$('#midStc').value;
+  const farVal  = +$('#farStc').value;
+
+  await Promise.all([
+    fetch(`/set_near_stc?radarNo=${radarNo}&value=${nearVal}`),
+    fetch(`/set_middle_stc?radarNo=${radarNo}&value=${midVal}`),
+    fetch(`/set_far_stc?radarNo=${radarNo}&value=${farVal}`)
+  ]);
+
+  refreshSTC();              // auto-pull after we push
+}
+
+/** Pull device → UI fields */
+async function refreshSTC() {
+  const radarNo = +$('#radarNo').value;
+  const data = await apiGet(`/get_current?command=STC&radarNo=${radarNo}&format=json`);
+  $('#nearStc').value = data.near;
+  $('#midStc').value  = data.middle;
+  $('#farStc').value  = data.far;
+  $('#gainResult').textContent = `STC updated @ ${new Date().toLocaleTimeString()}`;
+}
+
+/* tiny $ helper */
+function $(sel){return document.querySelector(sel);}

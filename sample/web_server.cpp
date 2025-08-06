@@ -463,6 +463,37 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
                 (Furuno::UINT32)0
             );
         }
+            //run this 5 times if it fails to set the STC to 0.
+    int ret1, ret2, ret3;
+    for (int attempt = 1; attempt <= 5; ++attempt) {
+        ret1  = Furuno::RmcSetNearSTC(   0, static_cast<Furuno::UINT16>(0));
+        ret2 = Furuno::RmcSetMiddleSTC( 0, static_cast<Furuno::UINT16>(0));
+        ret3 = Furuno::RmcSetFarSTC(    0, static_cast<Furuno::UINT16>(0));
+
+        if (ret1 == 0 && ret2 == 0 && ret3 == 0) {
+            // Success!
+            std::cout << "STC values set to 0 on attempt #" << attempt << std::endl;
+            break;
+        }
+
+        std::cerr << "Attempt #" << attempt 
+                << " failed: Near=" << ret1 
+                << ", Middle=" << ret2 
+                << ", Far=" << ret3 
+                << std::endl;
+
+        if (attempt < 5) {
+            // Optional back-off before retrying
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        }
+    }
+
+    if (ret != 0 || ret2 != 0 || ret3 != 0) {
+        std::cerr << "Failed to set STC values after " 
+                << 5 << " attempts." << std::endl;
+        return -1;
+    }
+
         std::string resp = "<h2>Toggle Echo</h2><p>RmcSetTxStby returned: "
             + std::to_string(ret) + "</p>";
         WriteHttpResponse(socket, resp);
@@ -731,6 +762,7 @@ static bool HandleRadarGetters(const std::string &path, boost::asio::ip::tcp::so
         auto params  = ParseQueryParams(path);
         std::string cmd   = params["command"];
         int         radar = std::stoi(params["radarNo"]);
+        bool wantsJson = params.count("format") && params["format"] == "json";
 
         // Reusable dummy vars
         Furuno::INT16  i16_1 = 0;
@@ -777,11 +809,25 @@ static bool HandleRadarGetters(const std::string &path, boost::asio::ip::tcp::so
             ret = Furuno::RmcGetNearSTC   (radar, &u16_1);
             ret = Furuno::RmcGetMiddleSTC (radar, &u16_2);
             ret = Furuno::RmcGetFarSTC    (radar, &u16_3);
+
+            if (wantsJson) {
+                std::ostringstream js;
+                js << "{"
+                << "\"near\":"   << u16_1 << ","
+                << "\"middle\":" << u16_2 << ","
+                << "\"far\":"    << u16_3 << "}";
+                WriteHttpResponse(socket, js.str(), "application/json");
+                return true;
+            }
+
             report << "<p>STC: near="  << u16_1
                 << ", middle="       << u16_2
                 << ", far="          << u16_3 << "</p>\n";
             if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
+            
+            
         }
+
 
         if (cmd == "ALL" || cmd == "ANTREV") {
             // RmcGetAntennaRevolution — roll-speed & high-RPM
