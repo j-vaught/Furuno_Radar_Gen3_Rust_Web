@@ -1,25 +1,25 @@
+# Ignore build artifacts
+*.o
+main
+
+# Data artifacts
 *.csv
 *.png
-*.gz
-*.o
-*.zst
 *.tar
-*.zip
+*.tar.gz
 *.tgz
-*.rar
-*.7z
-*.xz
-*.bz2
-*.lzma
-*.lz4
-*.lz4
-*.dmg
-*.iso
-*.img
-*.apk
-*.deb
-*.rpm
-*.msi
-*.exe
-*.dmg
-*.tar.*
+*.gz
+*.zip
+*.zst
+
+# Generated frame/data directories
+sample/data/
+sample/data_*/
+sample/frames/
+sample/frames_*/
+collected_data/
+sample_backupv1/
+
+# OS/editor files
+.DS_Store
+Thumbs.db

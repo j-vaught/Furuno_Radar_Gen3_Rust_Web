@@ -2,254 +2,157 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Furuno NXT DR-4D Control</title>
+  <title>Furuno NXT DR-4D · Controls</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-<header><h1>Furuno&nbsp;NXT&nbsp;DR-4D&nbsp;Radar Control</h1></header>
+  <header class="app-header">
+    <div class="brand">Furuno NXT DR-4D</div>
+    <nav class="app-nav">
+      <a href="/index.html" data-active="true">Controls</a>
+      <a href="/radar.html">Radar View</a>
+      <a href="/settings.html">Settings</a>
+      <a href="/status.html">System Status</a>
+    </nav>
+  </header>
 
-<main>
+  <main class="layout-home">
+    <section class="panel panel--span panel--preview-large">
+      <h2>Radar Preview</h2>
+      <img id="radarImage" class="preview preview--home" src="/newest_png" alt="No radar image">
+      <p class="small-note">Refreshing every 2 seconds. Need the big view? Jump to the <a href="/radar.html">Radar View</a>.</p>
+    </section>
 
-<!-- ========================================================== -->
-<!--  LIVE IMAGE                                                -->
-<!-- ========================================================== -->
-<div class="card full">
-  <h3>Live Radar Image</h3>
-  <img id="radarImage" src="/newest_png" alt="No radar image">
-</div>
-
-<!-- ========================================================== -->
-<!--  POWER PANEL                                               -->
-<!-- ========================================================== -->
-<div class="card">
-  <fieldset>
-    <legend>⚡ Power</legend>
-    <div class="row">
-      <label>Radar No</label>
-      <input type="number" id="radarNo" value="0" class="mini">
-      <button onclick="toggleEcho('on')">TX ON</button>
-      <button onclick="toggleEcho('off')">STBY</button>
-      <a href="#" onclick="refreshTx();return false;">🔄</a>
-    </div>
-    <div class="row" style="margin-top: 0.5em;">
-      <button onclick="beginCalibration()">Begin Calibration</button>
-      <button onclick="beginRezboostCalibration()">Begin RezBoost calibration</button>
-      <button onclick="stopCalibration()">TERMINATE</button>
-    </div>
-    <div id="txResult" class="resultBox"></div>
-  </fieldset>
-</div>
-
-
-<!-- ========================================================== -->
-<!--  GAIN SWEEP / PATTERN PANEL                                -->
-<!-- ========================================================== -->
-<div class="card calib-lock-card" id="patternCard">
-  <fieldset>
-    <legend>Gain/Range Pattern Sweep</legend>
-    <div class="row">
-      <label>Steps</label>
-      <textarea id="gainSweepSteps" class="mini" rows="10" style="height:4.5em; width:20rem;" placeholder="0,20,0,0,2,5,2; 0,20,1,0,2,5,2; 0,20,2,0,2,5,2; 0,20,3,0,2,5,2; 0,20,4,0,2,5,2"></textarea>
-      <label>Repeat</label>
-      <input id="gainSweepRepeat" class="mini" type="number" value="-1" title="-1 = forever" style="width:8rem">
-      <button onclick="startGainSweep()">Start</button>
-      <button onclick="stopGainSweep()">Stop</button>
-    </div>
-    <div>
-      <small>
-        <b>Steps:</b> <code>range,gain,pulse,rezBoost,speed,interp,repeat #; ...</code><br>
-        Repeat <code>-1</code> = infinite, <code>1</code>=run once, etc.
-      </small>
-    </div>
-    <div class="limitationsBox" style="margin-top:0.5em; background:#ffe0e0; border:1px solid #d00; padding:0.5em;">
-      <b>Limitations:</b>
-      <ul style="margin:0.5em 0 0 1em; padding:0;">
-        <li><code>pulse_length</code>: S1, S2, M1, M2, M3, L (0–5)</li>
-        <li><code>rezBoost</code>: Off, Low, Med, High (0–3)</li>
-        <li><code>rotation_speed</code>: Lo, Hi, Auto (0, 1, 2)</li>
-        <li><code>interpolation</code>: 2048, 4096, 8192, 1024, 720, OFF (0–4, 5=OFF)</li>
-        <li><code>repeat</code>: Number of sweeps at this setting</li>
-      </ul>
-    </div>
-    <div id="gainSweepResult" class="resultBox"></div>
-  </fieldset>
-</div>
-
-
-<!-- ========================================================== -->
-<!--  RANGE / PULSE PANEL                                       -->
-<!-- ========================================================== -->
-<div class="card calib-lock-card" id="rangeCard">
-  <fieldset>
-    <legend>Range & Pulse</legend>
-
-    <!-- quick combo -->
-    <div class="row">
-      <label>Range</label>
-      <select id="rangeIndex">
-        <option value="21">0.0625 NM</option><option value="0" selected>0.125 NM</option>
-        <option value="1">0.25 NM</option><option value="2">0.5 NM</option>
-        <option value="3">0.75 NM</option><option value="4">1 NM</option>
-        <option value="5">1.5 NM</option><option value="6">2 NM</option>
-        <option value="7">3 NM</option><option value="8">4 NM</option>
-        <option value="9">6 NM</option><option value="10">8 NM</option>
-        <option value="11">12 NM</option><option value="12">16 NM</option>
-        <option value="13">24 NM</option><option value="14">32 NM</option>
-        <option value="19">36 NM</option>
-      </select>
-
-      <label>Pulse</label>
-      <select id="pwPulse">
-        <option value="0">S1</option><option value="1">S2</option>
-        <option value="2">M1</option><option value="3">M2</option>
-        <option value="4">M3</option><option value="5">L</option>
-      </select>
-
-      <button onclick="applyRangePulse()">Apply Both</button>
-      <a href="#" onclick="refreshRange();return false;">🔄</a>
-    </div>
-
-    <!-- individual controls -->
-    <details>
-      <summary>More&hellip;</summary>
-      <div class="row">
-        <button onclick="setRange()">Set&nbsp;Range&nbsp;only</button>
-        <button onclick="setPulse()">Set&nbsp;Pulse&nbsp;only</button>
+    <section class="panel calib-lock-card">
+      <h2>Quick Controls</h2>
+      <p class="small-note">Toggle power and adjust range, pulse, gain, or RezBoost. Radar number defaults to <strong>0</strong>; change it in <a href="/settings.html">Settings</a> if needed.</p>
+      <input type="hidden" id="radarNo" value="0">
+      <div class="stack">
+        <label class="small-note" style="font-weight:600; color:var(--text-strong);">Power</label>
+        <div class="inline-actions inline-actions--nowrap">
+          <button class="btn-on" onclick="toggleEcho('on')">ON</button>
+          <button class="btn-off" onclick="toggleEcho('off')">OFF</button>
+          <button class="secondary" onclick="refreshTx()">Refresh</button>
+        </div>
       </div>
-    </details>
+      <div id="txResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
 
-    <div id="rangeResult" class="resultBox"></div>
-  </fieldset>
-</div>
+      <hr style="border:none; border-top:1px solid var(--border); margin:1rem 0;">
 
-<!-- ========================================================== -->
-<!--  GAIN PANEL                                                -->
-<!-- ========================================================== -->
-<div class="card calib-lock-card" id="gainCard">
-  <fieldset>
-    <legend>Gain</legend>
-
-    <div class="row">
-      <label>Manual (0-100)</label>
-      <input type="number" id="gainManual" value="50" min="0" max="100" class="mini">
-      <button onclick="setGainManual()">Set</button>
-      <a href="#" onclick="refreshGain();return false;">🔄</a>
-    </div>
-
-    <details>
-      <summary>Auto / A-C SEA / A-C RAIN / STC</summary>
-
-      <!-- auto gain -->
-      <div class="row">
-        <label>Auto value</label><input id="gainAuto" type="number" value="30" min="0" max="100" class="mini">
-        <button onclick="setGainAuto()">Set Auto</button>
+      <div class="stack">
+        <label for="rangeIndex">Range</label>
+        <select id="rangeIndex">
+          <option value="0">0.125 NM</option>
+          <option value="1">0.25 NM</option>
+          <option value="2">0.5 NM</option>
+          <option value="3">0.75 NM</option>
+          <option value="4">1 NM</option>
+          <option value="5">1.5 NM</option>
+          <option value="6">2 NM</option>
+          <option value="7">3 NM</option>
+          <option value="8">4 NM</option>
+          <option value="9">6 NM</option>
+          <option value="10">8 NM</option>
+          <option value="11">12 NM</option>
+          <option value="12">16 NM</option>
+          <option value="13">24 NM</option>
+          <option value="14">32 NM</option>
+          <option value="19">36 NM</option>
+          <option value="21">0.0625 NM</option>
+        </select>
+        <div class="inline-actions">
+          <button class="primary" onclick="setRange()">Set range</button>
+          <button class="secondary" onclick="refreshRange()">Refresh</button>
+        </div>
+        <div id="rangeResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
       </div>
 
-      <!-- STC -->
-      <div class="row">
-        <label>STC near</label><input id="nearStc"  type="number" ...>
-        <label>mid</label>       <input id="midStc"   type="number" ...>
-        <label>far</label>       <input id="farStc"   type="number" ...>
-        <button onclick="setSTC()">Set STC</button>
-        <a href="#" onclick="refreshSTC();return false;">🔄</a>   <!-- NEW -->
+      <div class="stack">
+        <label for="pwPulse">Pulse</label>
+        <select id="pwPulse">
+          <option value="0">S1</option>
+          <option value="1">S2</option>
+          <option value="2">M1</option>
+          <option value="3">M2</option>
+          <option value="4">M3</option>
+          <option value="5">L</option>
+        </select>
+        <div class="inline-actions">
+          <button class="primary" onclick="setPulse()">Set pulse</button>
+        </div>
       </div>
 
-      <!-- A/C SEA -->
-      <div class="row">
-        <label>SEA M/A</label>
-        <input id="seaMan" type="number" value="20" min="0" max="100" class="mini">
-        <input id="seaAuto" type="number" value="30" min="0" max="100" class="mini">
-        <button onclick="setACSEA()">Set SEA</button>
+      <div class="stack">
+        <label for="gainManual">Manual gain</label>
+        <input type="number" id="gainManual" value="50" min="0" max="100">
+        <div class="inline-actions">
+          <button class="primary" onclick="setGainManual()">Apply</button>
+          <button class="secondary" onclick="refreshGain()">Refresh</button>
+        </div>
+        <div id="gainResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
       </div>
 
-      <!-- A/C RAIN -->
-      <div class="row">
-        <label>RAIN M/A</label>
-        <input id="rainMan" type="number" value="40" min="0" max="100" class="mini">
-        <input id="rainAuto" type="number" value="50" min="0" max="100" class="mini">
-        <button onclick="setACRAIN()">Set RAIN</button>
+      <div class="stack">
+        <label for="rezboostMode">RezBoost</label>
+        <select id="rezboostMode">
+          <option value="0">Off</option>
+          <option value="1">Low</option>
+          <option value="2">Medium</option>
+          <option value="3">High</option>
+        </select>
+        <div class="inline-actions">
+          <button class="primary" onclick="setRezBoost()">Apply</button>
+          <button class="secondary" onclick="refreshRezBoost()">Refresh</button>
+        </div>
+        <div id="rezboostResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
       </div>
-    </details>
 
-    <div id="gainResult" class="resultBox"></div>
-  </fieldset>
-</div>
-<!-- ========================================================== -->
-<!--  REZBOOST / BEARING RESOLUTION PANEL                       -->
-<!-- ========================================================== -->
-<div class="card calib-lock-card" id="rezboostCard">
-  <fieldset>
-    <legend>RezBoost (Bearing Resolution)</legend>
-    <div class="row">
-      <label for="rezboostMode">Mode</label>
-      <select id="rezboostMode">
-        <option value="0">Off</option>
-        <option value="1">Low</option>
-        <option value="2">Medium</option>
-        <option value="3" selected>High</option>
-      </select>
-      <button onclick="setRezBoost()">Apply</button>
-      <button onclick="refreshRezBoost()">🔄</button>
-    </div>
-    <div id="rezboostResult" class="resultBox"></div>
-  </fieldset>
-</div>
+      <p class="small-note">Need calibration routines or advanced clutter settings? Visit the <a href="/settings.html">Settings</a> page.</p>
+    </section>
 
-<!-- ========================================================== -->
-<!--  DISPLAY PANEL                                             -->
-<!-- ========================================================== -->
-<div class="card calib-lock-card" id="displayCard">
-  <fieldset>
-    <legend>Display</legend>
-    <div class="row">
-      <label>Sweep lines</label>
-      <select id="sweepMode">
-        <option value="3" selected>1024</option>
-        <option value="0">2048</option><option value="1">4096</option>
-        <option value="2">8192</option><option value="4">720</option>
-      </select>
-
-      <label>Interpolation</label>
-      <select id="interpEnable">
-        <option value="1" selected>On</option><option value="0">Off</option>
-      </select>
-
-      <button onclick="applySweepInterp()">Apply</button>
-      <a href="#" onclick="refreshDisplay();return false;">🔄</a>
-    </div>
-
-    <details>
-      <summary>Antenna RPM</summary>
-      <div class="row">
-        <label>HI RPM</label>
-        <select id="hiRpm"><option value="0">Off</option><option value="1">On</option></select>
-        <label>RollSpd</label>
-        <select id="rollSpd"><option value="2">Auto</option><option value="0">LO</option><option value="1">HI</option></select>
-        <button onclick="setAntennaRev()">Set</button>
+    <section class="panel calib-lock-card">
+      <h2>Pattern Loader</h2>
+      <p class="small-note">Upload a pattern file to run it immediately or queue it for later.</p>
+      <div class="stack">
+        <label for="patternFile">Pattern file</label>
+        <input id="patternFile" type="file" accept=".txt,.csv">
       </div>
-    </details>
+      <div class="grid grid--two">
+        <div class="stack">
+          <label for="patternRepeat">Repeat count</label>
+          <input id="patternRepeat" type="number" value="1" min="-1" step="1" title="-1 = infinite loop">
+        </div>
+        <div class="stack">
+          <label for="patternLabel">Pattern name</label>
+          <input id="patternLabel" type="text" placeholder="Optional label">
+        </div>
+      </div>
+      <div class="inline-actions">
+        <button class="primary" onclick="loadPatternFromFile()">Load file</button>
+        <button class="secondary" onclick="startGainSweep()">Run now</button>
+        <button class="secondary" onclick="addPatternToQueue()">Add to queue</button>
+      </div>
+      <div class="inline-actions">
+        <button class="secondary" onclick="startPatternQueue()">Run queue</button>
+        <button class="destructive" onclick="stopGainSweep()">Stop running</button>
+        <button class="secondary" onclick="clearPatternQueue()">Clear queue</button>
+      </div>
+      <div id="patternStatus" class="callout" data-variant="info" role="status" aria-live="polite">Choose a pattern file, set how many repeats you want (use -1 for endless), then run now or add it to the queue.</div>
+      <div class="stack">
+        <div class="queue-heading">
+          <span class="queue-heading__title">Queue</span>
+          <span class="small-note">Patterns run in the order shown.</span>
+        </div>
+        <ul id="patternQueueList" class="list-plain"></ul>
+      </div>
+      <div id="patternRunResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+    </section>
+  </main>
 
-    <div id="displayResult" class="resultBox"></div>
-  </fieldset>
-</div>
+  <footer>
+    Need deeper configuration? Visit the Settings page for gain, rezboost, and display controls. System metrics live under System Status.
+  </footer>
 
-
-
-</main>
-
-<!-- ========================================================== -->
-<!-- INFO OVERLAY                                               -->
-<!-- ========================================================== -->
-<div id="infoIcon">ℹ️</div>
-<div id="infoCard">
-  <div class="info-header"><span>System Info</span><button id="closeInfo">&times;</button></div>
-  <div class="info-content">
-    <p>Newest PNG: <span id="newestPng">–</span></p>
-  </div>
-</div>
-
-<!-- ========================================================== -->
-<!-- JAVASCRIPT                                                 -->
-<!-- ========================================================== -->
-<script src="/script.js" defer></script>
-</body></html>
+  <script src="/script.js" defer></script>
+</body>
+</html>

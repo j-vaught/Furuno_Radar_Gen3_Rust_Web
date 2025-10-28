@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Furuno NXT DR-4D · Settings</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">Furuno NXT DR-4D</div>
+    <nav class="app-nav">
+      <a href="/index.html">Controls</a>
+      <a href="/radar.html">Radar View</a>
+      <a href="/settings.html" data-active="true">Settings</a>
+      <a href="/status.html">System Status</a>
+    </nav>
+  </header>
+
+  <main class="layout-two">
+    <section class="panel">
+      <h2>Radar Context</h2>
+      <div class="stack">
+        <label for="radarNo">Radar No.</label>
+        <input type="number" id="radarNo" value="0" min="0">
+      </div>
+      <p class="small-note">Set once and the value will be used across all commands on this page.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Device Snapshot</h2>
+      <img id="radarImage" class="preview preview--small" src="/newest_png" alt="No radar image">
+      <p class="small-note">Static preview for context. Use Radar View for live monitoring.</p>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>Power Control</h2>
+      <p class="small-note">Use the radar number above, then toggle power or refresh the current state.</p>
+      <div class="inline-actions inline-actions--nowrap">
+        <button class="btn-on" onclick="toggleEcho('on')">ON</button>
+        <button class="btn-off" onclick="toggleEcho('off')">OFF</button>
+        <button class="secondary" onclick="refreshTx()">Refresh</button>
+      </div>
+      <div id="txResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>Range &amp; Pulse</h2>
+      <p class="small-note">Adjust range and pulse independently or apply both together.</p>
+      <div class="stack">
+        <label for="rangeIndex">Range</label>
+        <div class="inline-actions inline-actions--nowrap">
+          <select id="rangeIndex">
+            <option value="0">0.125 NM</option>
+            <option value="1">0.25 NM</option>
+            <option value="2">0.5 NM</option>
+            <option value="3">0.75 NM</option>
+            <option value="4">1 NM</option>
+            <option value="5">1.5 NM</option>
+            <option value="6">2 NM</option>
+            <option value="7">3 NM</option>
+            <option value="8">4 NM</option>
+            <option value="9">6 NM</option>
+            <option value="10">8 NM</option>
+            <option value="11">12 NM</option>
+            <option value="12">16 NM</option>
+            <option value="13">24 NM</option>
+            <option value="14">32 NM</option>
+            <option value="19">36 NM</option>
+            <option value="21">0.0625 NM</option>
+          </select>
+          <button class="primary" onclick="setRange()">Set</button>
+          <button class="secondary" onclick="refreshRange()">Refresh</button>
+        </div>
+      </div>
+      <div class="stack">
+        <label for="pwPulse">Pulse</label>
+        <div class="inline-actions inline-actions--nowrap">
+          <select id="pwPulse">
+            <option value="0">S1</option>
+            <option value="1">S2</option>
+            <option value="2">M1</option>
+            <option value="3">M2</option>
+            <option value="4">M3</option>
+            <option value="5">L</option>
+          </select>
+          <button class="primary" onclick="setPulse()">Set</button>
+          <button class="secondary" onclick="applyRangePulse()">Apply both</button>
+        </div>
+      </div>
+      <div id="rangeResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>Calibration Tools</h2>
+      <div class="stack">
+        <label>Calibration cycles</label>
+        <div class="inline-actions">
+          <button class="secondary" onclick="beginCalibration()">Begin standard</button>
+          <button class="secondary" onclick="beginRezboostCalibration()">RezBoost routine</button>
+          <button class="destructive" onclick="stopCalibration()">Terminate</button>
+        </div>
+      </div>
+      <details>
+        <summary>Pattern Utilities</summary>
+        <div class="stack" style="margin-top:0.75rem;">
+          <p class="small-note">Use the Controls page for custom pattern uploads. Stock patterns supplied with firmware are started from there as well.</p>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>Pattern Loader</h2>
+      <p class="small-note">Upload a pattern file or paste steps directly. Format: <code>range,gain,pulse,rezboost,speed,interp,repeat</code> separated by semicolons.</p>
+      <div class="stack">
+        <label for="patternFile">Pattern file</label>
+        <input id="patternFile" type="file" accept=".txt,.csv">
+      </div>
+      <div class="stack">
+        <label for="patternTextarea">Paste pattern steps</label>
+        <textarea id="patternTextarea" placeholder="0,20,0,0,2,5,2; 0,20,1,0,2,5,2" rows="4"></textarea>
+      </div>
+      <div class="grid grid--two">
+        <div class="stack">
+          <label for="patternRepeat">Repeat count</label>
+          <input id="patternRepeat" type="number" value="1" min="-1" step="1" title="-1 = infinite loop">
+        </div>
+        <div class="stack">
+          <label for="patternLabel">Pattern name</label>
+          <input id="patternLabel" type="text" placeholder="Optional label">
+        </div>
+      </div>
+      <div class="inline-actions">
+        <button class="primary" onclick="loadPatternFromFile()">Load file</button>
+        <button class="secondary" onclick="loadPatternFromTextarea()">Use pasted steps</button>
+        <button class="secondary" onclick="startGainSweep()">Run now</button>
+        <button class="secondary" onclick="addPatternToQueue()">Add to queue</button>
+      </div>
+      <div class="inline-actions">
+        <button class="secondary" onclick="startPatternQueue()">Run queue</button>
+        <button class="destructive" onclick="stopGainSweep()">Stop running</button>
+        <button class="secondary" onclick="clearPatternQueue()">Clear queue</button>
+      </div>
+      <div id="patternStatus" class="callout" data-variant="info" role="status" aria-live="polite">
+        <h2>Pattern format</h2>
+        <p><code>range</code> (0-21), <code>gain</code> (0-99), <code>pulse</code> (0=S1 … 5=L), <code>rezboost</code> (0=Off…3=High), <code>speed</code> (0=Lo,1=Hi,2=Auto), <code>interp</code> (0=2048,1=4096,2=8192,3=1024,4=720,5=Off), <code>repeat</code> (sweeps at this setting).</p>
+        <p>Separate steps with semicolons. Example:<br><code>0,20,0,0,2,5,2; 0,25,1,1,2,0,3</code></p>
+        <p>For files, use one step per line or semicolons; both are accepted.</p>
+      </div>
+      <div class="stack">
+        <div class="queue-heading">
+          <span class="queue-heading__title">Queue</span>
+          <span class="small-note">Patterns run in the order shown.</span>
+        </div>
+        <ul id="patternQueueList" class="list-plain"></ul>
+      </div>
+      <div id="patternRunResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>RezBoost &amp; Display Defaults</h2>
+      <div class="stack">
+        <label for="rezboostMode">RezBoost baseline</label>
+        <select id="rezboostMode">
+          <option value="0">Off</option>
+          <option value="1">Low</option>
+          <option value="2">Medium</option>
+          <option value="3" selected>High</option>
+        </select>
+        <div class="inline-actions">
+          <button class="secondary" onclick="setRezBoost()">Apply</button>
+          <button class="secondary" onclick="refreshRezBoost()">Read current</button>
+        </div>
+      </div>
+      <div class="stack">
+        <label for="sweepMode">Sweep lines</label>
+        <select id="sweepMode">
+          <option value="3">1024</option>
+          <option value="0">2048</option>
+          <option value="1">4096</option>
+          <option value="2">8192</option>
+          <option value="4">720</option>
+        </select>
+      </div>
+      <div class="stack">
+        <label for="interpEnable">Interpolation</label>
+        <select id="interpEnable">
+          <option value="1">Always on</option>
+          <option value="0">Off</option>
+        </select>
+      </div>
+      <div class="inline-actions">
+        <button class="secondary" onclick="applySweepInterp()">Apply display</button>
+        <button class="secondary" onclick="refreshDisplay()">Read current</button>
+      </div>
+      <div id="rezboostResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+      <div id="displaySweepResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>Antenna Speed</h2>
+      <p class="small-note">Control rotation speed and high-RPM mode.</p>
+      <div class="stack">
+        <label for="rollSpd">Rotation speed</label>
+        <div class="inline-actions inline-actions--nowrap">
+          <select id="rollSpd">
+            <option value="2">Auto</option>
+            <option value="0">Low</option>
+            <option value="1">High</option>
+          </select>
+          <button class="primary" onclick="setAntennaRev()">Apply</button>
+          <button class="secondary" onclick="refreshDisplay()">Refresh</button>
+        </div>
+      </div>
+      <div class="stack">
+        <label for="hiRpm">High RPM mode</label>
+        <div class="inline-actions inline-actions--nowrap">
+          <select id="hiRpm">
+            <option value="0">Off</option>
+            <option value="1">On</option>
+          </select>
+        </div>
+      </div>
+      <div id="antennaResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>Gain &amp; Clutter</h2>
+      <div class="grid grid--two">
+        <div class="stack">
+          <label for="gainManual">Manual gain</label>
+          <input type="number" id="gainManual" value="50" min="0" max="100">
+          <button class="secondary" onclick="setGainManual()">Apply manual</button>
+        </div>
+        <div class="stack">
+          <label for="gainAuto">Auto gain</label>
+          <input type="number" id="gainAuto" value="30" min="0" max="100">
+          <button class="secondary" onclick="setGainAuto()">Apply auto</button>
+        </div>
+      </div>
+      <div class="grid grid--two">
+        <div class="stack">
+          <label for="nearStc">STC near</label>
+          <input id="nearStc" type="number" value="0">
+        </div>
+        <div class="stack">
+          <label for="midStc">STC mid</label>
+          <input id="midStc" type="number" value="0">
+        </div>
+        <div class="stack">
+          <label for="farStc">STC far</label>
+          <input id="farStc" type="number" value="0">
+        </div>
+      </div>
+      <div class="inline-actions">
+        <button class="secondary" onclick="setSTC()">Apply STC</button>
+        <button class="secondary" onclick="refreshSTC()">Read STC</button>
+      </div>
+      <div class="grid grid--two">
+        <div class="stack">
+          <label for="seaMan">A/C SEA manual</label>
+          <input id="seaMan" type="number" value="20" min="0" max="100">
+          <label for="seaAuto" class="small-note">Auto</label>
+          <input id="seaAuto" type="number" value="30" min="0" max="100">
+          <button class="secondary" onclick="setACSEA()">Apply SEA</button>
+        </div>
+        <div class="stack">
+          <label for="rainMan">A/C RAIN manual</label>
+          <input id="rainMan" type="number" value="40" min="0" max="100">
+          <label for="rainAuto" class="small-note">Auto</label>
+          <input id="rainAuto" type="number" value="50" min="0" max="100">
+          <button class="secondary" onclick="setACRAIN()">Apply RAIN</button>
+        </div>
+      </div>
+      <button class="secondary" onclick="refreshGain()">Refresh gain state</button>
+      <div id="gainResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer>
+    Settings consolidate less-frequent adjustments so the main Controls page can stay focused on operations.
+  </footer>
+
+  <script src="/script.js" defer></script>
+</body>
+</html>

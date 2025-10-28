@@ -10,6 +10,7 @@
 #include <string>
 #include <iostream>
 #include <map>
+#include <vector>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
@@ -19,6 +20,15 @@
 #include <condition_variable>
 #include <iomanip>
 #include <cctype>
+#include <algorithm>
+#include <utility>
+#include <numeric>
+#include <sys/statvfs.h>
+#include <sys/sysinfo.h>
+#include <unistd.h>
+#include <chrono>
+#include <optional>
+#include <cstdio>
 
 
 namespace Furuno {
@@ -48,6 +58,7 @@ extern std::atomic<bool> patternActive;
 extern void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepeats = -1);
 extern void StopPattern();
 extern void RunPattern(const std::vector<ControlStep>& pattern, int numRepeats = -1);
+extern void RunPatternSequence(const std::vector<std::pair<std::vector<ControlStep>, int>>& sequence);
 extern std::vector<RangeGainStep> GenerateRampPattern(const std::vector<uint16_t>& ranges, uint16_t gainStart, uint16_t gainEnd, uint16_t repeatCount);
 extern std::vector<ControlStep> GeneratePattern(
     const std::vector<uint16_t>& ranges,
@@ -105,6 +116,363 @@ static std::map<std::string, std::string> ParseQueryParams(const std::string &pa
     return params;
 }
 
+static bool IsValidControlStep(const ControlStep& s);
+static std::string UrlDecode(const std::string& str);
+
+static std::map<std::string, std::string> ParseFormUrlEncoded(const std::string& body) {
+    std::map<std::string, std::string> params;
+    size_t start = 0;
+    while (start < body.size()) {
+        const auto ampPos = body.find('&', start);
+        const std::string pair = body.substr(
+            start, (ampPos == std::string::npos) ? std::string::npos : ampPos - start);
+        if (!pair.empty()) {
+            const auto eqPos = pair.find('=');
+            if (eqPos != std::string::npos) {
+                const std::string key = pair.substr(0, eqPos);
+                const std::string val = pair.substr(eqPos + 1);
+                params[UrlDecode(key)] = UrlDecode(val);
+            } else {
+                params[UrlDecode(pair)] = "";
+            }
+        }
+        if (ampPos == std::string::npos) {
+            break;
+        }
+        start = ampPos + 1;
+    }
+    return params;
+}
+
+static std::string TrimCopy(const std::string& s) {
+    auto itFront = std::find_if_not(s.begin(), s.end(), [](unsigned char ch) {
+        return std::isspace(ch);
+    });
+    auto itBack = std::find_if_not(s.rbegin(), s.rend(), [](unsigned char ch) {
+        return std::isspace(ch);
+    }).base();
+    if (itFront >= itBack) {
+        return std::string();
+    }
+    return std::string(itFront, itBack);
+}
+
+static std::vector<std::string> TokenizeStepString(const std::string& raw) {
+    std::vector<std::string> tokens;
+    std::string current;
+    auto flush = [&]() {
+        std::string trimmed = TrimCopy(current);
+        if (!trimmed.empty()) {
+            tokens.push_back(std::move(trimmed));
+        }
+        current.clear();
+    };
+
+    for (char ch : raw) {
+        if (ch == '\r') {
+            continue;
+        }
+        if (ch == '\n' || ch == ';') {
+            flush();
+        } else {
+            current.push_back(ch);
+        }
+    }
+    flush();
+    return tokens;
+}
+
+static bool ParseControlStepsString(const std::string& rawSteps,
+                                    std::vector<ControlStep>& pattern,
+                                    int& validSteps,
+                                    int& invalidSteps) {
+    pattern.clear();
+    validSteps = 0;
+    invalidSteps = 0;
+
+    const auto tokens = TokenizeStepString(rawSteps);
+    int idx = 0;
+    for (const auto& token : tokens) {
+        std::stringstream itemss(token);
+        std::string val;
+        std::vector<int> nums;
+        while (std::getline(itemss, val, ',')) {
+            const std::string trimmed = TrimCopy(val);
+            if (trimmed.empty()) {
+                continue;
+            }
+            try {
+                nums.push_back(std::stoi(trimmed));
+            } catch (const std::exception& e) {
+                std::cerr << "[ERROR] stoi failed on '" << trimmed
+                          << "' (step #" << idx << "): " << e.what() << "\n";
+                ++invalidSteps;
+                nums.clear();
+                break;
+            }
+        }
+
+        if (nums.size() == 7) {
+            ControlStep cs{
+                static_cast<uint16_t>(nums[0]),
+                static_cast<uint16_t>(nums[1]),
+                static_cast<uint16_t>(nums[2]),
+                static_cast<uint16_t>(nums[3]),
+                static_cast<uint16_t>(nums[4]),
+                static_cast<uint16_t>(nums[5]),
+                static_cast<uint16_t>(nums[6])
+            };
+            if (IsValidControlStep(cs)) {
+                pattern.push_back(cs);
+                ++validSteps;
+            } else {
+                ++invalidSteps;
+            }
+        } else if (!nums.empty()) {
+            ++invalidSteps;
+            std::cerr << "[WARN]   Invalid step, expected 7 values but got "
+                      << nums.size() << " for token '" << token << "'\n";
+        }
+        ++idx;
+    }
+    return !pattern.empty();
+}
+
+static int DecodeBase64Char(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    if (c == '=') return -2;
+    return -1;
+}
+
+static bool Base64Decode(const std::string& input, std::string& output) {
+    output.clear();
+    int val = 0;
+    int bits = -8;
+    for (unsigned char c : input) {
+        if (std::isspace(c)) {
+            continue;
+        }
+        const int decoded = DecodeBase64Char(static_cast<char>(c));
+        if (decoded == -1) {
+            return false;
+        }
+        if (decoded == -2) {
+            break; // padding reached
+        }
+        val = (val << 6) + decoded;
+        bits += 6;
+        if (bits >= 0) {
+            output.push_back(static_cast<char>((val >> bits) & 0xFF));
+            val &= (1 << bits) - 1;
+            bits -= 8;
+        }
+    }
+    return true;
+}
+
+static std::optional<double> ReadTemperatureCelsius() {
+    const std::vector<std::string> candidates = {
+        "/sys/class/thermal/thermal_zone0/temp",
+        "/sys/class/hwmon/hwmon0/temp1_input"
+    };
+    for (const auto& path : candidates) {
+        std::ifstream ifs(path);
+        if (!ifs.is_open()) continue;
+        double milli = 0.0;
+        ifs >> milli;
+        if (ifs.fail()) continue;
+        return milli / 1000.0;
+    }
+    return std::nullopt;
+}
+
+static double Clamp01(double value) {
+    if (value < 0.0) return 0.0;
+    if (value > 1.0) return 1.0;
+    return value;
+}
+
+static std::string BuildSystemMetricsJson() {
+    // CPU usage per core
+    static std::vector<std::pair<unsigned long long, unsigned long long>> lastCpuTotals;
+    std::vector<double> coreUsages;
+    {
+        std::ifstream stat("/proc/stat");
+        std::string line;
+        while (std::getline(stat, line)) {
+            if (line.rfind("cpu", 0) != 0) {
+                continue;
+            }
+            if (line.size() < 4 || !std::isdigit(line[3])) {
+                continue; // skip aggregate line
+            }
+            std::istringstream iss(line);
+            std::string label;
+            unsigned long long user=0, nice=0, system=0, idle=0, iowait=0, irq=0, softirq=0, steal=0, guest=0, guestnice=0;
+            iss >> label >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal >> guest >> guestnice;
+            unsigned long long idleAll = idle + iowait;
+            unsigned long long nonIdle = user + nice + system + irq + softirq + steal;
+            unsigned long long total = idleAll + nonIdle;
+            size_t index = static_cast<size_t>(std::stoul(label.substr(3)));
+            if (lastCpuTotals.size() <= index) {
+                lastCpuTotals.resize(index + 1, {0, 0});
+            }
+            double usage = 0.0;
+            auto [prevTotal, prevIdle] = lastCpuTotals[index];
+            if (prevTotal != 0 || prevIdle != 0) {
+                unsigned long long totald = total - prevTotal;
+                unsigned long long idled = idleAll - prevIdle;
+                if (totald > 0) {
+                    usage = Clamp01(static_cast<double>(totald - idled) / static_cast<double>(totald));
+                }
+            }
+            lastCpuTotals[index] = {total, idleAll};
+            if (coreUsages.size() <= index) {
+                coreUsages.resize(index + 1, 0.0);
+            }
+            coreUsages[index] = usage;
+        }
+    }
+    double cpuPercent = 0.0;
+    if (!coreUsages.empty()) {
+        cpuPercent = std::accumulate(coreUsages.begin(), coreUsages.end(), 0.0) / static_cast<double>(coreUsages.size());
+    }
+
+    // Memory usage
+    double memPercent = 0.0;
+    {
+        std::ifstream meminfo("/proc/meminfo");
+        std::string line;
+        double memTotalKb = 0.0;
+        double memFreeKb = 0.0;
+        double buffersKb = 0.0;
+        double cachedKb = 0.0;
+        double sreclaimKb = 0.0;
+        while (std::getline(meminfo, line)) {
+            double value = 0.0;
+            if (std::sscanf(line.c_str(), "MemTotal: %lf", &value) == 1) {
+                memTotalKb = value;
+            } else if (std::sscanf(line.c_str(), "MemFree: %lf", &value) == 1) {
+                memFreeKb = value;
+            } else if (std::sscanf(line.c_str(), "Buffers: %lf", &value) == 1) {
+                buffersKb = value;
+            } else if (std::sscanf(line.c_str(), "Cached: %lf", &value) == 1) {
+                cachedKb = value;
+            } else if (std::sscanf(line.c_str(), "SReclaimable: %lf", &value) == 1) {
+                sreclaimKb = value;
+            }
+        }
+        if (memTotalKb > 0.0) {
+            double availableKb = memFreeKb + buffersKb + cachedKb + sreclaimKb;
+            double usedKb = memTotalKb - availableKb;
+            memPercent = Clamp01(usedKb / memTotalKb);
+        }
+    }
+    if (memPercent <= 0.0) {
+        struct sysinfo info;
+        if (sysinfo(&info) == 0) {
+            double total = static_cast<double>(info.totalram) * info.mem_unit;
+            double free = static_cast<double>(info.freeram) * info.mem_unit;
+            double buffers = static_cast<double>(info.bufferram) * info.mem_unit;
+            double used = total - (free + buffers);
+            if (total > 0.0) {
+                memPercent = Clamp01(used / total);
+            }
+        }
+    }
+
+    // Storage usage
+    const std::vector<std::string> storageCandidates = {"frames", "data", "."};
+    double storagePercent = 0.0;
+    std::string storagePath = ".";
+    for (const auto& path : storageCandidates) {
+        struct statvfs vfs {};
+        if (statvfs(path.c_str(), &vfs) == 0) {
+            double total = static_cast<double>(vfs.f_blocks) * vfs.f_frsize;
+            double free = static_cast<double>(vfs.f_bfree) * vfs.f_frsize;
+            double used = total - free;
+            if (total > 0.0) {
+                storagePercent = Clamp01(used / total);
+                storagePath = path;
+                break;
+            }
+        }
+    }
+
+    // Network throughput (MB/s)
+    static auto lastSampleTime = std::chrono::steady_clock::now();
+    static unsigned long long lastRx = 0;
+    static unsigned long long lastTx = 0;
+
+    unsigned long long totalRx = 0;
+    unsigned long long totalTx = 0;
+    std::ifstream netifs("/proc/net/dev");
+    if (netifs.is_open()) {
+        std::string line;
+        std::getline(netifs, line);
+        std::getline(netifs, line);
+        while (std::getline(netifs, line)) {
+            std::istringstream iss(line);
+            std::string iface;
+            if (!(iss >> iface)) continue;
+            if (iface.back() == ':') iface.pop_back();
+            if (iface == "lo") continue;
+            unsigned long long rxBytes = 0;
+            unsigned long long txBytes = 0;
+            if (!(iss >> rxBytes)) continue;
+            for (int i = 0; i < 7; ++i) {
+                iss >> line;
+            }
+            if (!(iss >> txBytes)) continue;
+            totalRx += rxBytes;
+            totalTx += txBytes;
+        }
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsed = now - lastSampleTime;
+    double rxMbps = 0.0;
+    double txMbps = 0.0;
+    if (elapsed.count() > 0.0 && lastRx != 0 && lastTx != 0) {
+        double rxDelta = static_cast<double>(totalRx - lastRx);
+        double txDelta = static_cast<double>(totalTx - lastTx);
+        rxMbps = (rxDelta / (1024.0 * 1024.0)) / elapsed.count();
+        txMbps = (txDelta / (1024.0 * 1024.0)) / elapsed.count();
+    }
+    lastSampleTime = now;
+    lastRx = totalRx;
+    lastTx = totalTx;
+
+    auto tempOpt = ReadTemperatureCelsius();
+
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(3);
+    oss << "{";
+    oss << "\"cpu_load\":" << cpuPercent << ",";
+    oss << "\"cpu_count\":" << coreUsages.size() << ",";
+    oss << "\"cpu_cores\":[";
+    for (size_t i = 0; i < coreUsages.size(); ++i) {
+        if (i) oss << ',';
+        oss << coreUsages[i];
+    }
+    oss << "],";
+    oss << "\"memory_used\":" << memPercent << ",";
+    oss << "\"storage_used\":" << storagePercent << ",";
+    oss << "\"storage_path\":\"" << storagePath << "\",";
+    oss << "\"network_rx_mbps\":" << rxMbps << ",";
+    oss << "\"network_tx_mbps\":" << txMbps << ",";
+    if (tempOpt.has_value()) {
+        oss << "\"temperature_c\":" << *tempOpt;
+    } else {
+        oss << "\"temperature_c\":null";
+    }
+    oss << "}";
+    return oss.str();
+}
 // Write a minimal HTTP response to the socket
 static void WriteHttpResponse(boost::asio::ip::tcp::socket &socket,
                               const std::string &body,
@@ -227,8 +595,20 @@ void StartWebServerThread() {
 //  STATIC ASSETS HANDLING
 // ================================
 static bool HandleStaticAssets(const std::string &path, boost::asio::ip::tcp::socket &socket){
-    if (path == "/") {
+    if (path == "/" || path == "/index" || path == "/index.html") {
         WriteHttpResponse(socket, LoadFileContent("index.html"));
+        return true;
+    }
+    if (path == "/radar" || path == "/radar.html") {
+        WriteHttpResponse(socket, LoadFileContent("radar.html"));
+        return true;
+    }
+    if (path == "/settings" || path == "/settings.html") {
+        WriteHttpResponse(socket, LoadFileContent("settings.html"));
+        return true;
+    }
+    if (path == "/status" || path == "/status.html") {
+        WriteHttpResponse(socket, LoadFileContent("status.html"));
         return true;
     }
     if (path.rfind("/styles.css",0)==0) {
@@ -260,6 +640,10 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         oss << "{\"ip\": \"" << ip << "\", "
             << "\"newest_png\": \"" << newest << "\"}";
         WriteHttpResponse(socket, oss.str(), "application/json");
+        return true;
+    }
+    if (path.rfind("/system_metrics", 0) == 0) {
+        WriteHttpResponse(socket, BuildSystemMetricsJson(), "application/json");
         return true;
     }
     if (path.rfind("/newest_png", 0) == 0) {
@@ -582,99 +966,148 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
 // ================================
 //  RADAR PATTERN RAMP CONTROL
 // ================================
-static bool HandlePatternControl(const std::string &path, boost::asio::ip::tcp::socket &socket){
-    auto params = ParseQueryParams(path);
-    if (path.rfind("/run_pattern", 0) == 0) {
-        std::cerr << "[DEBUG] Received path: " << path << "\n";
-        auto params = ParseQueryParams(path);
-        for (const auto& kv : params) {
-            std::cerr << "[DEBUG] Param: '" << kv.first << "' = '" << kv.second << "'\n";
+static bool HandlePatternControl(const std::string &method,
+                                 const std::string &path,
+                                 const std::string &body,
+                                 boost::asio::ip::tcp::socket &socket){
+    if (path.rfind("/run_pattern_queue", 0) == 0) {
+        if (method != "POST") {
+            WriteHttpResponse(socket,
+                              "<h2>Error</h2><p>Use POST to submit pattern queues.</p>");
+            return true;
+        }
+        if (patternActive.load()) {
+            WriteHttpResponse(socket,
+                              "<h2>Busy</h2><p>A pattern is already running.</p>");
+            return true;
         }
 
+        auto form = ParseFormUrlEncoded(body);
+        if (!form.count("payload")) {
+            WriteHttpResponse(socket, "<h2>Error</h2><p>No payload supplied.</p>");
+            return true;
+        }
+
+        const std::string payload = form["payload"];
+        if (payload.empty()) {
+            WriteHttpResponse(socket, "<h2>Error</h2><p>Empty queue payload.</p>");
+            return true;
+        }
+
+        std::vector<std::pair<std::vector<ControlStep>, int>> queue;
+        int totalValid = 0;
+        int totalInvalid = 0;
+        std::stringstream ss(payload);
+        std::string item;
+        int jobIndex = 0;
+
+        while (std::getline(ss, item, ',')) {
+            std::string trimmed = TrimCopy(item);
+            if (trimmed.empty()) {
+                continue;
+            }
+            const auto colon = trimmed.find(':');
+            if (colon == std::string::npos) {
+                ++totalInvalid;
+                continue;
+            }
+            int repeats = -1;
+            try {
+                repeats = std::stoi(trimmed.substr(0, colon));
+            } catch (const std::exception& e) {
+                std::cerr << "[ERROR] Failed to parse queue repeat: " << e.what() << "\n";
+                ++totalInvalid;
+                continue;
+            }
+
+            std::string decodedSteps;
+            if (!Base64Decode(trimmed.substr(colon + 1), decodedSteps)) {
+                std::cerr << "[ERROR] Failed to base64 decode queue item #" << jobIndex << "\n";
+                ++totalInvalid;
+                continue;
+            }
+
+            std::vector<ControlStep> pattern;
+            int valid = 0;
+            int invalid = 0;
+            if (ParseControlStepsString(decodedSteps, pattern, valid, invalid)) {
+                queue.emplace_back(std::move(pattern), repeats);
+                totalValid += valid;
+                totalInvalid += invalid;
+            } else {
+                totalInvalid += std::max(1, invalid);
+            }
+            ++jobIndex;
+        }
+
+        if (queue.empty()) {
+            WriteHttpResponse(socket,
+                              "<h2>Error</h2><p>No valid patterns found in queue.</p>");
+            return true;
+        }
+
+        std::ostringstream resp;
+        resp << "<h2>Pattern queue started</h2>"
+             << "<p>Jobs queued: " << queue.size() << "</p>"
+             << "<p>Accepted steps: " << totalValid << "</p>";
+        if (totalInvalid > 0) {
+            resp << "<p style='color:red'>Ignored / invalid steps: "
+                 << totalInvalid << "</p>";
+        }
+
+        std::thread([sequence = std::move(queue)]() mutable {
+            RunPatternSequence(sequence);
+        }).detach();
+
+        WriteHttpResponse(socket, resp.str());
+        return true;
+    }
+
+    if (path.rfind("/run_pattern", 0) == 0) {
+        if (method != "GET") {
+            WriteHttpResponse(socket,
+                              "<h2>Error</h2><p>Use GET parameters to start a pattern.</p>");
+            return true;
+        }
+        if (patternActive.load()) {
+            WriteHttpResponse(socket,
+                              "<h2>Busy</h2><p>A pattern is already running.</p>");
+            return true;
+        }
+
+        auto params = ParseQueryParams(path);
         if (!params.count("steps")) {
-            std::cerr << "[ERROR] No 'steps' parameter supplied\n";
             WriteHttpResponse(socket, "<h2>Error</h2><p>No steps parameter supplied.</p>");
             return true;
         }
 
-        // Decode steps
-        std::string rawSteps = params["steps"];
-        std::string steps = UrlDecode(rawSteps);
-        std::cerr << "[DEBUG] Decoded steps = '" << steps << "'\n";
-
-        std::vector<ControlStep> pattern;
         int repeats = -1;
         if (params.count("repeat")) {
             try {
                 repeats = std::stoi(params["repeat"]);
-                std::cerr << "[DEBUG] Parsed repeats = " << repeats << "\n";
             } catch (const std::exception& e) {
                 std::cerr << "[ERROR] Failed to parse repeat: " << e.what() << "\n";
             }
         }
 
-        // Split on ';'
-        std::stringstream ss(steps);
-        std::string stepItem;
-        int idx = 0, validSteps = 0, invalidSteps = 0;
-        while (std::getline(ss, stepItem, ';')) {
-            std::cerr << "[DEBUG] Step #" << idx << ": raw='" << stepItem << "'\n";
-            std::stringstream itemss(stepItem);
-            std::string val;
-            std::vector<int> nums;
-            int valIdx = 0;
-            while (std::getline(itemss, val, ',')) {
-                try {
-                    int n = std::stoi(val);
-                    nums.push_back(n);
-                    std::cerr << "[DEBUG]   Value #" << valIdx++ << " = " << n << "\n";
-                } catch (const std::exception& e) {
-                    std::cerr << "[ERROR]   stoi failed on '" << val << "': " << e.what() << "\n";
-                }
-            }
-            if (nums.size() == 7) {
-                ControlStep cs{
-                    static_cast<uint16_t>(nums[0]),
-                    static_cast<uint16_t>(nums[1]),
-                    static_cast<uint16_t>(nums[2]),
-                    static_cast<uint16_t>(nums[3]),
-                    static_cast<uint16_t>(nums[4]),
-                    static_cast<uint16_t>(nums[5]),
-                    static_cast<uint16_t>(nums[6])
-                };
-                if (IsValidControlStep(cs)) {
-                    pattern.push_back(cs);
-                    ++validSteps;
-                    std::cerr << "[DEBUG]   -> Added ControlStep("
-                            << nums[0] << "," << nums[1] << "," << nums[2] << ","
-                            << nums[3] << "," << nums[4] << "," << nums[5] << "," << nums[6] << ")\n";
-                } else {
-                    ++invalidSteps;
-                    std::cerr << "[WARN]   Invalid step: value(s) out of range\n";
-                }
-            } else {
-                ++invalidSteps;
-                std::cerr << "[WARN]   Invalid step, expected 7 values but got "
-                        << nums.size() << "\n";
-            }
-            ++idx;
-        }
-
-        if (pattern.empty()) {
-            std::cerr << "[ERROR] No valid steps parsed, pattern is empty\n";
+        const std::string steps = UrlDecode(params["steps"]);
+        std::vector<ControlStep> pattern;
+        int validSteps = 0;
+        int invalidSteps = 0;
+        if (!ParseControlStepsString(steps, pattern, validSteps, invalidSteps)) {
             WriteHttpResponse(socket, "<h2>Error</h2><p>No valid steps.</p>");
             return true;
         }
 
         std::ostringstream resp;
-        resp << "<h2>Pattern started</h2>";
-        resp << "<p>Accepted steps: " << validSteps << "</p>";
+        resp << "<h2>Pattern started</h2>"
+             << "<p>Accepted steps: " << validSteps << "</p>";
         if (invalidSteps > 0) {
-            resp << "<p style='color:red'>Rejected invalid steps: " << invalidSteps << "</p>";
+            resp << "<p style='color:red'>Rejected invalid steps: "
+                 << invalidSteps << "</p>";
         }
 
-        // Run in detached thread
-        std::thread([pattern, repeats]() {
+        std::thread([pattern = std::move(pattern), repeats]() mutable {
             RunPattern(pattern, repeats);
         }).detach();
 
@@ -893,15 +1326,60 @@ static void HttpSession(boost::asio::ip::tcp::socket socket) {
         std::string method = requestLine.substr(0, firstSpacePos);
         std::string path   = requestLine.substr(firstSpacePos + 1, secondSpacePos - firstSpacePos - 1);
 
+        std::map<std::string, std::string> headers;
+        std::string headerLine;
+        size_t contentLength = 0;
+        while (std::getline(requestStream, headerLine)) {
+            if (headerLine == "\r") {
+                break;
+            }
+            if (!headerLine.empty() && headerLine.back() == '\r') {
+                headerLine.pop_back();
+            }
+            auto colonPos = headerLine.find(':');
+            if (colonPos == std::string::npos) {
+                continue;
+            }
+            std::string key = headerLine.substr(0, colonPos);
+            std::string value = headerLine.substr(colonPos + 1);
+            key = TrimCopy(key);
+            std::transform(key.begin(), key.end(), key.begin(), [](unsigned char ch) {
+                return static_cast<char>(std::tolower(ch));
+            });
+            value = TrimCopy(value);
+            headers[key] = value;
+        }
+
+        if (headers.count("content-length")) {
+            try {
+                contentLength = static_cast<size_t>(std::stoul(headers["content-length"]));
+            } catch (const std::exception&) {
+                contentLength = 0;
+            }
+        }
+
+        std::string body;
+        if (contentLength > 0) {
+            body.resize(contentLength);
+            requestStream.read(&body[0], static_cast<std::streamsize>(contentLength));
+            std::streamsize readCount = requestStream.gcount();
+            if (readCount < static_cast<std::streamsize>(contentLength)) {
+                boost::asio::read(socket,
+                                  boost::asio::buffer(&body[static_cast<size_t>(readCount)],
+                                                      contentLength - static_cast<size_t>(readCount)));
+            }
+        }
+
+        if (HandlePatternControl(method, path, body, socket))   return;
+
         if (method != "GET") {
-            WriteHttpResponse(socket, "<h1>Only GET supported</h1>");
+            WriteHttpResponse(socket, "<h1>Only GET supported on this endpoint</h1>");
             return;
         }
 
         if (HandleStaticAssets(path, socket))     return;
         if (HandleUtilities(path, socket))        return;
         if (HandleRadarSetters(path, socket))     return;
-        if (HandlePatternControl(path, socket))   return;
         if (HandleRadarGetters(path, socket))     return;
         // fallback 404
         WriteHttpResponse(socket, "<h2>Not Found</h2><p>Home: <a href=\"/\">/</a></p>");
