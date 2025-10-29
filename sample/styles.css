@@ -248,16 +248,15 @@ button.secondary {
 }
 
 .btn-off {
-  background: #fee2e2;
-  border: 1px solid #b91c1c;
-  color: #7f1d1d;
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
 }
 
 .btn-off:hover,
 .btn-off:focus-visible {
-  background: #fecaca;
-  border-color: #991b1b;
-  color: #7f1d1d;
+  background: #a01a1a;
+  border-color: #8b1515;
 }
 
 button:disabled {

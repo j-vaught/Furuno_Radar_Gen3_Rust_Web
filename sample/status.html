@@ -20,13 +20,11 @@
     <section class="panel status-card">
       <span class="status-title">Newest Capture</span>
       <span id="statusNewestPng" class="status-value small-note">–</span>
-      <span class="status-footnote">Pulled from <code>/get_system_info</code>.</span>
     </section>
 
     <section class="panel status-card">
       <span class="status-title">Pattern Queue</span>
       <span id="statusQueueLength" class="status-value">0</span>
-      <span class="status-footnote">Queued via Controls page during this session.</span>
     </section>
 
     <section class="panel status-card">
@@ -34,46 +32,35 @@
       <span id="statusCpuLabel" class="status-value">--%</span>
       <div class="progress"><span id="statusCpu"></span></div>
       <div id="cpuCores" class="status-core-list"></div>
-      <span class="status-footnote">Per-core activity sampled from <code>/proc/stat</code>.</span>
     </section>
 
     <section class="panel status-card">
       <span class="status-title">Memory Usage</span>
       <span id="statusMemoryLabel" class="status-value">--%</span>
       <div class="progress"><span id="statusMemory"></span></div>
-      <span class="status-footnote">System RAM consumption (via <code>sysinfo</code>).</span>
     </section>
 
     <section class="panel status-card">
       <span class="status-title">Storage</span>
       <span id="statusStorageLabel" class="status-value">--%</span>
       <div class="progress"><span id="statusStorage"></span></div>
-      <span class="status-footnote">Space used on <code>frames/</code> (falls back to <code>./</code>).</span>
     </section>
 
     <section class="panel status-card">
       <span class="status-title">Network</span>
       <span id="statusNetworkLabel" class="status-value">-- / -- MB/s</span>
       <div class="progress"><span id="statusNetwork"></span></div>
-      <span class="status-footnote">Rolling throughput sampled from <code>/proc/net/dev</code>.</span>
     </section>
 
     <section class="panel status-card">
       <span class="status-title">Temperature</span>
-      <span id="statusTempLabel" class="status-value">--°C</span>
+      <span id="statusTempLabel" class="status-value">--°C / --°F</span>
       <div class="progress"><span id="statusTemp"></span></div>
-      <span class="status-footnote">Reads from available thermal sensors.</span>
-    </section>
-
-    <section class="panel">
-      <h2>Integration Notes</h2>
-      <p class="small-note">Metrics refresh automatically every five seconds. Network throughput is scaled against a 200&nbsp;MB/s ceiling for the progress bar.</p>
-      <p class="small-note">Adjust scaling or sensor paths in <code>web_server.cpp</code> and <code>script.js</code> if your hardware has different limits.</p>
     </section>
   </main>
 
   <footer>
-    Extend this dashboard with whichever metrics matter to your vessel or test bench; the layout is ready for live data.
+    All data on this page is updated every 500ms.
   </footer>
 
   <script src="/script.js" defer></script>

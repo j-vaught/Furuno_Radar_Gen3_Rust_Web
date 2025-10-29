@@ -33,6 +33,83 @@ let calibrationActive = false;
 const patternQueue = [];
 let lastLoadedPattern = null;
 
+function triggerFileInput() {
+  const input = byId('patternFile');
+  if (input) input.click();
+}
+
+// Setup file input auto-load and gain mode selector
+document.addEventListener('DOMContentLoaded', () => {
+  const fileInput = byId('patternFile');
+  if (fileInput) {
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files.length > 0) {
+        loadPatternFromFile();
+      }
+    });
+  }
+
+  // Setup gain mode selector
+  const gainModeSelect = byId('gainMode');
+  if (gainModeSelect) {
+    gainModeSelect.addEventListener('change', (e) => {
+      const mode = e.target.value;
+      const manualSection = document.querySelector('[data-gain-mode="manual"]');
+      const autoSection = document.querySelector('[data-gain-mode="auto"]');
+
+      if (mode === 'manual') {
+        if (manualSection) manualSection.style.opacity = '1';
+        if (autoSection) autoSection.style.opacity = '0.5';
+      } else {
+        if (manualSection) manualSection.style.opacity = '0.5';
+        if (autoSection) autoSection.style.opacity = '1';
+      }
+    });
+    // Trigger initial state
+    gainModeSelect.dispatchEvent(new Event('change'));
+  }
+
+  // Setup clutter (SEA/RAIN) mode selectors
+  const seaModeSelect = byId('seaMode');
+  const rainModeSelect = byId('rainMode');
+
+  if (seaModeSelect) {
+    seaModeSelect.addEventListener('change', (e) => {
+      const mode = e.target.value;
+      const manualSection = document.querySelector('[data-clutter-mode="sea-manual"]');
+      const autoSection = document.querySelector('[data-clutter-mode="sea-auto"]');
+
+      if (mode === 'manual') {
+        if (manualSection) manualSection.style.display = '';
+        if (autoSection) autoSection.style.display = 'none';
+      } else {
+        if (manualSection) manualSection.style.display = 'none';
+        if (autoSection) autoSection.style.display = '';
+      }
+    });
+    // Trigger initial state
+    seaModeSelect.dispatchEvent(new Event('change'));
+  }
+
+  if (rainModeSelect) {
+    rainModeSelect.addEventListener('change', (e) => {
+      const mode = e.target.value;
+      const manualSection = document.querySelector('[data-clutter-mode="rain-manual"]');
+      const autoSection = document.querySelector('[data-clutter-mode="rain-auto"]');
+
+      if (mode === 'manual') {
+        if (manualSection) manualSection.style.display = '';
+        if (autoSection) autoSection.style.display = 'none';
+      } else {
+        if (manualSection) manualSection.style.display = 'none';
+        if (autoSection) autoSection.style.display = '';
+      }
+    });
+    // Trigger initial state
+    rainModeSelect.dispatchEvent(new Event('change'));
+  }
+});
+
 function normaliseTextareaSteps() {
   const textarea = byId('patternTextarea');
   if (!textarea) return '';
@@ -125,16 +202,20 @@ function removeQueueItem(index) {
 }
 
 
-/* live image every 2 s */
+/* live image refresh - 500ms on radar view, 2s elsewhere */
 const radarImageEl = byId('radarImage');
 if (radarImageEl) {
+  // Determine refresh interval based on current page
+  const isRadarView = window.location.pathname.includes('radar.html');
+  const refreshInterval = isRadarView ? 500 : 2000;
+
   setInterval(() => {
     const img = new Image();
     img.onload = () => {
       if (radarImageEl) radarImageEl.src = img.src;
     };
     img.src = '/newest_png?rand=' + Date.now();
-  }, 2000);
+  }, refreshInterval);
 }
 
 /* info overlay */
@@ -302,6 +383,42 @@ function loadPatternFromFile() {
 }
 
 function loadPatternFromTextarea() {
+  const textarea = byId('patternTextarea');
+  if (!textarea) return;
+
+  // Toggle textarea visibility
+  if (textarea.style.display === 'none') {
+    textarea.style.display = '';
+    // Show help text if textarea is empty
+    if (!textarea.value) {
+      const helpText = `Format: range,gain,pulse,rezboost,speed,interp,repeat
+
+range(0-21) gain(0-99) pulse(0=S1…5=L) rezboost(0=Off…3=High)
+speed(0=Lo,1=Hi,2=Auto) interp(0=2048,1=4096,2=8192,3=1024,4=720,5=Off)
+repeat(sweeps at this setting)
+
+Example:
+0,20,0,0,2,5,2; 0,25,1,1,2,0,3
+
+Separate steps with semicolons`;
+      textarea.value = helpText;
+      textarea.dataset.helpText = helpText;
+
+      // Clear on first interaction
+      const clearHelp = () => {
+        if (textarea.value === helpText) {
+          textarea.value = '';
+          textarea.removeEventListener('click', clearHelp);
+          textarea.removeEventListener('keydown', clearHelp);
+        }
+      };
+      textarea.addEventListener('click', clearHelp);
+      textarea.addEventListener('keydown', clearHelp);
+    }
+    textarea.focus();
+    return;
+  }
+
   const steps = normaliseTextareaSteps();
   if (!steps) {
     setCallout('patternStatus', 'Paste pattern steps before using this option.', 'error');
@@ -340,7 +457,19 @@ function addPatternToQueue() {
   renderPatternQueue();
   const total = patternQueue.length;
   const totalText = total === 1 ? '1 item' : `${total} items`;
-  setCallout('patternStatus', `Added "${label}" (repeat ${repeatText}) to queue. Queue now has ${totalText}.`, 'success');
+  setCallout('patternRunResult', `Added "${label}" (repeat ${repeatText}) to queue. Queue now has ${totalText}.`, 'success');
+
+  // Clear inputs for next pattern
+  const fileInput = byId('patternFile');
+  if (fileInput) fileInput.value = '';
+  const labelInput = byId('patternLabel');
+  if (labelInput) labelInput.value = '';
+  const textarea = byId('patternTextarea');
+  if (textarea) {
+    textarea.value = '';
+    textarea.style.display = 'none';
+  }
+  lastLoadedPattern = null;
 }
 
 function startPatternQueue() {
@@ -391,11 +520,16 @@ function setRange(cb){
 function setPulse(){
   fetch(`/set_pulse_width?radarNo=${v('radarNo')}&pulse=${v('pwPulse')}`
        + `&rangeIndex=${v('rangeIndex')}&rangeUnit=0`)
-    .then(r=>r.text()).then(t=>setCallout('rangeResult', t, 'info'));
+    .then(r=>r.text()).then(t=>setCallout('pulseResult', t, 'info'));
 }
 function refreshRange(){
   fetch(`/get_current?radarNo=${v('radarNo')}&command=RANGE`)
     .then(r=>r.text()).then(t=>setCallout('rangeResult', t, 'info'));
+}
+
+function refreshPulse(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=PULSE`)
+    .then(r=>r.text()).then(t=>setCallout('pulseResult', t, 'info'));
 }
 
 /* ---------- GAIN & CLUTTER ---------- */
@@ -409,15 +543,20 @@ function setGainAuto(){
 }
 function setACSEA(){
   fetch(`/set_acsea?radarNo=${v('radarNo')}&status=1&manual=${v('seaMan')}&auto=${v('seaAuto')}&mode=0`)
-    .then(r=>r.text()).then(t=>setCallout('gainResult', t, 'info'));
+    .then(r=>r.text()).then(t=>setCallout('clutterResult', t, 'info'));
 }
 function setACRAIN(){
   fetch(`/set_acrain?radarNo=${v('radarNo')}&status=1&manual=${v('rainMan')}&auto=${v('rainAuto')}&ftcMode=0&rainMode=0`)
-    .then(r=>r.text()).then(t=>setCallout('gainResult', t, 'info'));
+    .then(r=>r.text()).then(t=>setCallout('clutterResult', t, 'info'));
 }
 function refreshGain(){
   fetch(`/get_current?radarNo=${v('radarNo')}&command=GAIN`)
     .then(r=>r.text()).then(t=>setCallout('gainResult', t, 'info'));
+}
+
+function refreshClutter(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=CLUTTER`)
+    .then(r=>r.text()).then(t=>setCallout('clutterResult', t, 'info'));
 }
 function setRezBoost() {
   fetch(`/set_bearing_resolution?radarNo=${v('radarNo')}&mode=${v('rezboostMode')}`)
@@ -440,6 +579,16 @@ function applySweepInterp(){
 }
 function setAntennaRev(){
   fetch(`/set_antenna_revolution?radarNo=${v('radarNo')}&rollSpeed=${v('rollSpd')}&hiRpm=${v('hiRpm')}`)
+    .then(r=>r.text()).then(t=>setCallout('antennaResult', t, 'info'))
+    .catch(err => setCallout('antennaResult', `Failed: ${err.message}`, 'error'));
+}
+function setHighRpm(){
+  fetch(`/set_antenna_revolution?radarNo=${v('radarNo')}&rollSpeed=${v('rollSpd')}&hiRpm=${v('hiRpm')}`)
+    .then(r=>r.text()).then(t=>setCallout('antennaResult', t, 'info'))
+    .catch(err => setCallout('antennaResult', `Failed: ${err.message}`, 'error'));
+}
+function refreshAntenna(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=ANTENNA`)
     .then(r=>r.text()).then(t=>setCallout('antennaResult', t, 'info'))
     .catch(err => setCallout('antennaResult', `Failed: ${err.message}`, 'error'));
 }
@@ -507,7 +656,7 @@ const statusLabels = [
   ['statusMemoryLabel', '--%'],
   ['statusStorageLabel', '--%'],
   ['statusNetworkLabel', '-- / -- MB/s'],
-  ['statusTempLabel', '--°C']
+  ['statusTempLabel', '--°C / --°F']
 ];
 statusLabels.forEach(([id, fallback]) => {
   const label = byId(id);
@@ -604,11 +753,13 @@ async function updateSystemMetrics() {
 
     const tempLabel = byId('statusTempLabel');
     if (typeof data.temperature_c === 'number') {
-      if (tempLabel) tempLabel.textContent = `${data.temperature_c.toFixed(1)}°C`;
+      const celsius = data.temperature_c.toFixed(1);
+      const fahrenheit = (data.temperature_c * 9/5 + 32).toFixed(1);
+      if (tempLabel) tempLabel.textContent = `${celsius}°C / ${fahrenheit}°F`;
       const tempFraction = clamp01(Math.max(0, data.temperature_c) / 100.0);
       setStatusBar('statusTemp', tempFraction);
     } else {
-      if (tempLabel) tempLabel.textContent = '--°C';
+      if (tempLabel) tempLabel.textContent = '--°C / --°F';
       setStatusBar('statusTemp', 0);
     }
   } catch (err) {
@@ -626,12 +777,15 @@ async function updateSystemMetrics() {
     const networkLabel = byId('statusNetworkLabel');
     if (networkLabel) networkLabel.textContent = '-- / -- MB/s';
     const tempLabel = byId('statusTempLabel');
-    if (tempLabel) tempLabel.textContent = '--°C';
+    if (tempLabel) tempLabel.textContent = '--°C / --°F';
     renderCpuCores([]);
   }
 }
 
 if (byId('statusCpu')) {
   updateSystemMetrics();
-  setInterval(updateSystemMetrics, 5000);
+  // Use 500ms refresh on status page, 5000ms elsewhere
+  const isStatusPage = window.location.pathname.includes('status.html');
+  const refreshInterval = isStatusPage ? 500 : 5000;
+  setInterval(updateSystemMetrics, refreshInterval);
 }
