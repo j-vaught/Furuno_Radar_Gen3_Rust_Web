@@ -333,6 +333,77 @@ button:focus-visible {
   border-radius: 50%;
 }
 
+.radar-viewport {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  position: relative;
+  min-height: 320px;
+}
+
+.radar-viewport canvas,
+.radar-viewport img {
+  width: 100%;
+  height: auto;
+}
+
+.radar-fallback {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: none;
+}
+
+.radar-fallback[data-visible="true"] {
+  display: block;
+}
+
+.radar-history-controls {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+  text-align: left;
+  align-items: center;
+}
+
+.radar-history-control label {
+  font-weight: 500;
+  color: var(--text-strong);
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.history-depth-inputs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.history-depth-inputs input[type="range"] {
+  flex: 1;
+}
+
+.history-depth-inputs input[type="number"] {
+  width: 4.5rem;
+}
+
+.history-depth-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  min-width: 4.25rem;
+  text-align: right;
+}
+
+.radar-history-control--actions {
+  align-self: flex-end;
+}
+
+.radar-history-control--actions button {
+  width: 100%;
+}
+
 .small-note {
   font-size: 0.85rem;
   color: var(--text-muted);

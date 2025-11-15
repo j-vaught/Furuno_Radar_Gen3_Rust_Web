@@ -19,13 +19,34 @@
   <main class="layout-radar">
     <section class="panel panel--preview-full">
       <h2>Live Radar View</h2>
-      <img id="radarImage" class="preview preview--radar-full" src="/newest_png" alt="No radar image">
-      <p class="small-note">To change settings, head to the <a href="/settings.html">Settings</a> or <a href="/index.html">Controls</a> page.</p>
+      <div class="radar-viewport">
+        <canvas id="radarHistoryCanvas" class="preview preview--radar-full" width="1024" height="1024" aria-label="Radar history view"></canvas>
+        <img id="radarImage" class="preview preview--radar-full radar-fallback" src="/newest_png" alt="No radar image">
+      </div>
+      <div class="radar-history-controls" aria-label="History controls">
+        <div class="radar-history-control">
+          <label for="historyDepthRange">Track length</label>
+          <div class="history-depth-inputs">
+            <input type="range" id="historyDepthRange" min="1" max="50" step="1">
+          </div>
+        </div>
+        <div class="radar-history-control">
+          <label for="currentFrameColor">Current color</label>
+          <input type="color" id="currentFrameColor" value="#ffe600">
+        </div>
+        <div class="radar-history-control">
+          <label for="historyFrameColor">Track color</label>
+          <input type="color" id="historyFrameColor" value="#ff00ff">
+        </div>
+        <div class="radar-history-control radar-history-control--actions">
+          <button type="button" id="resetHistoryControls">Reset Colors</button>
+        </div>
+      </div>
     </section>
   </main>
 
   <footer>
-    Live view refreshes every 500ms for maximum updates.
+    Live view refreshes every 500ms for maximum updates. Adjust the controls above to tune how many frames are layered (1–50) and what colors are used.
   </footer>
 
   <script src="/script.js" defer></script>

@@ -202,21 +202,391 @@ function removeQueueItem(index) {
 }
 
 
-/* live image refresh - 500ms on radar view, 2s elsewhere */
+/* live image refresh + radar history compositing */
 const radarImageEl = byId('radarImage');
-if (radarImageEl) {
-  // Determine refresh interval based on current page
-  const isRadarView = window.location.pathname.includes('radar.html');
-  const refreshInterval = isRadarView ? 500 : 2000;
+const radarHistoryCanvas = byId('radarHistoryCanvas');
+const radarHistoryCtx = radarHistoryCanvas ? radarHistoryCanvas.getContext('2d') : null;
+const isRadarView = window.location.pathname.includes('radar.html');
 
+const RADAR_HISTORY_STORAGE_KEY = 'radarHistoryConfig.v1';
+const radarHistoryDefaults = {
+  frameCount: 8,
+  currentColor: '#ffe600',
+  historyColor: '#ff00ff',
+  fadePivot: 0.78,
+  fadeSteepness: 12
+};
+
+let radarHistoryConfig = { ...radarHistoryDefaults };
+const radarHistoryState = {
+  frames: [],
+  fetching: false,
+  offscreen: radarHistoryCanvas ? document.createElement('canvas') : null,
+  offscreenCtx: null,
+  fallbackUrl: null
+};
+if (radarHistoryState.offscreen) {
+  radarHistoryState.offscreenCtx = radarHistoryState.offscreen.getContext('2d');
+}
+
+hydrateRadarHistoryConfig();
+
+if (isRadarView && radarHistoryCanvas && radarHistoryCtx) {
+  setupRadarHistoryControls();
+  startRadarHistoryLoop();
+} else if (radarImageEl) {
+  startLegacyRadarLoop();
+}
+
+function startRadarHistoryLoop() {
+  const refreshInterval = 500;
+  setFallbackVisibility(false);
+  fetchAndRenderHistoryFrame();
+  setInterval(() => {
+    fetchAndRenderHistoryFrame();
+  }, refreshInterval);
+}
+
+function startLegacyRadarLoop() {
+  const refreshInterval = isRadarView ? 500 : 2000;
   setInterval(() => {
     const img = new Image();
     img.onload = () => {
-      if (radarImageEl) radarImageEl.src = img.src;
+      if (radarImageEl) {
+        radarImageEl.src = img.src;
+        setFallbackVisibility(true);
+      }
     };
     img.src = '/newest_png?rand=' + Date.now();
   }, refreshInterval);
 }
+
+async function fetchAndRenderHistoryFrame() {
+  if (!radarHistoryCtx || radarHistoryState.fetching) {
+    return;
+  }
+  radarHistoryState.fetching = true;
+  const cacheBuster = Date.now();
+  try {
+    const response = await fetch(`/newest_png?rand=${cacheBuster}`, { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`Radar image fetch failed: ${response.status}`);
+    }
+    const blob = await response.blob();
+    const bitmap = await blobToBitmap(blob);
+    const frameLayer = createFrameLayer(bitmap);
+    if (typeof bitmap.close === 'function') {
+      bitmap.close();
+    }
+    if (!frameLayer) {
+      throw new Error('Unable to build radar frame layer.');
+    }
+    pushRadarFrame(frameLayer);
+    setFallbackImageFromBlob(blob);
+    drawRadarHistory();
+  } catch (err) {
+    console.warn(err);
+    triggerFallbackImage();
+  } finally {
+    radarHistoryState.fetching = false;
+  }
+}
+
+function pushRadarFrame(frameLayer) {
+  radarHistoryState.frames.unshift(frameLayer);
+  trimRadarFrameBuffer();
+}
+
+function trimRadarFrameBuffer() {
+  const maxFrames = clampHistoryDepth(radarHistoryConfig.frameCount);
+  while (radarHistoryState.frames.length > maxFrames) {
+    radarHistoryState.frames.pop();
+  }
+}
+
+function drawRadarHistory() {
+  if (!radarHistoryCtx || !radarHistoryState.frames.length) {
+    return;
+  }
+  const framesToRender = radarHistoryState.frames.slice(0, clampHistoryDepth(radarHistoryConfig.frameCount));
+  if (!framesToRender.length) return;
+
+  const { width, height } = getLayerDimensions(framesToRender[0]);
+  if (!width || !height) {
+    return;
+  }
+
+  if (radarHistoryCanvas.width !== width || radarHistoryCanvas.height !== height) {
+    radarHistoryCanvas.width = width;
+    radarHistoryCanvas.height = height;
+  }
+  if (radarHistoryState.offscreen) {
+    if (radarHistoryState.offscreen.width !== width || radarHistoryState.offscreen.height !== height) {
+      radarHistoryState.offscreen.width = width;
+      radarHistoryState.offscreen.height = height;
+    }
+  }
+
+  radarHistoryCtx.clearRect(0, 0, width, height);
+
+  // Draw history frames first (oldest to newest) so their contributions remain under the latest frame
+  for (let i = framesToRender.length - 1; i >= 1; i--) {
+    const norm = framesToRender.length > 1 ? i / (framesToRender.length - 1) : 1;
+    const alpha = computeHistoryAlpha(norm);
+    if (alpha <= 0.02) continue;
+    drawTintedFrame(framesToRender[i], radarHistoryConfig.historyColor, alpha);
+  }
+
+  // Draw current frame last so it stays dominant
+  drawTintedFrame(framesToRender[0], radarHistoryConfig.currentColor, 1);
+}
+
+function drawTintedFrame(frameLayer, color, alpha) {
+  if (!radarHistoryCtx || !frameLayer?.layer) return;
+  const width = frameLayer.width;
+  const height = frameLayer.height;
+  if (!width || !height) return;
+
+  if (radarHistoryState.offscreen && radarHistoryState.offscreenCtx) {
+    const offscreenCtx = radarHistoryState.offscreenCtx;
+    if (radarHistoryState.offscreen.width !== width || radarHistoryState.offscreen.height !== height) {
+      radarHistoryState.offscreen.width = width;
+      radarHistoryState.offscreen.height = height;
+    }
+    offscreenCtx.clearRect(0, 0, width, height);
+    offscreenCtx.globalCompositeOperation = 'copy';
+    offscreenCtx.globalAlpha = 1;
+    offscreenCtx.drawImage(frameLayer.layer, 0, 0, width, height);
+    offscreenCtx.globalCompositeOperation = 'source-in';
+    offscreenCtx.fillStyle = color;
+    offscreenCtx.fillRect(0, 0, width, height);
+    offscreenCtx.globalCompositeOperation = 'source-over';
+    radarHistoryCtx.globalAlpha = alpha;
+    radarHistoryCtx.drawImage(radarHistoryState.offscreen, 0, 0, width, height);
+  } else {
+    radarHistoryCtx.globalAlpha = alpha;
+    radarHistoryCtx.drawImage(frameLayer.layer, 0, 0, width, height);
+  }
+  radarHistoryCtx.globalAlpha = 1;
+}
+
+function computeHistoryAlpha(norm) {
+  const pivot = radarHistoryConfig.fadePivot;
+  const steep = radarHistoryConfig.fadeSteepness;
+  const alpha = 1 / (1 + Math.exp(steep * (norm - pivot)));
+  return clamp01(alpha);
+}
+
+function getLayerDimensions(frameLayer) {
+  if (!frameLayer) return { width: 0, height: 0 };
+  return {
+    width: frameLayer.width || 0,
+    height: frameLayer.height || 0
+  };
+}
+
+async function blobToBitmap(blob) {
+  if ('createImageBitmap' in window) {
+    return await createImageBitmap(blob);
+  }
+  return await blobToHtmlImage(blob);
+}
+
+function blobToHtmlImage(blob) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = (err) => {
+      URL.revokeObjectURL(url);
+      reject(err);
+    };
+    img.src = url;
+  });
+}
+
+function createFrameLayer(bitmap) {
+  const { width, height } = getBitmapDimensions(bitmap);
+  if (!width || !height) {
+    return null;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    return null;
+  }
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const luminance = Math.max(r, g, b);
+    data[i] = 255;
+    data[i + 1] = 255;
+    data[i + 2] = 255;
+    data[i + 3] = luminance;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return { layer: canvas, width, height, timestamp: Date.now() };
+}
+
+function getBitmapDimensions(bitmap) {
+  if (!bitmap) {
+    return { width: 0, height: 0 };
+  }
+  return {
+    width: bitmap.width || bitmap.naturalWidth || bitmap.videoWidth || 0,
+    height: bitmap.height || bitmap.naturalHeight || bitmap.videoHeight || 0
+  };
+}
+
+function setFallbackImageFromBlob(blob) {
+  if (!radarImageEl) return;
+  if (radarHistoryState.fallbackUrl) {
+    URL.revokeObjectURL(radarHistoryState.fallbackUrl);
+    radarHistoryState.fallbackUrl = null;
+  }
+  const url = URL.createObjectURL(blob);
+  radarHistoryState.fallbackUrl = url;
+  radarImageEl.src = url;
+  setFallbackVisibility(false);
+}
+
+function triggerFallbackImage() {
+  if (!radarImageEl) return;
+  const img = new Image();
+  img.onload = () => {
+    if (radarImageEl) {
+      radarImageEl.src = img.src;
+      setFallbackVisibility(true);
+    }
+  };
+  img.src = '/newest_png?rand=' + Date.now();
+}
+
+function setFallbackVisibility(visible) {
+  if (!radarImageEl) return;
+  if (visible) {
+    radarImageEl.setAttribute('data-visible', 'true');
+  } else {
+    radarImageEl.removeAttribute('data-visible');
+  }
+}
+
+function hydrateRadarHistoryConfig() {
+  if (!isRadarView) return;
+  try {
+    const stored = localStorage.getItem(RADAR_HISTORY_STORAGE_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      radarHistoryConfig = {
+        ...radarHistoryConfig,
+        ...parsed
+      };
+    }
+  } catch (err) {
+    console.warn('Unable to load radar history config', err);
+  }
+  radarHistoryConfig.frameCount = clampHistoryDepth(radarHistoryConfig.frameCount);
+  radarHistoryConfig.currentColor = sanitizeColor(radarHistoryConfig.currentColor, radarHistoryDefaults.currentColor);
+  radarHistoryConfig.historyColor = sanitizeColor(radarHistoryConfig.historyColor, radarHistoryDefaults.historyColor);
+}
+
+function persistRadarHistoryConfig() {
+  if (!isRadarView) return;
+  try {
+    localStorage.setItem(RADAR_HISTORY_STORAGE_KEY, JSON.stringify({
+      frameCount: clampHistoryDepth(radarHistoryConfig.frameCount),
+      currentColor: radarHistoryConfig.currentColor,
+      historyColor: radarHistoryConfig.historyColor
+    }));
+  } catch (err) {
+    console.warn('Unable to save radar history config', err);
+  }
+}
+
+function setupRadarHistoryControls() {
+  const depthRange = byId('historyDepthRange');
+  const currentColorInput = byId('currentFrameColor');
+  const historyColorInput = byId('historyFrameColor');
+  const resetBtn = byId('resetHistoryControls');
+
+  const updateDepthUI = (value) => {
+    const clamped = clampHistoryDepth(value);
+    if (depthRange) depthRange.value = clamped;
+    radarHistoryConfig.frameCount = clamped;
+    trimRadarFrameBuffer();
+    drawRadarHistory();
+    persistRadarHistoryConfig();
+  };
+
+  if (depthRange) {
+    depthRange.value = radarHistoryConfig.frameCount;
+    depthRange.addEventListener('input', (e) => updateDepthUI(e.target.value));
+  }
+
+  if (currentColorInput) {
+    currentColorInput.value = radarHistoryConfig.currentColor;
+    currentColorInput.addEventListener('input', (e) => {
+      radarHistoryConfig.currentColor = sanitizeColor(e.target.value, radarHistoryDefaults.currentColor);
+      persistRadarHistoryConfig();
+      drawRadarHistory();
+    });
+  }
+
+  if (historyColorInput) {
+    historyColorInput.value = radarHistoryConfig.historyColor;
+    historyColorInput.addEventListener('input', (e) => {
+      radarHistoryConfig.historyColor = sanitizeColor(e.target.value, radarHistoryDefaults.historyColor);
+      persistRadarHistoryConfig();
+      drawRadarHistory();
+    });
+  }
+
+  if (resetBtn) {
+    resetBtn.addEventListener('click', () => {
+      radarHistoryConfig.currentColor = radarHistoryDefaults.currentColor;
+      radarHistoryConfig.historyColor = radarHistoryDefaults.historyColor;
+      if (currentColorInput) currentColorInput.value = radarHistoryConfig.currentColor;
+      if (historyColorInput) historyColorInput.value = radarHistoryConfig.historyColor;
+      persistRadarHistoryConfig();
+      drawRadarHistory();
+    });
+  }
+}
+
+function clampHistoryDepth(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return radarHistoryDefaults.frameCount;
+  return Math.min(50, Math.max(1, Math.round(num)));
+}
+
+function sanitizeColor(value, fallback) {
+  if (typeof value !== 'string') return fallback;
+  const hex = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(hex)) {
+    return hex.toLowerCase();
+  }
+  return fallback;
+}
+
+window.addEventListener('beforeunload', () => {
+  radarHistoryState.frames.forEach(frame => {
+    if (frame && typeof frame.bitmap?.close === 'function') {
+      frame.bitmap.close();
+    }
+  });
+  if (radarHistoryState.fallbackUrl) {
+    URL.revokeObjectURL(radarHistoryState.fallbackUrl);
+  }
+});
 
 /* info overlay */
 const infoIcon = byId('infoIcon');
