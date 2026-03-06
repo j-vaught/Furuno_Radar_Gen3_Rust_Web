@@ -1902,3 +1902,221 @@ This means reimplementing the radar command layer requires understanding the wir
 - `rmConvVersionNo`
 - `rmConvVideoLevel`
 - `rmConvWakeupCount`
+
+
+---
+
+## Nc* Networking Layer Detail (310 functions)
+
+### By subcategory:
+
+| `NcInitial*` | 30 |
+| `NcEnd*` | 1 |
+| `NcConnect*` | 11 |
+| `NcSet*` | 40 |
+| `NcGet*` | 72 |
+| `NcSend*` | 24 |
+| `NcRead*` | 17 |
+| `NcPut*` | 2 |
+| `NcWrite*` | 1 |
+| `NcEntry*` | 5 |
+| `NcNetwork*` | 23 |
+| `NcFnetService*` | 14 |
+| `NcNmea*` | 11 |
+| `NcCommon*` | 12 |
+| `NcDelete*` | 2 |
+| `NcWatch*` | 2 |
+| `NcHost*` | 1 |
+| `NcMake*` | 3 |
+| `NcKill*` | 1 |
+| `NcWake*` | 1 |
+| `NcIs*` | 4 |
+| `NcOpen*` | 1 |
+| `NcClose*` | 1 |
+| `NcStart*` | 1 |
+| `NcStop*` | 1 |
+| `NcGmm*` | 9 |
+| `NcCif*` | 2 |
+| `NcOutput*` | 2 |
+
+---
+
+## ITRON RTOS Shim — Full Listing (62 functions)
+
+- `acre_cyc`
+- `acre_flg`
+- `acre_mbf`
+- `acre_sem`
+- `acre_tsk`
+- `c_deq`
+- `c_di`
+- `c_ei`
+- `c_enq`
+- `chg_10000nm_to_df09`
+- `chg_10000nm_to_df15`
+- `chg_1000kt_to_df35_X`
+- `chg_1000lop_to_df45`
+- `chg_100kt_to_df35_X`
+- `chg_10degc_to_df38`
+- `chg_10deg_to_df02`
+- `chg_10deg_to_df04`
+- `chg_10degv_to_df42`
+- `chg_10ft_to_df09`
+- `chg_10kt_to_df35_X`
+- `chg_dd025_to_mi`
+- `chg_dd067_to_mi`
+- `chg_df02_to_10deg`
+- `chg_df04_to_10deg`
+- `chg_df09_to_10000nm`
+- `chg_df09_to_1000nm`
+- `chg_df09_to_10ft`
+- `chg_df15_to_10000nm`
+- `chg_df23_to_s15m`
+- `chg_df25_to_s15m`
+- `chg_df35_X_to_1000kt`
+- `chg_df35_X_to_100kt`
+- `chg_df35_X_to_10kt`
+- `chg_df38_to_10degc`
+- `chg_df46_to_10ft`
+- `chg_mi_to_dd025`
+- `chg_mi_to_dd067`
+- `chg_s15m_to_df23`
+- `chg_s15m_to_df25`
+- `cre_cyc`
+- `cre_flg`
+- `cre_mbf`
+- `cre_sem`
+- `cre_tsk`
+- `del_cyc`
+- `del_tsk`
+- `dis_dsp`
+- `dly_tsk`
+- `ena_dsp`
+- `ext_tsk`
+- `get_device_id`
+- `get_device_id_with_submask`
+- `get_pri`
+- `get_semaphore`
+- `get_tid`
+- `get_tim`
+- `get_xrb`
+- `nn_acre_cyc`
+- `nn_acre_flg`
+- `nn_acre_mbf`
+- `nn_acre_sem`
+- `nn_acre_tsk`
+- `prcv_mbf`
+- `psnd_mbf`
+- `rcv_mbf`
+- `rcv_mbf2`
+- `ref_tsk`
+- `set_available_inputPass_check`
+- `set_flg`
+- `sig_sem`
+- `slp_tsk`
+- `snd_mbf`
+- `sta_cyc`
+- `sta_tsk`
+- `tslp_tsk`
+- `wai_flg`
+- `wai_sem`
+- `wup_tsk`
+
+---
+
+## Complete glibc Imports (164 functions)
+
+These are the ONLY external dependencies of the library.
+
+- `_[...]`
+- `accept`
+- `bind`
+- `c[...]`
+- `close`
+- `connect`
+- `__ctype_b_loc`
+- `__ctype_tolower_[...]`
+- `__ctype_toupper_[...]`
+- `__cxa_finalize`
+- `d[...]`
+- `difftime`
+- `__errno_location[...]`
+- `exit`
+- `f[...]`
+- `fclose`
+- `fcntl`
+- `__fdelt_chk`
+- `fgets`
+- `fopen`
+- `__fprintf_chk`
+- `fputs`
+- `fread`
+- `free`
+- `freeifaddrs`
+- `fwrite`
+- `g[...]`
+- `getenv`
+- `getifaddrs`
+- `getpid`
+- `gettimeofday`
+- `gmtime`
+- `ioctl`
+- `__isoc99_sscanf`
+- `listen`
+- `m[...]`
+- `malloc`
+- `memcmp`
+- `memcpy`
+- `__memcpy_chk`
+- `memmove`
+- `memset`
+- `n[...]`
+- `nanosleep`
+- `p[...]`
+- `__printf_chk`
+- `pthread_attr_des[...]`
+- `pthread_attr_ini[...]`
+- `pthread_attr_set[...]`
+- `pthread_cond_ini[...]`
+- `pthread_cond_sig[...]`
+- `pthread_cond_tim[...]`
+- `pthread_cond_wai[...]`
+- `pthread_exit`
+- `pthread_mutex_in[...]`
+- `pthread_mutex_lo[...]`
+- `pthread_mutex_un[...]`
+- `pthread_self`
+- `pthread_setcance[...]`
+- `r[...]`
+- `realloc`
+- `recv`
+- `recvfrom`
+- `s[...]`
+- `select`
+- `send`
+- `sendto`
+- `setsockopt`
+- `shutdown`
+- `__snprintf_chk`
+- `socket`
+- `sprintf`
+- `__sprintf_chk`
+- `__stack_chk_fail[...]`
+- `__stpcpy_chk`
+- `strcat`
+- `__strcat_chk`
+- `strchr`
+- `strcmp`
+- `strcpy`
+- `__strcpy_chk`
+- `strftime`
+- `strlen`
+- `strncmp`
+- `strncpy`
+- `strtok`
+- `strtol`
+- `syscall`
+- `time`
+- `__vsnprintf_chk`
+- `__vsprintf_chk`
+- `__xstat`
