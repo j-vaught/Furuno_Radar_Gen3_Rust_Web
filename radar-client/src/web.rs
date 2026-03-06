@@ -20,6 +20,40 @@ use crate::render::{self, PPI_SIZE};
 
 // --- Shared state ---
 
+/// Tracks the current radar settings for CSV metadata.
+#[derive(Clone, Serialize)]
+pub struct CurrentSettings {
+    pub range_index: u16,
+    pub range_label: String,
+    pub gain_auto: bool,
+    pub gain_value: u16,
+    pub pulse_width: u16,
+    pub sea_clutter: u16,
+    pub rain_clutter: u16,
+    pub rezboost: u16,
+    pub interference_rejection: bool,
+    pub bird_mode: u16,
+    pub doppler: u16,
+    pub antenna_speed: u16,
+    pub main_bang: u16,
+    pub near_stc: u16,
+    pub middle_stc: u16,
+    pub far_stc: u16,
+}
+
+impl Default for CurrentSettings {
+    fn default() -> Self {
+        Self {
+            range_index: 0, range_label: "1/8 NM".into(),
+            gain_auto: false, gain_value: 50,
+            pulse_width: 0, sea_clutter: 0, rain_clutter: 0,
+            rezboost: 0, interference_rejection: false,
+            bird_mode: 0, doppler: 0, antenna_speed: 0,
+            main_bang: 0, near_stc: 0, middle_stc: 0, far_stc: 0,
+        }
+    }
+}
+
 pub struct AppState {
     conn: Mutex<RadarConnection>,
     latest_png: RwLock<Vec<u8>>,
@@ -32,6 +66,7 @@ pub struct AppState {
     pattern_running: AtomicBool,
     pattern_status: RwLock<String>,
     host_ip: Ipv4Addr,
+    settings: RwLock<CurrentSettings>,
 }
 
 // --- Server entry point ---
@@ -65,6 +100,7 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         pattern_running: AtomicBool::new(false),
         pattern_status: RwLock::new(String::new()),
         host_ip,
+        settings: RwLock::new(CurrentSettings::default()),
     });
 
     // Start echo listener thread
@@ -171,7 +207,8 @@ fn echo_listener(state: Arc<AppState>) {
                                         let png_dir = format!("{dir}/png");
                                         let _ = std::fs::create_dir_all(&csv_dir);
                                         let _ = std::fs::create_dir_all(&png_dir);
-                                        write_echo_csv(&format!("{csv_dir}/rotation_{ts}.csv"), &spokes);
+                                        let settings = state.settings.read().unwrap().clone();
+                                        write_echo_csv(&format!("{csv_dir}/rotation_{ts}.csv"), &spokes, &settings);
                                         render::write_png(&format!("{png_dir}/rotation_{ts}.png"), &pixels, PPI_SIZE, PPI_SIZE);
                                     }
                                 }
@@ -525,6 +562,10 @@ async fn handle_set_range(
     Query(params): Query<RangeParams>,
 ) -> String {
     let cmd = protocol::cmd_range(params.range_index);
+    if let Ok(mut s) = state.settings.write() {
+        s.range_index = params.range_index;
+        s.range_label = protocol::wire_index_to_label(params.range_index).to_string();
+    }
     send_cmd(state, cmd, "$N62,", format!("Range set to index {}", params.range_index)).await
 }
 
@@ -534,6 +575,7 @@ async fn handle_set_pulse(
 ) -> String {
     let range_idx = params.range_index.unwrap_or(0);
     let cmd = protocol::cmd_pulse_width(params.pulse, range_idx);
+    if let Ok(mut s) = state.settings.write() { s.pulse_width = params.pulse; }
     let names = ["S1", "S2", "M1", "M2", "M3", "L"];
     let name = names.get(params.pulse as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$N68,", format!("Pulse set to {name}")).await
@@ -546,6 +588,7 @@ async fn handle_set_gain(
     let auto = params.status == 1;
     let value = if auto { params.auto_value.unwrap_or(0) } else { params.manual_value.unwrap_or(50) };
     let cmd = protocol::cmd_gain(auto, value);
+    if let Ok(mut s) = state.settings.write() { s.gain_auto = auto; s.gain_value = value; }
     let mode = if auto { "auto" } else { "manual" };
     send_cmd(state, cmd, "$N63,", format!("Gain {mode}={value}")).await
 }
@@ -559,6 +602,7 @@ async fn handle_set_acsea(
     let auto_val = params.auto_val.unwrap_or(0);
     let sea_mode = params.mode.unwrap_or(0);
     let cmd = protocol::cmd_sea_clutter_full(status, manual, auto_val, sea_mode);
+    if let Ok(mut s) = state.settings.write() { s.sea_clutter = manual; }
     send_cmd(state, cmd, "$N64,", format!("A/C SEA: manual={manual}, auto={auto_val}")).await
 }
 
@@ -572,6 +616,7 @@ async fn handle_set_acrain(
     let ftc = params.ftc_mode.unwrap_or(0);
     let rain = params.rain_mode.unwrap_or(0);
     let cmd = protocol::cmd_rain_clutter_full(status, manual, auto_val, ftc, rain);
+    if let Ok(mut s) = state.settings.write() { s.rain_clutter = manual; }
     send_cmd(state, cmd, "$N65,", format!("A/C RAIN: manual={manual}, auto={auto_val}")).await
 }
 
@@ -581,6 +626,7 @@ async fn handle_set_rezboost(
 ) -> String {
     let mode = params.mode.unwrap_or(0);
     let cmd = protocol::cmd_rezboost(mode);
+    if let Ok(mut s) = state.settings.write() { s.rezboost = mode; }
     let names = ["Off", "Low", "Medium", "High"];
     let name = names.get(mode as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$NEE,", format!("RezBoost set to {name}")).await
@@ -593,6 +639,7 @@ async fn handle_set_antenna(
     let speed = params.roll_speed.unwrap_or(0);
     let hi_rpm = params.hi_rpm.unwrap_or(0) != 0;
     let cmd = protocol::cmd_antenna_revolution(speed, hi_rpm);
+    if let Ok(mut s) = state.settings.write() { s.antenna_speed = speed; }
     let speed_names = ["Low", "High", "Auto"];
     let speed_name = speed_names.get(speed as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$N89,", format!("Antenna: speed={speed_name}, hiRPM={hi_rpm}")).await
@@ -603,6 +650,7 @@ async fn handle_set_near_stc(
     Query(params): Query<ValueParam>,
 ) -> String {
     let cmd = protocol::cmd_near_stc(params.value);
+    if let Ok(mut s) = state.settings.write() { s.near_stc = params.value; }
     send_cmd(state, cmd, "$N85,", format!("Near STC set to {}", params.value)).await
 }
 
@@ -611,6 +659,7 @@ async fn handle_set_middle_stc(
     Query(params): Query<ValueParam>,
 ) -> String {
     let cmd = protocol::cmd_middle_stc(params.value);
+    if let Ok(mut s) = state.settings.write() { s.middle_stc = params.value; }
     send_cmd(state, cmd, "$N86,", format!("Middle STC set to {}", params.value)).await
 }
 
@@ -619,6 +668,7 @@ async fn handle_set_far_stc(
     Query(params): Query<ValueParam>,
 ) -> String {
     let cmd = protocol::cmd_far_stc(params.value);
+    if let Ok(mut s) = state.settings.write() { s.far_stc = params.value; }
     send_cmd(state, cmd, "$N87,", format!("Far STC set to {}", params.value)).await
 }
 
@@ -628,6 +678,7 @@ async fn handle_set_main_bang(
 ) -> String {
     let val = params.value.unwrap_or(0);
     let cmd = protocol::cmd_main_bang(val);
+    if let Ok(mut s) = state.settings.write() { s.main_bang = val; }
     send_cmd(state, cmd, "$N83,", format!("Main Bang Suppression set to {val}")).await
 }
 
@@ -637,6 +688,7 @@ async fn handle_set_ir(
 ) -> String {
     let enabled = params.enabled.unwrap_or(0) != 0;
     let cmd = protocol::cmd_interference_rejection(enabled);
+    if let Ok(mut s) = state.settings.write() { s.interference_rejection = enabled; }
     let label = if enabled { "ON" } else { "OFF" };
     send_cmd(state, cmd, "$N67,", format!("Interference Rejection {label}")).await
 }
@@ -647,6 +699,7 @@ async fn handle_set_bird_mode(
 ) -> String {
     let level = params.level.unwrap_or(0);
     let cmd = protocol::cmd_bird_mode(level);
+    if let Ok(mut s) = state.settings.write() { s.bird_mode = level; }
     let names = ["Off", "Low", "Medium", "High"];
     let name = names.get(level as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$NED,", format!("Bird Mode set to {name}")).await
@@ -658,6 +711,7 @@ async fn handle_set_doppler(
 ) -> String {
     let mode = params.mode.unwrap_or(0);
     let cmd = protocol::cmd_doppler(mode);
+    if let Ok(mut s) = state.settings.write() { s.doppler = mode; }
     let names = ["Off", "On (internal heading)", "On (external heading)"];
     let name = names.get(mode as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$NEF,", format!("Doppler set to {name}")).await
@@ -768,6 +822,12 @@ async fn handle_toggle_recording(
             }
             if let Ok(mut d) = state.record_dir.write() {
                 *d = dir.clone();
+            }
+            // Write initial settings.json for this recording session
+            if let Ok(settings) = state.settings.read() {
+                if let Ok(json) = serde_json::to_string_pretty(&*settings) {
+                    let _ = std::fs::write(format!("{dir}/settings.json"), json);
+                }
             }
             state.recording.store(true, Ordering::Relaxed);
             format!("Recording started. Saving to {dir}/")
@@ -1208,7 +1268,7 @@ fn timestamp_compact() -> String {
     format!("{y:04}{:02}{d:02}_{hours:02}{minutes:02}{seconds:02}", m + 1)
 }
 
-fn write_echo_csv(path: &str, spokes: &[Spoke]) {
+fn write_echo_csv(path: &str, spokes: &[Spoke], settings: &CurrentSettings) {
     use std::io::Write;
     let mut f = std::io::BufWriter::new(
         match std::fs::File::create(path) {
@@ -1219,6 +1279,26 @@ fn write_echo_csv(path: &str, spokes: &[Spoke]) {
             }
         },
     );
+
+    // Write metadata header as comment lines
+    let _ = writeln!(f, "# timestamp,{}", timestamp_compact());
+    let _ = writeln!(f, "# range_index,{}", settings.range_index);
+    let _ = writeln!(f, "# range_label,{}", settings.range_label);
+    let _ = writeln!(f, "# gain_auto,{}", settings.gain_auto);
+    let _ = writeln!(f, "# gain_value,{}", settings.gain_value);
+    let _ = writeln!(f, "# pulse_width,{}", settings.pulse_width);
+    let _ = writeln!(f, "# sea_clutter,{}", settings.sea_clutter);
+    let _ = writeln!(f, "# rain_clutter,{}", settings.rain_clutter);
+    let _ = writeln!(f, "# rezboost,{}", settings.rezboost);
+    let _ = writeln!(f, "# interference_rejection,{}", settings.interference_rejection);
+    let _ = writeln!(f, "# bird_mode,{}", settings.bird_mode);
+    let _ = writeln!(f, "# doppler,{}", settings.doppler);
+    let _ = writeln!(f, "# antenna_speed,{}", settings.antenna_speed);
+    let _ = writeln!(f, "# main_bang,{}", settings.main_bang);
+    let _ = writeln!(f, "# near_stc,{}", settings.near_stc);
+    let _ = writeln!(f, "# middle_stc,{}", settings.middle_stc);
+    let _ = writeln!(f, "# far_stc,{}", settings.far_stc);
+    let _ = writeln!(f, "# num_spokes,{}", spokes.len());
 
     let max_bins = spokes.iter().map(|s| s.echo.len()).max().unwrap_or(0);
     let mut header = String::from("spoke_index,angle_ticks,angle_deg,heading_ticks,num_bins");
