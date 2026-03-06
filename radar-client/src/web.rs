@@ -25,6 +25,8 @@ pub struct AppState {
     latest_png: RwLock<Vec<u8>>,
     tx_active: AtomicBool,
     connected: AtomicBool,
+    recording: AtomicBool,
+    record_dir: RwLock<String>,
     host_ip: Ipv4Addr,
 }
 
@@ -52,6 +54,8 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         latest_png: RwLock::new(Vec::new()),
         tx_active: AtomicBool::new(false),
         connected: AtomicBool::new(connected),
+        recording: AtomicBool::new(false),
+        record_dir: RwLock::new(String::new()),
         host_ip,
     });
 
@@ -85,6 +89,8 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         .route("/set_interference_rejection", get(handle_set_ir))
         .route("/set_bird_mode", get(handle_set_bird_mode))
         .route("/set_doppler", get(handle_set_doppler))
+        // Recording
+        .route("/toggle_recording", get(handle_toggle_recording))
         // Echo image
         .route("/newest_png", get(handle_newest_png))
         .route("/newest_trail", get(handle_newest_png))
@@ -140,13 +146,27 @@ fn echo_listener(state: Arc<AppState>) {
                 // Detect rotation wrap
                 if let Some(prev) = prev_az {
                     if az < prev.saturating_sub(1000) {
-                        // Rotation complete — render PPI
+                        // Rotation complete — render PPI + optionally save CSV
                         if !spokes.is_empty() {
                             let pixels = render::render_ppi(&spokes);
                             let png_bytes = render::encode_png_bytes(&pixels, PPI_SIZE, PPI_SIZE);
                             if let Ok(mut png) = state.latest_png.write() {
                                 *png = png_bytes;
                             }
+
+                            // Save CSV if recording
+                            if state.recording.load(Ordering::Relaxed) {
+                                if let Ok(dir) = state.record_dir.read() {
+                                    if !dir.is_empty() {
+                                        let ts = timestamp_compact();
+                                        let csv_path = format!("{dir}/rotation_{ts}.csv");
+                                        let png_path = format!("{dir}/rotation_{ts}.png");
+                                        write_echo_csv(&csv_path, &spokes);
+                                        render::write_png(&png_path, &pixels, PPI_SIZE, PPI_SIZE);
+                                    }
+                                }
+                            }
+
                             last_render = Instant::now();
                         }
                         spokes.clear();
@@ -730,6 +750,37 @@ async fn handle_get_system_info(State(state): State<Arc<AppState>>) -> axum::res
     ).into_response()
 }
 
+#[derive(Deserialize)]
+struct RecordingParams {
+    mode: String,
+}
+
+async fn handle_toggle_recording(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RecordingParams>,
+) -> String {
+    match params.mode.as_str() {
+        "on" | "start" => {
+            let ts = timestamp_compact();
+            let dir = format!("recordings/{ts}");
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                return format!("Failed to create directory: {e}");
+            }
+            if let Ok(mut d) = state.record_dir.write() {
+                *d = dir.clone();
+            }
+            state.recording.store(true, Ordering::Relaxed);
+            format!("Recording started. Saving to {dir}/")
+        }
+        "off" | "stop" => {
+            state.recording.store(false, Ordering::Relaxed);
+            let dir = state.record_dir.read().map(|d| d.clone()).unwrap_or_default();
+            format!("Recording stopped. Files in {dir}/")
+        }
+        _ => "Unknown mode (use start/stop)".into(),
+    }
+}
+
 async fn handle_stub() -> String {
     "OK".into()
 }
@@ -832,5 +883,77 @@ fn nix_statvfs(path: &str) -> Result<StatVfs, ()> {
         } else {
             Err(())
         }
+    }
+}
+
+// --- CSV + timestamp helpers ---
+
+fn timestamp_compact() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // Simple YYYYMMDD_HHMMSS from epoch
+    let s = secs as i64;
+    let days = s / 86400;
+    let time_of_day = s % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Days since epoch to Y/M/D
+    let mut y = 1970i32;
+    let mut remaining = days;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if remaining < days_in_year { break; }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 0usize;
+    for md in &month_days {
+        if remaining < *md { break; }
+        remaining -= md;
+        m += 1;
+    }
+    let d = remaining + 1;
+
+    format!("{y:04}{:02}{d:02}_{hours:02}{minutes:02}{seconds:02}", m + 1)
+}
+
+fn write_echo_csv(path: &str, spokes: &[Spoke]) {
+    use std::io::Write;
+    let mut f = std::io::BufWriter::new(
+        match std::fs::File::create(path) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Failed to create CSV {path}: {e}");
+                return;
+            }
+        },
+    );
+
+    let max_bins = spokes.iter().map(|s| s.echo.len()).max().unwrap_or(0);
+    let mut header = String::from("spoke_index,angle_ticks,angle_deg,heading_ticks,num_bins");
+    for i in 0..max_bins {
+        header.push_str(&format!(",bin_{i}"));
+    }
+    let _ = writeln!(f, "{header}");
+
+    for (i, spoke) in spokes.iter().enumerate() {
+        let angle_deg = spoke.angle_ticks as f64 / 8192.0 * 360.0;
+        let _ = write!(
+            f, "{i},{},{angle_deg:.2},{},{}",
+            spoke.angle_ticks, spoke.heading_ticks, spoke.echo.len()
+        );
+        for &val in &spoke.echo {
+            let _ = write!(f, ",{val}");
+        }
+        for _ in spoke.echo.len()..max_bins {
+            let _ = write!(f, ",0");
+        }
+        let _ = writeln!(f);
     }
 }

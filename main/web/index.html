@@ -94,6 +94,17 @@
         <div id="gainResult" class="callout callout--compact" role="status" aria-live="polite" style="display:none;"></div>
       </div>
 
+      <hr style="border:none; border-top:1px solid var(--border); margin:1rem 0;">
+
+      <div class="stack">
+        <label>CSV Recording</label>
+        <div class="inline-actions">
+          <button class="btn-on" onclick="toggleRecording('start')" style="flex: 1;">Record</button>
+          <button class="btn-off" onclick="toggleRecording('stop')" style="flex: 1;">Stop</button>
+        </div>
+        <div id="recordResult" class="callout callout--compact" role="status" aria-live="polite" style="display:none;"></div>
+      </div>
+
       <div class="stack">
         <label for="rezboostMode">RezBoost</label>
         <select id="rezboostMode">

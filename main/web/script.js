@@ -974,6 +974,15 @@ function refreshDoppler(){
     .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
 }
 
+/* ---------- RECORDING ---------- */
+function toggleRecording(mode){
+  fetch(`/toggle_recording?mode=${mode}`)
+    .then(r=>r.text()).then(t=>{
+      const variant = t.toLowerCase().includes('started') ? 'success' : 'info';
+      setCallout('recordResult', t, variant);
+    });
+}
+
 /* ---------- CONNECTION ---------- */
 function reconnectRadar(){
   setCallout('connStatus', 'Reconnecting...', 'info');
