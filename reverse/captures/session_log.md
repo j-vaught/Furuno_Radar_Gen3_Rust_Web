@@ -45,3 +45,20 @@ Default filter: `host 172.31.3.226 or net 239.255.0.0/16`
   - 2 ARP
 - **Packets/sec:** avg 86.2, min 6, max 93
 - **Notes:** Long capture for timing analysis. 10010 broadcast appears ~every 15s. TCP control at ~2/sec. Zero drops over 5 minutes confirms 8MB buffer sufficient.
+
+## Session 3: Range Changes (active)
+- **File:** `20260306_032603_range_changes.pcap`
+- **Duration:** ~70s
+- **Size:** 3.0M (3,133,371 bytes)
+- **Total packets:** 5,353
+- **Drops:** 0
+- **Filter:** `host 172.31.3.226 or net 239.255.0.0/16`
+- **Radar TX:** ON
+- **Command timestamps:**
+  - 03:26:03 - Capture start (baseline)
+  - 03:26:13 - `set_range rangeIndex=3` (0.75 NM)
+  - 03:26:28 - `set_range rangeIndex=6` (2 NM)
+  - 03:26:43 - `set_range rangeIndex=12` (12 NM)
+  - 03:26:58 - `set_range rangeIndex=0` (0.125 NM, return to default)
+  - 03:27:13 - Capture stop
+- **Notes:** Range changes should show as TCP command packets from host->radar near the logged timestamps. Echo packet sizes may change with range setting.
