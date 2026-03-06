@@ -1282,7 +1282,6 @@ fn write_echo_csv(path: &str, spokes: &[Spoke], settings: &CurrentSettings) {
 
     // Write metadata header as comment lines
     let _ = writeln!(f, "# range_index,{}", settings.range_index);
-    let _ = writeln!(f, "# range_label,{}", settings.range_label);
     let _ = writeln!(f, "# gain_auto,{}", settings.gain_auto);
     let _ = writeln!(f, "# gain_value,{}", settings.gain_value);
     let _ = writeln!(f, "# pulse_width,{}", settings.pulse_width);
@@ -1297,7 +1296,6 @@ fn write_echo_csv(path: &str, spokes: &[Spoke], settings: &CurrentSettings) {
     let _ = writeln!(f, "# near_stc,{}", settings.near_stc);
     let _ = writeln!(f, "# middle_stc,{}", settings.middle_stc);
     let _ = writeln!(f, "# far_stc,{}", settings.far_stc);
-    let _ = writeln!(f, "# num_spokes,{}", spokes.len());
 
     let max_bins = spokes.iter().map(|s| s.echo.len()).max().unwrap_or(0);
     let mut header = String::from("spoke_index,angle_ticks,angle_deg,heading_ticks,num_bins");
