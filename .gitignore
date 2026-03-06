@@ -1,6 +1,8 @@
 # Ignore build artifacts
 *.o
-main
+*.obj
+main/build/
+main/bin/
 
 # Data artifacts
 *.csv
@@ -13,12 +15,7 @@ main
 *.zst
 
 # Runtime output directories
-sample/raw/
-sample/images/
-sample/data/
-sample/data_*/
-sample/frames/
-sample/frames_*/
+main/runtime/output/
 collected_data/
 sample_backupv1/
 

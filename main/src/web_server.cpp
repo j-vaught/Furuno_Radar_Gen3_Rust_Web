@@ -52,8 +52,16 @@ struct ControlStep {
     uint16_t repeat;           // number of sweeps at this setting
 };
 
+struct LastPulseSetting {
+    int pulse = -1;
+    int rangeIndex = -1;
+    int rangeUnit = -1;
+    bool valid = false;
+};
+
 constexpr int REPEAT = 10; // Default repeat count for each step in the pattern
 extern std::atomic<bool> patternActive;
+static std::map<int, LastPulseSetting> g_lastPulseByRadar;
 
 extern void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepeats = -1);
 extern void StopPattern();
@@ -386,7 +394,12 @@ static std::string BuildSystemMetricsJson() {
     }
 
     // Storage usage
-    const std::vector<std::string> storageCandidates = {"images/unprocessed", "images/echo_trail", "raw/csv", "."};
+    const std::vector<std::string> storageCandidates = {
+        "runtime/output/images/unprocessed",
+        "runtime/output/images/echo_trail",
+        "runtime/output/raw/csv",
+        "."
+    };
     double storagePercent = 0.0;
     std::string storagePath = ".";
     for (const auto& path : storageCandidates) {
@@ -634,7 +647,7 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         if (ip_ec) {
             ip = "Unavailable";
         }
-        std::string newest = FindNewestPNGFile("images/unprocessed");
+        std::string newest = FindNewestPNGFile("runtime/output/images/unprocessed");
 
         std::ostringstream oss;
         oss << "{\"ip\": \"" << ip << "\", "
@@ -647,12 +660,12 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         return true;
     }
     if (path.rfind("/newest_png", 0) == 0) {
-        std::string newest = FindNewestPNGFile("images/unprocessed");
+        std::string newest = FindNewestPNGFile("runtime/output/images/unprocessed");
         if (newest.empty()) {
             WriteHttpResponse(socket, "No PNG found.\r\n", "text/plain");
             return true;
         }
-        std::ifstream ifs("images/unprocessed/" + newest, std::ios::binary);
+        std::ifstream ifs("runtime/output/images/unprocessed/" + newest, std::ios::binary);
         if (!ifs) {
             WriteHttpResponse(socket, "Cannot open the PNG.\r\n", "text/plain");
             return true;
@@ -669,7 +682,7 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         return true;
     }
     if (path.rfind("/newest_detection", 0) == 0) {
-        std::string det_path = "images/yolo_detect/latest.png";
+        std::string det_path = "runtime/output/images/yolo_detect/latest.png";
         std::ifstream ifs(det_path, std::ios::binary);
         if (!ifs) {
             WriteHttpResponse(socket, "No detection image yet.\r\n", "text/plain");
@@ -688,12 +701,12 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         return true;
     }
     if (path.rfind("/newest_trail", 0) == 0) {
-        std::string newest = FindNewestPNGFile("images/echo_trail");
+        std::string newest = FindNewestPNGFile("runtime/output/images/echo_trail");
         if (newest.empty()) {
             WriteHttpResponse(socket, "No trail image yet.\r\n", "text/plain");
             return true;
         }
-        std::ifstream ifs("images/echo_trail/" + newest, std::ios::binary);
+        std::ifstream ifs("runtime/output/images/echo_trail/" + newest, std::ios::binary);
         if (!ifs) {
             WriteHttpResponse(socket, "Cannot open trail PNG.\r\n", "text/plain");
             return true;
@@ -767,6 +780,11 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
             static_cast<Furuno::INT16>(rangeIndex),
             static_cast<Furuno::UINT16>(rangeUnit),
             0);
+        if (ret == 0) {
+            g_lastPulseByRadar[radarNo] = LastPulseSetting{
+                pulse, rangeIndex, rangeUnit, true
+            };
+        }
         WriteHttpResponse(socket,
             "<h2>Set Pulse Width</h2><p>RmcSetPulseWidth returned: "
             + std::to_string(ret) + "</p>");
@@ -1250,32 +1268,94 @@ static bool HandleRadarGetters(const std::string &path, boost::asio::ip::tcp::so
             << "<p>RadarNo=" << radar << "</p>\n";
 
         if (cmd == "ALL" || cmd == "RANGE") {
-            // RmcGetRange  — gets range code + unit
-            ret = Furuno::RmcGetRange(radar, &i16_1, &u16_1);
-            report << "<p>RmcGetRange returned " << ret
+            // Match /set_range API first, then fallback to legacy getter.
+            Furuno::UINT16 rangeShort = 0;
+            ret = Furuno::RmcGetRange_v2(radar, &i16_1, &u16_1, &rangeShort);
+            report << "<p>RmcGetRange_v2 returned " << ret
                 << " → code=" << i16_1
-                << ", unit=" << u16_1 << "</p>\n";
+                << ", unit=" << u16_1
+                << ", unitShort=" << rangeShort << "</p>\n";
+            if (ret != 0) {
+                ret = Furuno::RmcGetRange(radar, &i16_1, &u16_1);
+                report << "<p>RmcGetRange fallback returned " << ret
+                    << " → code=" << i16_1
+                    << ", unit=" << u16_1 << "</p>\n";
+            }
             if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
         }
 
         if (cmd == "ALL" || cmd == "GAIN") {
-            // RmcGetCustomGAIN — gets manual+auto gain
-            ret = Furuno::RmcGetCustomGAIN(radar, &pic, &u16_1, &u16_2, &u16_3);
-            report << "<p>RmcGetCustomGAIN returned " << ret
+            // Match /set_gain API first, then fallback to custom getter.
+            ret = Furuno::RmcGetGAIN(radar, &u16_1, &u16_2, &u16_3);
+            report << "<p>RmcGetGAIN returned " << ret
                 << " → mode=" << u16_1
                 << ", manual=" << u16_2
                 << ", auto=" << u16_3 << "</p>\n";
+            if (ret != 0) {
+                ret = Furuno::RmcGetCustomGAIN(radar, &pic, &u16_1, &u16_2, &u16_3);
+                report << "<p>RmcGetCustomGAIN fallback returned " << ret
+                    << " → mode=" << u16_1
+                    << ", manual=" << u16_2
+                    << ", auto=" << u16_3 << "</p>\n";
+            }
             if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
         }
 
         if (cmd == "ALL" || cmd == "PULSE") {
             // RmcGetPulseWidth — gets pulse width & PRF
-            Furuno::INT16 pulse, range;
-            Furuno::INT32 picPW;
+            Furuno::INT16 pulse = -1;
+            Furuno::INT16 range = -1;
+            Furuno::INT32 picPW = -1;
             ret = Furuno::RmcGetPulseWidth(radar, &pulse, &range, &u16_1, &picPW);
             report << "<p>RmcGetPulseWidth returned " << ret
                 << " → pulse=" << pulse
-                << ", prfUnit=" << u16_1 << "</p>\n";
+                << ", range=" << range
+                << ", unit=" << u16_1
+                << ", pictureNo=" << picPW << "</p>\n";
+            if (ret != 0) {
+                // Some radar/SDK combinations require an explicit pulse-width request first.
+                Furuno::INT16 activeRange = 0;
+                Furuno::UINT16 activeUnit = 0;
+                Furuno::UINT16 activeUnitShort = 0;
+                const int rangeRet = Furuno::RmcGetRange_v2(radar, &activeRange, &activeUnit, &activeUnitShort);
+                report << "<p>RmcGetRange_v2 (for pulse request context) returned " << rangeRet
+                    << " → code=" << activeRange
+                    << ", unit=" << activeUnit
+                    << ", unitShort=" << activeUnitShort << "</p>\n";
+
+                int reqRet = -999;
+                int retryRet = ret;
+                Furuno::INT16 pulseRetry = -1;
+                Furuno::INT16 rangeRetry = -1;
+                Furuno::UINT16 unitRetry = 0;
+                Furuno::INT32 picRetry = -1;
+
+                if (rangeRet == 0) {
+                    reqRet = Furuno::RmcReqPulseWidth(
+                        radar,
+                        static_cast<Furuno::UINT16>(activeRange),
+                        static_cast<Furuno::UINT16>(activeUnit),
+                        0);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+                    retryRet = Furuno::RmcGetPulseWidth(radar, &pulseRetry, &rangeRetry, &unitRetry, &picRetry);
+                }
+
+                report << "<p>RmcReqPulseWidth returned " << reqRet << "</p>\n";
+                report << "<p>RmcGetPulseWidth retry returned " << retryRet
+                    << " → pulse=" << pulseRetry
+                    << ", range=" << rangeRetry
+                    << ", unit=" << unitRetry
+                    << ", pictureNo=" << picRetry << "</p>\n";
+
+                const auto it = g_lastPulseByRadar.find(radar);
+                if (it != g_lastPulseByRadar.end() && it->second.valid) {
+                    report << "<p>Fallback (last set request) → pulse=" << it->second.pulse
+                        << ", rangeIndex=" << it->second.rangeIndex
+                        << ", unit=" << it->second.rangeUnit << "</p>\n";
+                } else {
+                    report << "<p>No cached pulse setting available for fallback.</p>\n";
+                }
+            }
             if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
         }
 

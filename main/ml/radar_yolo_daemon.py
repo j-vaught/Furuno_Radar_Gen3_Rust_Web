@@ -74,10 +74,13 @@ def find_newest(directory: Path) -> Path | None:
 
 
 def main():
+    script_dir = Path(__file__).resolve().parent
+    main_dir = script_dir.parent
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="ml/weights/yolo26_best.onnx")
-    parser.add_argument("--trail-dir", default="images/echo_trail")
-    parser.add_argument("--output-dir", default="images/yolo_detect")
+    parser.add_argument("--model", default=str(main_dir / "ml/weights/yolo26_best.onnx"))
+    parser.add_argument("--trail-dir", default=str(main_dir / "runtime/output/images/echo_trail"))
+    parser.add_argument("--output-dir", default=str(main_dir / "runtime/output/images/yolo_detect"))
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--poll-interval", type=float, default=0.3,
                         help="Seconds between checks for new frames")

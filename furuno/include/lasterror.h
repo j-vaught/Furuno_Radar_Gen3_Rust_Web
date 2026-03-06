@@ -1,7 +1,7 @@
 ﻿#ifndef __INCLUDE_LASTERROR_H
 #define __INCLUDE_LASTERROR_H (1)
 
-#include <FECLIB/fectype.h>
+#include <fectype.h>
 
 #ifndef __stdcall
 #	define __stdcall
