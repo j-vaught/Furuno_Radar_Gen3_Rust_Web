@@ -1,0 +1,12 @@
+jvaught:
+
+Add 'info' icons to the settings page so it explains what everything does, the max/min, etc.
+
+Add additional information encoding into CSVs.
+Add Doppler support for CSV; i.e., some way to decode them?
+Make it run faster, smoother. Verify that pattern loader still works.
+Make the system status page more comprehensive.
+Make the library more split up I guess - like I think it would be nice to have multiple files instead of just a single file to do everything. We can have a ton of smaller files that are easier to edit under their own libraries or whatnot.
+
+Make the start recording button more prominent on the front page.
+Add a detailed document detailing all the commands, how it all works with LaTeX diagrams and such, etc., etc.
