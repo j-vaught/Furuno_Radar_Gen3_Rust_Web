@@ -962,11 +962,15 @@ function setGainAuto(){
     .then(r=>r.text()).then(t=>setCallout('gainResult', t, 'info'));
 }
 function setACSEA(){
-  fetch(`/set_acsea?radarNo=${v('radarNo')}&status=1&manual=${v('seaMan')}&auto=${v('seaAuto')}&mode=0`)
+  const seaMode = v('seaMode'); // manual | auto
+  const status = seaMode === 'auto' ? 1 : 0;
+  fetch(`/set_acsea?radarNo=${v('radarNo')}&status=${status}&manual=${v('seaMan')}&auto=${v('seaAuto')}&mode=0`)
     .then(r=>r.text()).then(t=>setCallout('clutterResult', t, 'info'));
 }
 function setACRAIN(){
-  fetch(`/set_acrain?radarNo=${v('radarNo')}&status=1&manual=${v('rainMan')}&auto=${v('rainAuto')}&ftcMode=0&rainMode=0`)
+  const rainUiMode = v('rainMode'); // manual | auto
+  const status = rainUiMode === 'auto' ? 1 : 0;
+  fetch(`/set_acrain?radarNo=${v('radarNo')}&status=${status}&manual=${v('rainMan')}&auto=${v('rainAuto')}&ftcMode=0&rainMode=0`)
     .then(r=>r.text()).then(t=>setCallout('clutterResult', t, 'info'));
 }
 function refreshGain(){
