@@ -81,3 +81,17 @@ Default filter: `host 172.31.3.226 or net 239.255.0.0/16`
   - 03:47:41 - `set_gain status=1` (auto gain)
   - 03:47:51 - Capture stop
 - **Notes:** Gain changes are host->radar commands on TCP 10100. Echo intensity should change but packet sizes may stay similar since gain affects echo values, not packet structure.
+
+## Session 5: TX On/Off Toggle (active)
+- **File:** `20260306_034817_tx_toggle.pcap`
+- **Duration:** ~40s
+- **Size:** 1.2M (1,254,131 bytes)
+- **Total packets:** 2,080
+- **Drops:** 0
+- **Filter:** `host 172.31.3.226 or net 239.255.0.0/16`
+- **Command timestamps:**
+  - 03:48:17 - Capture start (TX on, echoes flowing)
+  - 03:48:27 - `toggle_echo mode=off` (standby)
+  - 03:48:42 - `toggle_echo mode=on` (TX resume)
+  - 03:48:57 - Capture stop
+- **Notes:** Packet count much lower than equivalent duration (2080 vs ~3400 expected) - confirms echo packets stop during standby. Look for TX command packets near timestamps and echo gap between 03:48:27-03:48:42.
