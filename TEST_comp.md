@@ -20,6 +20,12 @@ Validate that:
 - CSV output shifts meaningfully for major setting changes.
 - Queue/snapshot metrics advance while capture is active.
 
+## 2.1 Timing Rule
+
+- After every setter command, wait `5` seconds before running the corresponding getter/readback.
+- For batch loops, include `sleep 5` between each set/get cycle.
+- If a command still appears stale, retry the getter once after another `sleep 5`.
+
 ## 3. Preconditions
 
 - Repo root: `/usr/lib/NAVNETDLL`
@@ -105,66 +111,103 @@ All commands below keep `radarNo=0`.
 
 ```bash
 curl -s 'http://127.0.0.1:8080/set_range?radarNo=0&rangeIndex=2&rangeUnit=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=RANGE'
 curl -s 'http://127.0.0.1:8080/set_range?radarNo=0&rangeIndex=-1&rangeUnit=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_range?radarNo=0&rangeIndex=999&rangeUnit=0'
+sleep 5
 
 curl -s 'http://127.0.0.1:8080/set_pulse_width?radarNo=0&pulse=5&rangeIndex=2&rangeUnit=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=PULSE'
 curl -s 'http://127.0.0.1:8080/set_pulse_width?radarNo=0&pulse=-1&rangeIndex=2&rangeUnit=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_pulse_width?radarNo=0&pulse=6&rangeIndex=2&rangeUnit=0'
+sleep 5
 ```
 
 ### 7.2 Gain + STC + Clutter
 
 ```bash
 curl -s 'http://127.0.0.1:8080/set_gain?radarNo=0&status=0&manualValue=0&autoValue=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_gain?radarNo=0&status=0&manualValue=100&autoValue=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_gain?radarNo=0&status=0&manualValue=-1&autoValue=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_gain?radarNo=0&status=0&manualValue=101&autoValue=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=GAIN'
 
 curl -s 'http://127.0.0.1:8080/set_near_stc?radarNo=0&value=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_middle_stc?radarNo=0&value=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_far_stc?radarNo=0&value=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=STC&format=json'
 curl -s 'http://127.0.0.1:8080/set_near_stc?radarNo=0&value=-1'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_middle_stc?radarNo=0&value=4'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_far_stc?radarNo=0&value=3'
+sleep 5
 
 curl -s 'http://127.0.0.1:8080/set_acsea?radarNo=0&status=1&manual=20&auto=30&mode=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=ACSEA'
 curl -s 'http://127.0.0.1:8080/set_acsea?radarNo=0&status=1&manual=-1&auto=30&mode=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_acsea?radarNo=0&status=1&manual=101&auto=30&mode=0'
+sleep 5
 
 curl -s 'http://127.0.0.1:8080/set_acrain?radarNo=0&status=1&manual=40&auto=50&ftcMode=0&rainMode=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=ACRAIN'
 curl -s 'http://127.0.0.1:8080/set_acrain?radarNo=0&status=1&manual=-1&auto=50&ftcMode=0&rainMode=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_acrain?radarNo=0&status=1&manual=101&auto=50&ftcMode=0&rainMode=0'
+sleep 5
 ```
 
 ### 7.3 Antenna + RezBoost + Display
 
 ```bash
 curl -s 'http://127.0.0.1:8080/set_antenna_revolution?radarNo=0&rollSpeed=2&hiRpm=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=ANTREV'
 curl -s 'http://127.0.0.1:8080/set_antenna_revolution?radarNo=0&rollSpeed=-1&hiRpm=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_antenna_revolution?radarNo=0&rollSpeed=3&hiRpm=0'
+sleep 5
 
 curl -s 'http://127.0.0.1:8080/set_bearing_resolution?radarNo=0&mode=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_bearing_resolution?radarNo=0&mode=3'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_bearing_resolution?radarNo=0&mode=-1'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_bearing_resolution?radarNo=0&mode=99'
+sleep 5
 
 curl -s 'http://127.0.0.1:8080/set_sweep_total?mode=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_sweep_total?mode=4'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_sweep_total?mode=-1'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_sweep_total?mode=99'
+sleep 5
 
 curl -s 'http://127.0.0.1:8080/set_interpolation?enable=0'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_interpolation?enable=1'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_interpolation?enable=-1'
+sleep 5
 curl -s 'http://127.0.0.1:8080/set_interpolation?enable=2'
+sleep 5
 ```
 
 ## 8. Bulk Set/Readback Verification Loop
@@ -176,16 +219,19 @@ BASE='http://127.0.0.1:8080'
 
 for g in 0 25 50 75 100; do
   curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=$g&autoValue=0" >/dev/null
+  sleep 5
   curl -s "$BASE/get_current?radarNo=0&command=GAIN" | grep -E "manual=$g|manual="
 done
 
 for p in 0 1 2 3 4 5; do
   curl -s "$BASE/set_pulse_width?radarNo=0&pulse=$p&rangeIndex=2&rangeUnit=0" >/dev/null
+  sleep 5
   curl -s "$BASE/get_current?radarNo=0&command=PULSE" | grep -E "pulse=$p|pulse="
 done
 
 for r in 0 2 6 10 14 19 21; do
   curl -s "$BASE/set_range?radarNo=0&rangeIndex=$r&rangeUnit=0" >/dev/null
+  sleep 5
   curl -s "$BASE/get_current?radarNo=0&command=RANGE" | grep -E "code=$r|code="
 done
 ```
