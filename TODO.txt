@@ -9,4 +9,4 @@ Make the system status page more comprehensive.
 
 Make the start recording button more prominent on the front page.
 
-Need to update the README too.
+Need to update the README too. [DONE]
