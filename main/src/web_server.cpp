@@ -128,6 +128,46 @@ static std::map<std::string, std::string> ParseQueryParams(const std::string &pa
     return params;
 }
 
+static bool ParseIntStrict(const std::string& text, int& out) {
+    try {
+        size_t idx = 0;
+        int value = std::stoi(text, &idx);
+        if (idx != text.size()) {
+            return false;
+        }
+        out = value;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+static bool GetIntParam(const std::map<std::string, std::string>& params,
+                        const std::string& key,
+                        int& out,
+                        std::string& error,
+                        std::optional<int> minVal = std::nullopt,
+                        std::optional<int> maxVal = std::nullopt) {
+    const auto it = params.find(key);
+    if (it == params.end()) {
+        error = "Missing required query parameter: " + key;
+        return false;
+    }
+    if (!ParseIntStrict(it->second, out)) {
+        error = "Invalid integer for parameter: " + key;
+        return false;
+    }
+    if (minVal.has_value() && out < *minVal) {
+        error = "Parameter out of range: " + key + " (min " + std::to_string(*minVal) + ")";
+        return false;
+    }
+    if (maxVal.has_value() && out > *maxVal) {
+        error = "Parameter out of range: " + key + " (max " + std::to_string(*maxVal) + ")";
+        return false;
+    }
+    return true;
+}
+
 static bool IsValidControlStep(const ControlStep& s);
 static std::string UrlDecode(const std::string& str);
 
@@ -827,12 +867,17 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
 // ================================
 static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::socket &socket) {
     auto p = ParseQueryParams(path);
+    std::string error;
     if (path.rfind("/set_gain", 0) == 0) {
         auto params = ParseQueryParams(path);
-        int radarNo     = std::stoi(params["radarNo"]);
-        int status      = std::stoi(params["status"]);
-        int manualValue = std::stoi(params["manualValue"]);
-        int autoValue   = std::stoi(params["autoValue"]);
+        int radarNo = 0, status = 0, manualValue = 0, autoValue = 0;
+        if (!GetIntParam(params, "radarNo", radarNo, error, 0) ||
+            !GetIntParam(params, "status", status, error, 0, 1) ||
+            !GetIntParam(params, "manualValue", manualValue, error, 0, 100) ||
+            !GetIntParam(params, "autoValue", autoValue, error, 0, 100)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
 
         // Example call to your backend
         auto ret = Furuno::RmcSetGAIN(
@@ -848,9 +893,13 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_range", 0) == 0) {
         auto params = ParseQueryParams(path);
-        int radarNo    = std::stoi(params["radarNo"]);
-        int rangeIndex = std::stoi(params["rangeIndex"]);
-        int rangeUnit  = std::stoi(params["rangeUnit"]);
+        int radarNo = 0, rangeIndex = 0, rangeUnit = 0;
+        if (!GetIntParam(params, "radarNo", radarNo, error, 0) ||
+            !GetIntParam(params, "rangeIndex", rangeIndex, error, 0, 24) ||
+            !GetIntParam(params, "rangeUnit", rangeUnit, error, 0, 3)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
 
         auto ret = Furuno::RmcSetRange_v2(
             radarNo,
@@ -865,10 +914,14 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_pulse_width", 0) == 0) {
         auto p = ParseQueryParams(path);
-        int radarNo    = std::stoi(p["radarNo"]);
-        int pulse      = std::stoi(p["pulse"]);       // 0=S1…5=L
-        int rangeIndex = std::stoi(p["rangeIndex"]);  // 0–24
-        int rangeUnit  = std::stoi(p["rangeUnit"]);   // 0=NM,1=KM,2=SM,3=KYD
+        int radarNo = 0, pulse = 0, rangeIndex = 0, rangeUnit = 0;
+        if (!GetIntParam(p, "radarNo", radarNo, error, 0) ||
+            !GetIntParam(p, "pulse", pulse, error, 0, 5) ||
+            !GetIntParam(p, "rangeIndex", rangeIndex, error, 0, 24) ||
+            !GetIntParam(p, "rangeUnit", rangeUnit, error, 0, 3)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
         int ret = Furuno::RmcSetPulseWidth(
             radarNo,
             static_cast<Furuno::INT16>(pulse),
@@ -887,8 +940,12 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_near_stc", 0) == 0) {
         auto p = ParseQueryParams(path);
-        int radarNo = std::stoi(p["radarNo"]);
-        int val     = std::stoi(p["value"]);  // 0=2µs,1=2.5µs…4=4.2µs
+        int radarNo = 0, val = 0;
+        if (!GetIntParam(p, "radarNo", radarNo, error, 0) ||
+            !GetIntParam(p, "value", val, error, 0, 4)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
         int ret = Furuno::RmcSetNearSTC(
             radarNo,
             static_cast<Furuno::UINT16>(val)
@@ -900,8 +957,12 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_middle_stc", 0) == 0) {
         auto p = ParseQueryParams(path);
-        int radarNo = std::stoi(p["radarNo"]);
-        int val     = std::stoi(p["value"]);  // 0…3
+        int radarNo = 0, val = 0;
+        if (!GetIntParam(p, "radarNo", radarNo, error, 0) ||
+            !GetIntParam(p, "value", val, error, 0, 3)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
         int ret = Furuno::RmcSetMiddleSTC(
             radarNo,
             static_cast<Furuno::UINT16>(val)
@@ -913,8 +974,12 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_far_stc", 0) == 0) {
         auto p = ParseQueryParams(path);
-        int radarNo = std::stoi(p["radarNo"]);
-        int val     = std::stoi(p["value"]);  // 0…2
+        int radarNo = 0, val = 0;
+        if (!GetIntParam(p, "radarNo", radarNo, error, 0) ||
+            !GetIntParam(p, "value", val, error, 0, 2)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
         int ret = Furuno::RmcSetFarSTC(
             radarNo,
             static_cast<Furuno::UINT16>(val)
@@ -926,9 +991,13 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_antenna_revolution", 0) == 0) {
         auto p = ParseQueryParams(path);
-        int radarNo   = std::stoi(p["radarNo"]);
-        int rollSpeed = std::stoi(p["rollSpeed"]); // 0=LO,1=HI,2=AUTO
-        int hiRpm     = std::stoi(p["hiRpm"]);     // 0=OFF,1=ON
+        int radarNo = 0, rollSpeed = 0, hiRpm = 0;
+        if (!GetIntParam(p, "radarNo", radarNo, error, 0) ||
+            !GetIntParam(p, "rollSpeed", rollSpeed, error, 0, 2) ||
+            !GetIntParam(p, "hiRpm", hiRpm, error, 0, 1)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
         int ret = Furuno::RmcSetAntennaRevolution(
             radarNo,
             static_cast<Furuno::UINT16>(rollSpeed),
@@ -941,11 +1010,15 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_acsea", 0) == 0) {
         auto p = ParseQueryParams(path);
-        int radarNo = std::stoi(p["radarNo"]);
-        int st      = std::stoi(p["status"]); // 0=MANUAL,1=AUTO
-        int man     = std::stoi(p["manual"]); 
-        int aut     = std::stoi(p["auto"]);
-        int mode    = std::stoi(p["mode"]);   // 0=Advanced,1=Coastal
+        int radarNo = 0, st = 0, man = 0, aut = 0, mode = 0;
+        if (!GetIntParam(p, "radarNo", radarNo, error, 0) ||
+            !GetIntParam(p, "status", st, error, 0, 1) ||
+            !GetIntParam(p, "manual", man, error, 0, 100) ||
+            !GetIntParam(p, "auto", aut, error, 0, 100) ||
+            !GetIntParam(p, "mode", mode, error, 0, 1)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
         int ret = Furuno::RmcSetACSEA(
             radarNo,
             static_cast<Furuno::UINT16>(st),
@@ -960,12 +1033,16 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_acrain", 0) == 0) {
         auto p = ParseQueryParams(path);
-        int radarNo = std::stoi(p["radarNo"]);
-        int st      = std::stoi(p["status"]);   // 0=MANUAL,1=AUTO
-        int man     = std::stoi(p["manual"]);
-        int aut     = std::stoi(p["auto"]);
-        int ftc     = std::stoi(p["ftcMode"]);  // 0=OFF,1=FTC-1,2=FTC-2
-        int rain    = std::stoi(p["rainMode"]); // 0=Calm,1=Moderate,2=Rough
+        int radarNo = 0, st = 0, man = 0, aut = 0, ftc = 0, rain = 0;
+        if (!GetIntParam(p, "radarNo", radarNo, error, 0) ||
+            !GetIntParam(p, "status", st, error, 0, 1) ||
+            !GetIntParam(p, "manual", man, error, 0, 100) ||
+            !GetIntParam(p, "auto", aut, error, 0, 100) ||
+            !GetIntParam(p, "ftcMode", ftc, error, 0, 2) ||
+            !GetIntParam(p, "rainMode", rain, error, 0, 2)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
         int ret = Furuno::RmcSetACRAIN(
             radarNo,
             static_cast<Furuno::UINT16>(st),
@@ -981,8 +1058,17 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/toggle_echo", 0) == 0) {
         auto params = ParseQueryParams(path);
-        int radarNo = std::stoi(params["radarNo"]);
-        std::string mode = params["mode"]; // "on" or "off"
+        int radarNo = 0;
+        if (!GetIntParam(params, "radarNo", radarNo, error, 0)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
+        const auto modeIt = params.find("mode");
+        if (modeIt == params.end()) {
+            WriteJsonError(socket, 400, "invalid_params", "Missing required query parameter: mode");
+            return true;
+        }
+        std::string mode = modeIt->second; // "on" or "off"
         
         Furuno::INT32 ret = 0;
         if (mode == "on") {
@@ -1049,7 +1135,11 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_sweep_total", 0) == 0) {
         auto p   = ParseQueryParams(path);
-        int mode = std::stoi(p["mode"]);             // 0-4
+        int mode = 0;
+        if (!GetIntParam(p, "mode", mode, error, 0, 4)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
 
         // RAW Furuno call – no wrapper
         int ret = Furuno::RmSetEchoSweepTotal(static_cast<Furuno::INT16>(mode));
@@ -1062,7 +1152,11 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_interpolation", 0) == 0) {
         auto p     = ParseQueryParams(path);
-        int enable = std::stoi(p["enable"]);         // 0 or 1
+        int enable = 0;
+        if (!GetIntParam(p, "enable", enable, error, 0, 1)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
 
         // RAW Furuno call – no wrapper
         int ret = Furuno::RmSetEchoInterpolationFunc(
@@ -1076,7 +1170,11 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
     }
     if (path.rfind("/set_bearing_resolution", 0) == 0) {
         auto params  = ParseQueryParams(path);
-        int  radarNo = std::stoi(params["radarNo"]);
+        int radarNo = 0;
+        if (!GetIntParam(params, "radarNo", radarNo, error, 0)) {
+            WriteJsonError(socket, 400, "invalid_params", error);
+            return true;
+        }
 
         static const char* modeNames[] = { "Off", "Low", "Med", "High" };
 
@@ -1088,9 +1186,13 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
         );
 
         // 2) Decide new mode (0–3)
-        int requested = params.count("mode")
-        ? std::clamp(std::stoi(params["mode"]), 0, 3)
-        : 3;
+        int requested = 3;
+        if (params.count("mode")) {
+            if (!GetIntParam(params, "mode", requested, error, 0, 3)) {
+                WriteJsonError(socket, 400, "invalid_params", error);
+                return true;
+            }
+        }
         Furuno::UINT16 newMode = static_cast<Furuno::UINT16>(requested);
 
         // 3) Set it
