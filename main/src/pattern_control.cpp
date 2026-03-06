@@ -149,7 +149,11 @@ void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepea
     constexpr size_t PATTERN_CALIBRATION_THRESHOLD = 2000; // decided based on 100 gains, 5 ranges (500 patterns)
     renameOutputFolders(pattern.size(),
                         PATTERN_CALIBRATION_THRESHOLD,
-                        /* outputDirs */ {"images/unprocessed", "images/echo_trail", "raw/csv"},
+                        /* outputDirs */ {
+                            "runtime/output/images/unprocessed",
+                            "runtime/output/images/echo_trail",
+                            "runtime/output/raw/csv"
+                        },
                         /* recreateDirs */ false);
 }
 
@@ -255,7 +259,11 @@ void FinalizeControlPattern(size_t patternSize,
     constexpr size_t PATTERN_CALIBRATION_THRESHOLD = 2000;
     renameOutputFolders(patternSize,
                         PATTERN_CALIBRATION_THRESHOLD,
-                        {"images/unprocessed", "images/echo_trail", "raw/csv"},
+                        {
+                            "runtime/output/images/unprocessed",
+                            "runtime/output/images/echo_trail",
+                            "runtime/output/raw/csv"
+                        },
                         recreateDirs);
 
     patternActive = false;

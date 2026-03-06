@@ -386,7 +386,12 @@ static std::string BuildSystemMetricsJson() {
     }
 
     // Storage usage
-    const std::vector<std::string> storageCandidates = {"images/unprocessed", "images/echo_trail", "raw/csv", "."};
+    const std::vector<std::string> storageCandidates = {
+        "runtime/output/images/unprocessed",
+        "runtime/output/images/echo_trail",
+        "runtime/output/raw/csv",
+        "."
+    };
     double storagePercent = 0.0;
     std::string storagePath = ".";
     for (const auto& path : storageCandidates) {
@@ -634,7 +639,7 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         if (ip_ec) {
             ip = "Unavailable";
         }
-        std::string newest = FindNewestPNGFile("images/unprocessed");
+        std::string newest = FindNewestPNGFile("runtime/output/images/unprocessed");
 
         std::ostringstream oss;
         oss << "{\"ip\": \"" << ip << "\", "
@@ -647,12 +652,12 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         return true;
     }
     if (path.rfind("/newest_png", 0) == 0) {
-        std::string newest = FindNewestPNGFile("images/unprocessed");
+        std::string newest = FindNewestPNGFile("runtime/output/images/unprocessed");
         if (newest.empty()) {
             WriteHttpResponse(socket, "No PNG found.\r\n", "text/plain");
             return true;
         }
-        std::ifstream ifs("images/unprocessed/" + newest, std::ios::binary);
+        std::ifstream ifs("runtime/output/images/unprocessed/" + newest, std::ios::binary);
         if (!ifs) {
             WriteHttpResponse(socket, "Cannot open the PNG.\r\n", "text/plain");
             return true;
@@ -669,7 +674,7 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         return true;
     }
     if (path.rfind("/newest_detection", 0) == 0) {
-        std::string det_path = "images/yolo_detect/latest.png";
+        std::string det_path = "runtime/output/images/yolo_detect/latest.png";
         std::ifstream ifs(det_path, std::ios::binary);
         if (!ifs) {
             WriteHttpResponse(socket, "No detection image yet.\r\n", "text/plain");
@@ -688,12 +693,12 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         return true;
     }
     if (path.rfind("/newest_trail", 0) == 0) {
-        std::string newest = FindNewestPNGFile("images/echo_trail");
+        std::string newest = FindNewestPNGFile("runtime/output/images/echo_trail");
         if (newest.empty()) {
             WriteHttpResponse(socket, "No trail image yet.\r\n", "text/plain");
             return true;
         }
-        std::ifstream ifs("images/echo_trail/" + newest, std::ios::binary);
+        std::ifstream ifs("runtime/output/images/echo_trail/" + newest, std::ios::binary);
         if (!ifs) {
             WriteHttpResponse(socket, "Cannot open trail PNG.\r\n", "text/plain");
             return true;

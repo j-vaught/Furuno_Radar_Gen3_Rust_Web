@@ -113,15 +113,15 @@ void SweepWriterThread();
 // ========== ENTRY POINT ==========
 int main(int argc, char *argv[]) {
     if (argc < 5) return 1;
-    fs::create_directories("raw/csv");
-    fs::create_directories("images/unprocessed");
+    fs::create_directories("runtime/output/raw/csv");
+    fs::create_directories("runtime/output/images/unprocessed");
 
     // Clear ephemeral inference/viewing dirs on startup
     std::error_code ec;
-    fs::remove_all("images/echo_trail", ec);
-    fs::remove_all("images/yolo_detect", ec);
-    fs::create_directories("images/echo_trail");
-    fs::create_directories("images/yolo_detect/labels");
+    fs::remove_all("runtime/output/images/echo_trail", ec);
+    fs::remove_all("runtime/output/images/yolo_detect", ec);
+    fs::create_directories("runtime/output/images/echo_trail");
+    fs::create_directories("runtime/output/images/yolo_detect/labels");
 
     Furuno::UINT8 ipAddress[4] = { 0 };
     Furuno::UINT8 hostName[9] = { 0 };
@@ -250,9 +250,9 @@ static void __stdcall RadarEchoCallback(
         filename << timeStr << "_" << std::setw(3) << std::setfill('0') << ms.count();
 
         std::string base = filename.str();
-        fs::path csvPath = fs::path("raw/csv") / (base + ".csv");
-        fs::path pngPath = fs::path("images/unprocessed") / (base + ".png");
-        fs::path trailPath = fs::path("images/echo_trail") / (base + ".png");
+        fs::path csvPath = fs::path("runtime/output/raw/csv") / (base + ".csv");
+        fs::path pngPath = fs::path("runtime/output/images/unprocessed") / (base + ".png");
+        fs::path trailPath = fs::path("runtime/output/images/echo_trail") / (base + ".png");
 
         // Instead of writing files here, move the buffer into a job:
         SweepWriteJob job;
@@ -550,7 +550,8 @@ void SweepWriterThread() {
 
 static void PrintSensorList() {
 	int status, count = 0;
-	FILE *fp = fopen("../Sensor_list.txt", "r");
+	FILE *fp = fopen("runtime/license/Sensor_list.txt", "r");
+	if (!fp) fp = fopen("../Sensor_list.txt", "r");
 	char num_ID[200], equipment[200], sensor_name[200];
 
 	if (!fp) {

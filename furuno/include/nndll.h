@@ -1,7 +1,7 @@
 #ifndef __INCLUDE_NNDLL_H
 #define __INCLUDE_NNDLL_H (1)
 
-#include <FECLIB/fectype.h>
+#include <fectype.h>
 
 #ifndef __stdcall
 #	define __stdcall
