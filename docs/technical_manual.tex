@@ -8,9 +8,7 @@
 \usepackage{listings}
 \usepackage{xcolor}
 \usepackage{hyperref}
-\usepackage{tikz}
-\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc}
-\usepackage{bytefield}
+% TikZ and bytefield diagrams are compiled as standalone PDFs in figures/
 \usepackage{fancyhdr}
 \usepackage{titlesec}
 \usepackage{enumitem}
@@ -115,56 +113,7 @@ The radar and host communicate over a dedicated Ethernet link on the \texttt{172
 
 \begin{figure}[h]
 \centering
-\begin{tikzpicture}[
-    node distance=4cm,
-    box/.style={draw, thick, minimum width=5cm, minimum height=3.5cm, align=center, color=black90},
-    port/.style={font=\ttfamily\scriptsize, color=atlantic},
-    arrow/.style={-{Stealth[length=3mm]}, thick, color=garnet},
-    biarrow/.style={{Stealth[length=3mm]}-{Stealth[length=3mm]}, thick, color=garnet},
-    mcast/.style={-{Stealth[length=3mm]}, thick, dashed, color=horseshoe},
-]
-
-% Host box
-\node[box] (host) {
-    \textbf{\color{garnet}Host (Raspberry Pi)}\\[0.3em]
-    \texttt{172.31.1.100}\\[0.2em]
-    \texttt{radar-client}\\
-    HTTP :8080
-};
-
-% Radar box
-\node[box, right=4cm of host] (radar) {
-    \textbf{\color{garnet}Radar (DRS4DL+)}\\[0.3em]
-    \texttt{172.31.3.226}\\[0.2em]
-    TCP :10010\\
-    TCP :10100
-};
-
-% Connection arrows
-\draw[biarrow] ([yshift=0.8cm]host.east) -- ([yshift=0.8cm]radar.west)
-    node[midway, above, port] {TCP 10010 (auth)};
-
-\draw[biarrow] ([yshift=0cm]host.east) -- ([yshift=0cm]radar.west)
-    node[midway, above, port] {TCP 10100 (control)};
-
-\draw[mcast] ([yshift=-0.8cm]radar.west) -- ([yshift=-0.8cm]host.east)
-    node[midway, below, port] {UDP 239.255.0.2:10024 (echo)};
-
-% Broadcast below
-\node[port, below=0.5cm of radar] (bcast) {UDP :10010 (beacon)};
-\draw[mcast] (radar.south) -- (bcast);
-
-\node[port, below=0.3cm of bcast] (arpa) {UDP :10034 (ARPA)};
-
-% Browser
-\node[box, minimum height=1.5cm, minimum width=3cm, left=2cm of host] (browser) {
-    \textbf{\color{garnet}Browser}\\
-    Any device
-};
-\draw[biarrow] (browser.east) -- (host.west)
-    node[midway, above, port] {HTTP :8080};
-
-\end{tikzpicture}
+\includegraphics[width=\textwidth]{figures/fig_topology.pdf}
 \caption{Network topology of the radar system.}
 \label{fig:topology}
 \end{figure}
@@ -241,11 +190,7 @@ In addition to ASCII messages, the control channel uses an 8-byte binary keepali
 
 \begin{figure}[h]
 \centering
-\begin{bytefield}[bitwidth=1.5em]{32}
-\bitheader{0-31} \\
-\bitbox{32}{\texttt{00 00 00 08}} \\
-\bitbox{32}{\texttt{00 00 00 00}}
-\end{bytefield}
+\includegraphics{figures/fig_keepalive.pdf}
 \caption{Binary keepalive packet (8 bytes). The first 4 bytes encode the packet length.}
 \label{fig:keepalive}
 \end{figure}
@@ -258,24 +203,7 @@ The full cold-start initialization proceeds through six phases, illustrated in F
 
 \begin{figure}[h]
 \centering
-\begin{tikzpicture}[
-    phase/.style={draw, thick, minimum width=10cm, minimum height=0.8cm, align=center, fill=black10, color=black90},
-    arrow/.style={-{Stealth[length=2mm]}, thick, color=garnet},
-    note/.style={font=\small\itshape, color=black70},
-]
-
-\node[phase] (p1) at (0,0) {\textbf{Phase 1:} Radar broadcasts beacon on UDP 10010};
-\node[phase, below=0.3cm of p1] (p2) {\textbf{Phase 2:} TCP 10010 authentication (56-byte copyright exchange)};
-\node[phase, below=0.3cm of p2] (p3) {\textbf{Phase 3:} TCP 10100 control channel open $\to$ \texttt{\$N00,CLIENTCONNECTION}};
-\node[phase, below=0.3cm of p3] (p4) {\textbf{Phase 4:} Firmware query (\texttt{\$R96}) $\to$ version strings};
-\node[phase, below=0.3cm of p4] (p5) {\textbf{Phase 5:} Bulk register reads (184 \texttt{\$R} commands)};
-\node[phase, below=0.3cm of p5] (p6) {\textbf{Phase 6:} Ready for TX ON and echo data};
-
-\foreach \i/\j in {p1/p2, p2/p3, p3/p4, p4/p5, p5/p6} {
-    \draw[arrow] (\i.south) -- (\j.north);
-}
-
-\end{tikzpicture}
+\includegraphics[width=0.8\textwidth]{figures/fig_init_sequence.pdf}
 \caption{Initialization sequence phases.}
 \label{fig:init_sequence}
 \end{figure}
@@ -604,19 +532,7 @@ Each UDP echo packet consists of a 16-byte header followed by one or more spoke 
 
 \begin{figure}[h]
 \centering
-\begin{bytefield}[bitwidth=0.85em]{32}
-\bitheader{0,7,8,15,16,23,24,31} \\
-\begin{rightwordgroup}{Header\\(16 bytes)}
-\bitbox{16}{Sequence/Spoke Counter} & \bitbox{16}{Protocol Version (\texttt{0x0001})} \\
-\bitbox{32}{Reserved (\texttt{0x00000000})} \\
-\bitbox{32}{Timestamp} \\
-\bitbox{16}{Flags (\texttt{0x1500})} & \bitbox{16}{Config (\texttt{0xF009})}
-\end{rightwordgroup} \\
-\begin{rightwordgroup}{Spoke $n$}
-\bitbox{16}{Azimuth Angle (ticks)} & \bitbox{16}{Heading (ticks)} \\
-\bitbox{32}{Encoded Echo Data (variable length)\ldots}
-\end{rightwordgroup}
-\end{bytefield}
+\includegraphics{figures/fig_echo_packet.pdf}
 \caption{Echo UDP packet layout.}
 \label{fig:echo_packet}
 \end{figure}
@@ -669,24 +585,7 @@ Uses the two least significant bits for control. If $\texttt{bits}[1{:}0] = 00$,
 
 \begin{figure}[h]
 \centering
-\begin{tikzpicture}[
-    enc/.style={draw, thick, minimum width=3.5cm, minimum height=1.2cm, align=center, fill=black10},
-    label/.style={font=\small\bfseries, color=garnet},
-]
-\node[enc] (e0) at (0,0) {Encoding 0\\Raw};
-\node[enc] (e1) at (4.5,0) {Encoding 1\\RLE};
-\node[enc] (e2) at (9,0) {Encoding 2\\Delta RLE};
-\node[enc] (e3) at (13.5,0) {Encoding 3\\2-bit RLE};
-
-\node[label, above=0.1cm of e0] {Uncompressed};
-\node[label, above=0.1cm of e1] {Self-referencing};
-\node[label, above=0.1cm of e2] {Prev-spoke ref};
-\node[label, above=0.1cm of e3] {Dual reference};
-
-\draw[-{Stealth}, thick, color=atlantic] (e0) -- (e1) node[midway, below, font=\scriptsize] {+compression};
-\draw[-{Stealth}, thick, color=atlantic] (e1) -- (e2) node[midway, below, font=\scriptsize] {+temporal};
-\draw[-{Stealth}, thick, color=atlantic] (e2) -- (e3) node[midway, below, font=\scriptsize] {+hybrid};
-\end{tikzpicture}
+\includegraphics[width=\textwidth]{figures/fig_encoding_types.pdf}
 \caption{Progression of echo encoding complexity.}
 \label{fig:encoding_types}
 \end{figure}
@@ -729,30 +628,7 @@ When Doppler is \textbf{enabled} (status bit 8 = 1), the echo byte is split. Bit
 
 \begin{figure}[h]
 \centering
-\begin{tikzpicture}
-% Normal mode
-\node[font=\bfseries\color{garnet}] at (-2, 1.5) {Normal Mode:};
-\draw[thick] (0,1) rectangle (8,2);
-\foreach \x in {1,...,7} {
-    \draw (\x,1) -- (\x,2);
-}
-\node at (4, 1.5) {Intensity (8 bits, 0--252)};
-\node[font=\scriptsize] at (0.5, 0.7) {7};
-\node[font=\scriptsize] at (7.5, 0.7) {0};
-
-% Doppler mode
-\node[font=\bfseries\color{garnet}] at (-2, -0.5) {Doppler Mode:};
-\draw[thick] (0,-1) rectangle (8,0);
-\draw[thick] (1,-1) -- (1,0);
-\foreach \x in {2,...,7} {
-    \draw (\x,-1) -- (\x,0);
-}
-\draw[fill=atlantic!20] (0,-1) rectangle (1,0);
-\node[font=\scriptsize] at (0.5, -0.5) {\textbf{D}};
-\node at (4.5, -0.5) {Intensity (7 bits, 0--126)};
-\node[font=\scriptsize] at (0.5, -1.3) {7};
-\node[font=\scriptsize] at (7.5, -1.3) {0};
-\end{tikzpicture}
+\includegraphics[width=0.6\textwidth]{figures/fig_doppler_byte.pdf}
 \caption{Echo byte layout in normal vs. Doppler mode. The D bit indicates a moving target.}
 \label{fig:doppler_byte}
 \end{figure}
@@ -860,37 +736,7 @@ The Rust application is organized into eight modules. Figure~\ref{fig:modules} i
 
 \begin{figure}[h]
 \centering
-\begin{tikzpicture}[
-    mod/.style={draw, thick, minimum width=2.5cm, minimum height=0.8cm, align=center, fill=black10, font=\ttfamily\small},
-    dep/.style={-{Stealth[length=2mm]}, thick, color=atlantic},
-]
-
-\node[mod, fill=garnet!15] (main) at (0, 3) {main.rs};
-\node[mod] (modes) at (-4, 1.5) {modes.rs};
-\node[mod] (web) at (0, 1.5) {web.rs};
-\node[mod] (testing) at (4, 1.5) {testing.rs};
-\node[mod] (calibrate) at (6, 1.5) {calibrate.rs};
-\node[mod] (connection) at (-3, 0) {connection.rs};
-\node[mod] (echo) at (0, 0) {echo.rs};
-\node[mod] (render) at (3, 0) {render.rs};
-\node[mod, fill=garnet!15] (protocol) at (0, -1.5) {protocol.rs};
-
-\draw[dep] (main) -- (modes);
-\draw[dep] (main) -- (web);
-\draw[dep] (main) -- (testing);
-\draw[dep] (main) -- (calibrate);
-\draw[dep] (modes) -- (connection);
-\draw[dep] (modes) -- (echo);
-\draw[dep] (modes) -- (render);
-\draw[dep] (web) -- (connection);
-\draw[dep] (web) -- (render);
-\draw[dep] (testing) -- (connection);
-\draw[dep] (echo) -- (protocol);
-\draw[dep] (connection) -- (protocol);
-\draw[dep] (render) -- (protocol);
-\draw[dep] (echo) -- (connection);
-
-\end{tikzpicture}
+\includegraphics[width=0.8\textwidth]{figures/fig_modules.pdf}
 \caption{Module dependency graph. Shaded modules are the primary entry points.}
 \label{fig:modules}
 \end{figure}
@@ -914,25 +760,7 @@ The \texttt{RadarConnection} struct manages the radar lifecycle through five sta
 
 \begin{figure}[h]
 \centering
-\begin{tikzpicture}[
-    state/.style={draw, thick, minimum width=3cm, minimum height=0.8cm, align=center, fill=black10},
-    trans/.style={-{Stealth[length=2mm]}, thick, color=garnet},
-    label/.style={font=\small\itshape, color=atlantic, midway, above},
-]
-
-\node[state] (disc) at (0, 0) {Disconnected};
-\node[state] (auth) at (4, 0) {Authenticated};
-\node[state] (ctrl) at (8, 0) {ControlConnected};
-\node[state] (init) at (12, 0) {Initialized};
-\node[state] (tx) at (16, 0) {Transmitting};
-
-\draw[trans] (disc) -- (auth) node[label] {\texttt{auth()}};
-\draw[trans] (auth) -- (ctrl) node[label] {\texttt{connect\_control()}};
-\draw[trans] (ctrl) -- (init) node[label] {\texttt{init()}};
-\draw[trans] (init) -- (tx) node[label] {\texttt{tx\_on()}};
-\draw[trans] (tx) to[bend right=20] node[font=\small\itshape, color=atlantic, midway, below] {\texttt{tx\_off()}} (init);
-
-\end{tikzpicture}
+\includegraphics[width=\textwidth]{figures/fig_state_machine.pdf}
 \caption{RadarConnection state machine.}
 \label{fig:state_machine}
 \end{figure}

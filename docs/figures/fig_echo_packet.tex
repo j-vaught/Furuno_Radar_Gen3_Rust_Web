@@ -1,0 +1,18 @@
+\documentclass[border=5pt]{standalone}
+\usepackage{bytefield}
+
+\begin{document}
+\begin{bytefield}[bitwidth=0.85em]{32}
+\bitheader{0,7,8,15,16,23,24,31} \\
+\begin{rightwordgroup}{Header\\(16 bytes)}
+\bitbox{16}{Sequence/Spoke Counter} & \bitbox{16}{Protocol Version (\texttt{0x0001})} \\
+\bitbox{32}{Reserved (\texttt{0x00000000})} \\
+\bitbox{32}{Timestamp} \\
+\bitbox{16}{Flags (\texttt{0x1500})} & \bitbox{16}{Config (\texttt{0xF009})}
+\end{rightwordgroup} \\
+\begin{rightwordgroup}{Spoke $n$}
+\bitbox{16}{Azimuth Angle (ticks)} & \bitbox{16}{Heading (ticks)} \\
+\bitbox{32}{Encoded Echo Data (variable length)\ldots}
+\end{rightwordgroup}
+\end{bytefield}
+\end{document}

@@ -1,0 +1,29 @@
+\documentclass[border=5pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}
+\usepackage{xcolor}
+
+\definecolor{garnet}{HTML}{73000A}
+\definecolor{black10}{HTML}{ECECEC}
+\definecolor{atlantic}{HTML}{466A9F}
+
+\begin{document}
+\begin{tikzpicture}[
+    enc/.style={draw, thick, minimum width=3.5cm, minimum height=1.2cm, align=center, fill=black10},
+    label/.style={font=\small\bfseries, color=garnet},
+]
+\node[enc] (e0) at (0,0) {Encoding 0\\Raw};
+\node[enc] (e1) at (4.5,0) {Encoding 1\\RLE};
+\node[enc] (e2) at (9,0) {Encoding 2\\Delta RLE};
+\node[enc] (e3) at (13.5,0) {Encoding 3\\2-bit RLE};
+
+\node[label, above=0.1cm of e0] {Uncompressed};
+\node[label, above=0.1cm of e1] {Self-referencing};
+\node[label, above=0.1cm of e2] {Prev-spoke ref};
+\node[label, above=0.1cm of e3] {Dual reference};
+
+\draw[-{Stealth}, thick, color=atlantic] (e0) -- (e1) node[midway, below, font=\scriptsize] {+compression};
+\draw[-{Stealth}, thick, color=atlantic] (e1) -- (e2) node[midway, below, font=\scriptsize] {+temporal};
+\draw[-{Stealth}, thick, color=atlantic] (e2) -- (e3) node[midway, below, font=\scriptsize] {+hybrid};
+\end{tikzpicture}
+\end{document}
