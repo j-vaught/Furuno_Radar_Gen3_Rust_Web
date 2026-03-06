@@ -993,7 +993,7 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
                 (Furuno::UINT32)0,
                 (Furuno::UINT32)0
             );
-        } else {
+        } else if (mode == "off") {
             ret = Furuno::RmcSetTxStby(
                 radarNo,
                 (Furuno::UINT16)1,  // STBY=1
@@ -1001,13 +1001,16 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
                 (Furuno::UINT32)0,
                 (Furuno::UINT32)0
             );
+        } else {
+            WriteJsonError(socket, 400, "invalid_params", "mode must be 'on' or 'off'");
+            return true;
         }
             //run this 5 times if it fails to set the STC to 0.
-    int ret1, ret2, ret3;
+    int ret1 = -1, ret2 = -1, ret3 = -1;
     for (int attempt = 1; attempt <= 5; ++attempt) {
-        ret1  = Furuno::RmcSetNearSTC(   0, static_cast<Furuno::UINT16>(0));
-        ret2 = Furuno::RmcSetMiddleSTC( 0, static_cast<Furuno::UINT16>(0));
-        ret3 = Furuno::RmcSetFarSTC(    0, static_cast<Furuno::UINT16>(0));
+        ret1  = Furuno::RmcSetNearSTC(   radarNo, static_cast<Furuno::UINT16>(0));
+        ret2 = Furuno::RmcSetMiddleSTC( radarNo, static_cast<Furuno::UINT16>(0));
+        ret3 = Furuno::RmcSetFarSTC(    radarNo, static_cast<Furuno::UINT16>(0));
 
         if (ret1 == 0 && ret2 == 0 && ret3 == 0) {
             // Success!
@@ -1027,10 +1030,16 @@ static bool HandleRadarSetters(const std::string &path, boost::asio::ip::tcp::so
         }
     }
 
-    if (ret != 0 || ret2 != 0 || ret3 != 0) {
+    if (ret != 0 || ret1 != 0 || ret2 != 0 || ret3 != 0) {
         std::cerr << "Failed to set STC values after " 
                 << 5 << " attempts." << std::endl;
-        return -1;
+        std::ostringstream err;
+        err << "<h2>Toggle Echo</h2><p>RmcSetTxStby returned: " << ret
+            << "</p><p>STC reset failed: near=" << ret1
+            << ", middle=" << ret2
+            << ", far=" << ret3 << "</p>";
+        WriteHttpResponseWithStatus(socket, 500, err.str());
+        return true;
     }
 
         std::string resp = "<h2>Toggle Echo</h2><p>RmcSetTxStby returned: "
