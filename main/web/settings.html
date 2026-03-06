@@ -18,12 +18,13 @@
 
   <main class="layout-two">
     <section class="panel">
-      <h2>Select Radar</h2>
-      <div class="stack">
-        <label for="radarNo">Radar No.</label>
-        <input type="number" id="radarNo" value="0" min="0">
+      <h2>Connection</h2>
+      <input type="hidden" id="radarNo" value="0">
+      <div id="connStatus" class="callout" data-variant="info">Checking connection...</div>
+      <div class="inline-actions">
+        <button class="primary" onclick="reconnectRadar()" style="flex: 1;">Reconnect</button>
+        <button class="secondary" onclick="refreshConnectionStatus()" style="flex: 1;">Refresh Status</button>
       </div>
-      <p class="small-note">Select a radar to be used for all future settings in this session.</p>
     </section>
 
     <section class="panel">
@@ -251,6 +252,57 @@
         <button class="secondary" onclick="setSTC()" style="flex: 1;">Apply STC</button>
         <button class="secondary" onclick="refreshSTC()" style="flex: 1;">Read STC</button>
       </div>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>Signal Processing</h2>
+      <div class="grid grid--two">
+        <div class="stack">
+          <label for="mainBangVal">Main Bang Suppression</label>
+          <input id="mainBangVal" type="number" value="0" min="0" max="500">
+          <div class="inline-actions">
+            <button class="secondary" onclick="setMainBang()" style="flex: 1;">Apply</button>
+            <button class="secondary" onclick="refreshMainBang()" style="flex: 1;">Refresh</button>
+          </div>
+        </div>
+        <div class="stack">
+          <label for="irMode">Interference Rejection</label>
+          <select id="irMode">
+            <option value="0">Off</option>
+            <option value="1">On</option>
+          </select>
+          <div class="inline-actions">
+            <button class="secondary" onclick="setIR()" style="flex: 1;">Apply</button>
+            <button class="secondary" onclick="refreshIR()" style="flex: 1;">Refresh</button>
+          </div>
+        </div>
+        <div class="stack">
+          <label for="birdMode">Bird Mode</label>
+          <select id="birdMode">
+            <option value="0">Off</option>
+            <option value="1">Low</option>
+            <option value="2">Medium</option>
+            <option value="3">High</option>
+          </select>
+          <div class="inline-actions">
+            <button class="secondary" onclick="setBirdMode()" style="flex: 1;">Apply</button>
+            <button class="secondary" onclick="refreshBirdMode()" style="flex: 1;">Refresh</button>
+          </div>
+        </div>
+        <div class="stack">
+          <label for="dopplerMode">Doppler</label>
+          <select id="dopplerMode">
+            <option value="0">Off</option>
+            <option value="1">On (internal heading)</option>
+            <option value="2">On (external heading)</option>
+          </select>
+          <div class="inline-actions">
+            <button class="secondary" onclick="setDoppler()" style="flex: 1;">Apply</button>
+            <button class="secondary" onclick="refreshDoppler()" style="flex: 1;">Refresh</button>
+          </div>
+        </div>
+      </div>
+      <div id="signalResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
     </section>
 
     <section class="panel calib-lock-card">

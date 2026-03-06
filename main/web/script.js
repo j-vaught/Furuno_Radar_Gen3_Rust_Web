@@ -940,6 +940,64 @@ function refreshRezBoost() {
 }
 
 
+/* ---------- SIGNAL PROCESSING ---------- */
+function setMainBang(){
+  fetch(`/set_main_bang?value=${v('mainBangVal')}`)
+    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+}
+function refreshMainBang(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=MAINBANG`)
+    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+}
+function setIR(){
+  fetch(`/set_interference_rejection?enabled=${v('irMode')}`)
+    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+}
+function refreshIR(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=IR`)
+    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+}
+function setBirdMode(){
+  fetch(`/set_bird_mode?level=${v('birdMode')}`)
+    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+}
+function refreshBirdMode(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=BIRDMODE`)
+    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+}
+function setDoppler(){
+  fetch(`/set_doppler?mode=${v('dopplerMode')}`)
+    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+}
+function refreshDoppler(){
+  fetch(`/get_current?radarNo=${v('radarNo')}&command=DOPPLER`)
+    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+}
+
+/* ---------- CONNECTION ---------- */
+function reconnectRadar(){
+  setCallout('connStatus', 'Reconnecting...', 'info');
+  fetch('/reconnect')
+    .then(r=>r.text()).then(t=>{
+      const ok = t.toLowerCase().includes('reconnected');
+      setCallout('connStatus', t, ok ? 'success' : 'error');
+    })
+    .catch(err=>setCallout('connStatus', `Error: ${err.message}`, 'error'));
+}
+function refreshConnectionStatus(){
+  fetch('/get_system_info')
+    .then(r=>r.json())
+    .then(d=>{
+      const parts = [];
+      parts.push(d.connected ? 'Connected' : 'Disconnected');
+      if(d.tx_active) parts.push('TX ON');
+      if(d.firmware) parts.push(`FW: ${d.firmware}`);
+      const variant = d.connected ? 'success' : 'error';
+      setCallout('connStatus', parts.join(' | '), variant);
+    })
+    .catch(()=>setCallout('connStatus', 'Unable to reach server', 'error'));
+}
+
 /* ---------- DISPLAY ---------- */
 function applySweepInterp(){
   fetch(`/set_sweep_total?mode=${v('sweepMode')}`)
@@ -1008,6 +1066,11 @@ async function refreshSTC() {
 function $(sel){return document.querySelector(sel);}
 
 renderPatternQueue();
+
+// Auto-refresh connection status on load
+if (byId('connStatus')) {
+  refreshConnectionStatus();
+}
 
 const statusNewest = byId('statusNewestPng');
 if (statusNewest) {

@@ -8,11 +8,11 @@
   --text-strong: #1f2933;
   --text: #404b5a;
   --text-muted: #6b7280;
-  --accent: #2563eb;
-  --accent-muted: #4b72e0;
+  --accent: #73000A;
+  --accent-muted: #CC2E40;
   --danger: #b91c1c;
-  --success: #047857;
-  --radius: 12px;
+  --success: #65780B;
+  --radius: 0px;
   --transition: 180ms ease;
   font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -68,7 +68,7 @@ a:focus-visible {
 .app-nav a {
   padding: 0.45rem 0.85rem;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: 0;
   color: var(--text-muted);
   transition: background var(--transition), color var(--transition), border var(--transition);
 }
@@ -187,7 +187,7 @@ select {
   width: 100%;
   padding: 0.6rem 0.7rem;
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: 0;
   font: inherit;
   color: var(--text);
   background: var(--surface-alt);
@@ -211,7 +211,7 @@ textarea {
 button {
   font: inherit;
   cursor: pointer;
-  border-radius: 8px;
+  border-radius: 0;
   border: 1px solid var(--border-strong);
   padding: 0.55rem 0.9rem;
   background: var(--surface-alt);
@@ -288,7 +288,7 @@ button:focus-visible {
   aspect-ratio: 1;
   object-fit: contain;
   border: 1px solid var(--border-strong);
-  border-radius: 10px;
+  border-radius: 0;
   background: #000;
   margin: 0 auto;
   max-width: 400px;
@@ -330,7 +330,7 @@ button:focus-visible {
   width: min(90vw, 90vh);
   max-width: min(900px, 90vw);
   clip-path: circle(50%);
-  border-radius: 50%;
+  border-radius: 0;
 }
 
 .radar-viewport {
@@ -413,7 +413,7 @@ button:focus-visible {
   border: 1px solid var(--border-strong);
   background: var(--surface-alt);
   padding: 0.6rem 0.75rem;
-  border-radius: 8px;
+  border-radius: 0;
   font-size: 0.9rem;
   color: var(--text);
   transition: border var(--transition), background var(--transition), color var(--transition);
@@ -472,7 +472,7 @@ button:focus-visible {
   gap: 0.75rem;
   padding: 0.55rem 0.75rem;
   background: var(--surface-alt);
-  border-radius: 8px;
+  border-radius: 0;
   border: 1px solid var(--border-strong);
   font-size: 0.88rem;
   flex-wrap: wrap;
@@ -517,7 +517,7 @@ button:focus-visible {
   font-style: italic;
   padding: 0.55rem 0.75rem;
   background: var(--surface-alt);
-  border-radius: 8px;
+  border-radius: 0;
   border: 1px solid var(--border-strong);
 }
 
@@ -595,7 +595,7 @@ button:focus-visible {
 
 .progress {
   height: 0.4rem;
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--surface-alt);
   overflow: hidden;
   border: 1px solid var(--border-strong);
@@ -615,7 +615,7 @@ button:focus-visible {
 
 details {
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 0.6rem 0.75rem;
   background: var(--surface-alt);
 }
@@ -679,7 +679,7 @@ footer {
   right: 1.5rem;
   width: 42px;
   height: 42px;
-  border-radius: 50%;
+  border-radius: 0;
   border: 1px solid var(--border-strong);
   background: var(--surface);
   display: grid;
