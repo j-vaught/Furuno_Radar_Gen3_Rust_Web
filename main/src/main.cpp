@@ -94,6 +94,13 @@ std::thread sweepWriter;
 static Furuno::INT32 connectionStatus = -1;
 
 // ───────────────────────────────────────────────────────────────
+// Doppler / Target Analyzer Logging
+// ───────────────────────────────────────────────────────────────
+std::ofstream dopplerLog;
+std::atomic<bool> dopplerLogging{false};
+std::mutex dopplerLogMutex;
+
+// ───────────────────────────────────────────────────────────────
 // Forward Declarations
 // ───────────────────────────────────────────────────────────────
 static void __stdcall RadarEchoCallback(Furuno::INT32 no, Furuno::INT16 status, Furuno::UINT8 *echo, Furuno::INT16 sweep_len, Furuno::INT16 scale, Furuno::INT16 range, Furuno::INT16 angle, Furuno::INT16 heading, Furuno::INT16 h_flg);
@@ -272,6 +279,31 @@ static void __stdcall RadarEchoCallback(
         lastSweepAngle = -1;
     } else {
         lastSweepAngle = angle;
+    }
+
+    // Doppler field logging
+    if (dopplerLogging.load(std::memory_order_relaxed)) {
+        int hist[256] = {};
+        for (int i = 0; i < sweep_len && i < 1024; i++) hist[echo[i]]++;
+
+        auto now = std::chrono::steady_clock::now();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()).count();
+
+        std::lock_guard<std::mutex> lock(dopplerLogMutex);
+        if (dopplerLog.is_open()) {
+            dopplerLog << ms << ","
+                       << no << ","
+                       << status << ","
+                       << h_flg << ","
+                       << heading << ","
+                       << angle << ","
+                       << sweep_len << ","
+                       << range << ","
+                       << scale;
+            for (int i = 0; i < 256; i++) dopplerLog << "," << hist[i];
+            dopplerLog << "\n";
+        }
     }
 }
 

@@ -61,6 +61,9 @@ struct LastPulseSetting {
 
 constexpr int REPEAT = 10; // Default repeat count for each step in the pattern
 extern std::atomic<bool> patternActive;
+extern std::ofstream dopplerLog;
+extern std::atomic<bool> dopplerLogging;
+extern std::mutex dopplerLogMutex;
 static std::map<int, LastPulseSetting> g_lastPulseByRadar;
 
 extern void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepeats = -1);
@@ -1243,6 +1246,45 @@ static bool HandlePatternControl(const std::string &method,
         return true;
     }
 
+    // ── Doppler / Echo Color Type ──
+    if (path.rfind("/set_echo_color", 0) == 0) {
+        auto params = ParseQueryParams(path);
+        int mode = std::stoi(params["mode"]);
+        int sw = std::stoi(params["sw"]);
+        int autoPic = std::stoi(params["auto"]);
+        auto ret = Furuno::RmcSetEchoColorType(
+            0,
+            static_cast<Furuno::UINT16>(mode),
+            static_cast<Furuno::UINT16>(sw),
+            static_cast<Furuno::UINT16>(autoPic)
+        );
+        WriteHttpResponse(socket,
+            "<h2>Set Echo Color Type</h2><p>mode=" + std::to_string(mode)
+            + " sw=" + std::to_string(sw) + " auto=" + std::to_string(autoPic)
+            + " ret=" + std::to_string(ret) + "</p>");
+        return true;
+    }
+    if (path.rfind("/doppler_log", 0) == 0) {
+        auto params = ParseQueryParams(path);
+        std::string action = params["action"];
+        if (action == "start") {
+            std::lock_guard<std::mutex> lock(dopplerLogMutex);
+            std::filesystem::create_directories("runtime/output");
+            dopplerLog.open("runtime/output/doppler_log.csv", std::ios::out | std::ios::trunc);
+            dopplerLog << "time_ms,radar_no,status,h_flg,heading,angle,sweep_len,range,scale";
+            for (int i = 0; i < 256; i++) dopplerLog << ",bin" << i;
+            dopplerLog << "\n";
+            dopplerLogging.store(true, std::memory_order_relaxed);
+            WriteHttpResponse(socket, "<h2>Doppler Logging Started</h2>");
+        } else {
+            dopplerLogging.store(false, std::memory_order_relaxed);
+            std::lock_guard<std::mutex> lock(dopplerLogMutex);
+            if (dopplerLog.is_open()) dopplerLog.close();
+            WriteHttpResponse(socket, "<h2>Doppler Logging Stopped</h2>");
+        }
+        return true;
+    }
+
     return false;
 }
 
@@ -1412,6 +1454,16 @@ static bool HandleRadarGetters(const std::string &path, boost::asio::ip::tcp::so
                 << ", auto="        << u16_3
                 << ", ftcMode="     << u16_4
                 << ", rainMode="    << u16_5
+                << "</p>\n";
+            if (cmd != "ALL") {WriteHttpResponse(socket, report.str()); return true; }
+        }
+
+        if (cmd == "ALL" || cmd == "ECHOCOLORTYPE") {
+            ret = Furuno::RmcGetEchoColorType(radar, &u16_1, &u16_2, &u16_3);
+            report << "<p>RmcGetEchoColorType returned " << ret
+                << " → mode=" << u16_1
+                << ", sw=" << u16_2
+                << ", autoPicture=" << u16_3
                 << "</p>\n";
             if (cmd != "ALL") {WriteHttpResponse(socket, report.str()); return true; }
         }
