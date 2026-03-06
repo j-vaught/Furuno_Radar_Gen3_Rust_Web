@@ -4,7 +4,7 @@ use crate::protocol;
 use crate::connection::{self, RadarConnection, create_echo_socket};
 use crate::echo::collect_rotation_stats;
 use crate::render::{self, PPI_SIZE};
-use crate::{RADAR_IP, HOST_IP};
+use crate::{radar_ip, host_ip};
 
 pub fn run_calibrate(args: &[String]) {
     let mut ranges: Vec<u16> = vec![0, 6, 10];
@@ -80,7 +80,7 @@ pub fn run_calibrate(args: &[String]) {
     println!("  Output: {}", output_dir);
     println!();
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         eprintln!("Init failed: {e}");
         std::process::exit(1);
@@ -95,7 +95,7 @@ pub fn run_calibrate(args: &[String]) {
     conn.set_nonblocking(true).unwrap();
     conn.state = connection::ConnectionState::Transmitting;
 
-    let echo_socket = create_echo_socket(HOST_IP);
+    let echo_socket = create_echo_socket(host_ip());
 
     let mut prev_spoke_data: Vec<u8> = Vec::new();
 

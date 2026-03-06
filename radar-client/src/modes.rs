@@ -6,12 +6,12 @@ use crate::protocol::{self, Spoke, decode_echo_packet};
 use crate::connection::{self, RadarConnection, create_echo_socket};
 use crate::echo::{self, parse_echo_header, write_echo_csv};
 use crate::render::{self, PPI_SIZE};
-use crate::{RADAR_IP, HOST_IP};
+use crate::{radar_ip, host_ip};
 
 pub fn run_handshake() {
     println!("=== Handshake: Auth + Control + Init ===\n");
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         eprintln!("Handshake failed: {e}");
         std::process::exit(1);
@@ -26,7 +26,7 @@ pub fn run_handshake() {
 pub fn run_tx_on() {
     println!("=== TX ON ===\n");
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         eprintln!("Init failed: {e}");
         std::process::exit(1);
@@ -43,7 +43,7 @@ pub fn run_tx_on() {
 pub fn run_tx_off() {
     println!("=== TX OFF (Standby) ===\n");
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         eprintln!("Init failed: {e}");
         std::process::exit(1);
@@ -60,7 +60,7 @@ pub fn run_tx_off() {
 pub fn run_full() {
     println!("=== Full: Connect + TX ON + Collect 1 Rotation + CSV + PNG ===\n");
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         eprintln!("Init failed: {e}");
         std::process::exit(1);
@@ -73,7 +73,7 @@ pub fn run_full() {
 
     conn.set_nonblocking(true).unwrap();
 
-    let echo_socket = create_echo_socket(HOST_IP);
+    let echo_socket = create_echo_socket(host_ip());
 
     let mut buf = [0u8; 2048];
     let mut spokes: Vec<Spoke> = Vec::new();
@@ -146,7 +146,7 @@ pub fn run_echo_listen() {
     let port_echo = protocol::FURUNO_DATA_PORT;
     println!("=== Echo Listener (UDP multicast {multicast_echo}:{port_echo}) ===");
 
-    let echo_socket = create_echo_socket(HOST_IP);
+    let echo_socket = create_echo_socket(host_ip());
     echo_socket
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -197,7 +197,7 @@ pub fn run_echo_listen() {
 pub fn run_command_test() {
     println!("=== Command Test ===\n");
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         eprintln!("Init failed: {e}");
         std::process::exit(1);
@@ -235,7 +235,7 @@ pub fn run_command_test() {
 pub fn run_dump_raw(count: usize) {
     println!("=== Raw Packet Dump ({count} packets) ===\n");
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         eprintln!("Init failed: {e}");
         std::process::exit(1);
@@ -247,7 +247,7 @@ pub fn run_dump_raw(count: usize) {
     }
     conn.set_nonblocking(true).unwrap();
 
-    let echo_socket = create_echo_socket(HOST_IP);
+    let echo_socket = create_echo_socket(host_ip());
     echo_socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
 
     let mut buf = [0u8; 2048];
@@ -394,7 +394,7 @@ pub fn run_render_csv(csv_path: &str, out_path: &str) {
 pub fn run_render_live(out_path: &str) {
     println!("=== Live PPI Capture ===\n");
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         eprintln!("Init failed: {e}");
         std::process::exit(1);
@@ -406,7 +406,7 @@ pub fn run_render_live(out_path: &str) {
     }
     conn.set_nonblocking(true).unwrap();
 
-    let echo_socket = create_echo_socket(HOST_IP);
+    let echo_socket = create_echo_socket(host_ip());
 
     let mut buf = [0u8; 2048];
     let mut spokes: Vec<Spoke> = Vec::new();

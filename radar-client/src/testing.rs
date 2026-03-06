@@ -5,12 +5,12 @@ use crate::protocol;
 use crate::connection::{RadarConnection, create_echo_socket};
 use crate::echo::{self, collect_rotation_stats, write_echo_csv, timestamp_str};
 use crate::render::{self, PPI_SIZE};
-use crate::{RADAR_IP, HOST_IP};
+use crate::{radar_ip, host_ip};
 
 pub fn run_test_commands() {
     println!("=== Command Verification Test ===\n");
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         eprintln!("Init failed: {e}");
         std::process::exit(1);
@@ -22,7 +22,7 @@ pub fn run_test_commands() {
     }
     conn.set_nonblocking(true).unwrap();
 
-    let echo_socket = create_echo_socket(HOST_IP);
+    let echo_socket = create_echo_socket(host_ip());
 
     let mut prev_spoke_data: Vec<u8> = Vec::new();
 
@@ -324,7 +324,7 @@ pub fn run_validate() {
     // --- Phase 1: Connect ---
     log!("--- Phase 1: Connection & Init ---");
 
-    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    let mut conn = RadarConnection::new(radar_ip(), host_ip());
     if let Err(e) = conn.connect_full() {
         log!("FAIL: Connection failed: {e}");
         fail_count += 1;
@@ -350,7 +350,7 @@ pub fn run_validate() {
     pass_count += 1;
 
     conn.set_nonblocking(true).unwrap();
-    let echo_socket = create_echo_socket(HOST_IP);
+    let echo_socket = create_echo_socket(host_ip());
 
     log!("  Waiting for echo data...");
     let mut prev_spoke_data: Vec<u8> = Vec::new();
@@ -727,8 +727,8 @@ fn write_report(dir: &str, lines: &[String], pass: u32, fail: u32, skip: u32) {
     );
     writeln!(f, "Radar Validation Report").unwrap();
     writeln!(f, "Timestamp: {}", echo::timestamp_str()).unwrap();
-    writeln!(f, "Radar IP: {RADAR_IP}").unwrap();
-    writeln!(f, "Host IP: {HOST_IP}").unwrap();
+    writeln!(f, "Radar IP: {}", radar_ip()).unwrap();
+    writeln!(f, "Host IP: {}", host_ip()).unwrap();
     writeln!(f, "").unwrap();
     for line in lines {
         writeln!(f, "{line}").unwrap();

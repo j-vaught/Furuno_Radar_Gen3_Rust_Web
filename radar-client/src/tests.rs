@@ -5,18 +5,18 @@
 #[cfg(test)]
 mod connection_tests {
     use crate::connection::{RadarConnection, create_echo_socket};
-    use crate::{RADAR_IP, HOST_IP};
+    use crate::{radar_ip, host_ip};
 
     #[test]
     fn test_auth_succeeds() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         let result = conn.auth();
         assert!(result.is_ok(), "Auth failed: {:?}", result.err());
     }
 
     #[test]
     fn test_connect_control() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.auth().expect("auth failed");
         let result = conn.connect_control();
         assert!(result.is_ok(), "Control connect failed: {:?}", result.err());
@@ -24,14 +24,14 @@ mod connection_tests {
 
     #[test]
     fn test_connect_full() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         let result = conn.connect_full();
         assert!(result.is_ok(), "Full connect failed: {:?}", result.err());
     }
 
     #[test]
     fn test_firmware_populated() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.connect_full().expect("connect failed");
         assert!(conn.firmware.is_some(), "Firmware should be populated after init");
         let fw = conn.firmware.as_ref().unwrap();
@@ -41,7 +41,7 @@ mod connection_tests {
 
     #[test]
     fn test_keepalive_succeeds() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.connect_full().expect("connect failed");
         let result = conn.send_keepalive();
         assert!(result.is_ok(), "Keepalive failed: {:?}", result.err());
@@ -49,7 +49,7 @@ mod connection_tests {
 
     #[test]
     fn test_echo_socket_creation() {
-        let sock = create_echo_socket(HOST_IP);
+        let sock = create_echo_socket(host_ip());
         // Socket should have a timeout set
         let timeout = sock.read_timeout().unwrap();
         assert!(timeout.is_some(), "Echo socket should have a read timeout");
@@ -61,11 +61,11 @@ mod tx_tests {
     use std::time::Duration;
     use crate::connection::{RadarConnection, create_echo_socket};
     use crate::protocol;
-    use crate::{RADAR_IP, HOST_IP};
+    use crate::{radar_ip, host_ip};
 
     #[test]
     fn test_tx_on_off_cycle() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.connect_full().expect("connect failed");
 
         // TX ON
@@ -86,12 +86,12 @@ mod tx_tests {
 
     #[test]
     fn test_echo_packets_received() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.connect_full().expect("connect failed");
         conn.tx_on().expect("TX ON failed");
         conn.set_nonblocking(true).unwrap();
 
-        let echo_socket = create_echo_socket(HOST_IP);
+        let echo_socket = create_echo_socket(host_ip());
         let mut buf = [0u8; 2048];
         let start = std::time::Instant::now();
         let mut pkt_count = 0u32;
@@ -117,12 +117,12 @@ mod tx_tests {
 
     #[test]
     fn test_full_rotation_collected() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.connect_full().expect("connect failed");
         conn.tx_on().expect("TX ON failed");
         conn.set_nonblocking(true).unwrap();
 
-        let echo_socket = create_echo_socket(HOST_IP);
+        let echo_socket = create_echo_socket(host_ip());
         let mut prev_spoke_data = Vec::new();
         let (spokes, stats) = crate::echo::collect_rotation_stats(
             &echo_socket, &mut conn, &mut prev_spoke_data
@@ -143,10 +143,10 @@ mod settings_tests {
     use std::time::Duration;
     use crate::connection::RadarConnection;
     use crate::protocol;
-    use crate::{RADAR_IP, HOST_IP};
+    use crate::{radar_ip, host_ip};
 
     fn setup_conn() -> RadarConnection {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.connect_full().expect("connect failed");
         conn
     }
@@ -334,16 +334,16 @@ mod echo_impact_tests {
     use crate::connection::{RadarConnection, create_echo_socket};
     use crate::echo::collect_rotation_stats;
     use crate::protocol;
-    use crate::{RADAR_IP, HOST_IP};
+    use crate::{radar_ip, host_ip};
 
     #[test]
     fn test_gain_affects_echo_amplitude() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.connect_full().expect("connect failed");
         conn.tx_on().expect("TX ON failed");
         conn.set_nonblocking(true).unwrap();
 
-        let echo_socket = create_echo_socket(HOST_IP);
+        let echo_socket = create_echo_socket(host_ip());
         let mut prev_spoke_data = Vec::new();
 
         // Reset to known state
@@ -378,12 +378,12 @@ mod echo_impact_tests {
 
     #[test]
     fn test_range_change_produces_data() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.connect_full().expect("connect failed");
         conn.tx_on().expect("TX ON failed");
         conn.set_nonblocking(true).unwrap();
 
-        let echo_socket = create_echo_socket(HOST_IP);
+        let echo_socket = create_echo_socket(host_ip());
         let mut prev_spoke_data = Vec::new();
 
         // Short range
@@ -423,16 +423,16 @@ mod render_integration_tests {
     use crate::connection::{RadarConnection, create_echo_socket};
     use crate::echo::collect_rotation_stats;
     use crate::render::{self, PPI_SIZE};
-    use crate::{RADAR_IP, HOST_IP};
+    use crate::{radar_ip, host_ip};
 
     #[test]
     fn test_render_live_rotation() {
-        let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+        let mut conn = RadarConnection::new(radar_ip(), host_ip());
         conn.connect_full().expect("connect failed");
         conn.tx_on().expect("TX ON failed");
         conn.set_nonblocking(true).unwrap();
 
-        let echo_socket = create_echo_socket(HOST_IP);
+        let echo_socket = create_echo_socket(host_ip());
         let mut prev_spoke_data = Vec::new();
         let (spokes, _stats) = collect_rotation_stats(&echo_socket, &mut conn, &mut prev_spoke_data);
 

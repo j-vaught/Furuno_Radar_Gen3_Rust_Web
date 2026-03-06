@@ -732,3 +732,171 @@ pub fn generate_pattern(
     }
     pattern
 }
+
+// --- Network interface detection ---
+
+/// Represents a local network interface with IPv4 address and broadcast.
+pub struct NetInterface {
+    pub name: String,
+    pub ip: Ipv4Addr,
+    pub broadcast: Ipv4Addr,
+}
+
+/// Detect all IPv4 network interfaces with broadcast addresses.
+/// Parses /proc/net/if_inet6 is not needed — uses `ip -4 addr` output.
+pub fn detect_interfaces() -> Vec<NetInterface> {
+    let output = match std::process::Command::new("ip")
+        .args(["-4", "-o", "addr", "show"])
+        .output()
+    {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut interfaces = Vec::new();
+
+    for line in text.lines() {
+        // Format: "2: eth0    inet 172.31.1.100/16 brd 172.31.255.255 ..."
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let name_idx = parts.iter().position(|&p| p == "inet");
+        if name_idx.is_none() { continue; }
+        let name_idx = name_idx.unwrap();
+
+        // Interface name is at index 1, strip trailing colon-like chars
+        let iface_name = if parts.len() > 1 {
+            parts[1].trim_end_matches(':').to_string()
+        } else {
+            continue;
+        };
+
+        // Skip loopback
+        if iface_name == "lo" { continue; }
+
+        // IP is after "inet", may have /prefix
+        if name_idx + 1 >= parts.len() { continue; }
+        let ip_str = parts[name_idx + 1].split('/').next().unwrap_or("");
+        let ip: Ipv4Addr = match ip_str.parse() {
+            Ok(ip) => ip,
+            Err(_) => continue,
+        };
+
+        // Broadcast is after "brd"
+        let brd_idx = parts.iter().position(|&p| p == "brd");
+        let broadcast = if let Some(bi) = brd_idx {
+            if bi + 1 < parts.len() {
+                parts[bi + 1].parse().unwrap_or(Ipv4Addr::BROADCAST)
+            } else {
+                Ipv4Addr::BROADCAST
+            }
+        } else {
+            Ipv4Addr::BROADCAST
+        };
+
+        interfaces.push(NetInterface { name: iface_name, ip, broadcast });
+    }
+
+    interfaces
+}
+
+/// Attempt to discover a Furuno radar on the network via UDP beacon.
+/// Tries each network interface's broadcast address.
+/// Returns (radar_ip, host_ip) if found.
+pub fn discover_radar(timeout_secs: u64) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    use std::net::{SocketAddr, UdpSocket};
+    use std::time::{Duration, Instant};
+
+    let interfaces = detect_interfaces();
+    if interfaces.is_empty() {
+        eprintln!("No network interfaces found for discovery");
+        return None;
+    }
+
+    let sock = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).ok()?;
+    sock.set_broadcast(true).ok()?;
+    sock.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
+
+    println!("Scanning for radar on {} interface(s)...", interfaces.len());
+
+    for iface in &interfaces {
+        println!("  {} — {} (brd {})", iface.name, iface.ip, iface.broadcast);
+    }
+
+    let start = Instant::now();
+    let mut attempt = 0u32;
+
+    while start.elapsed() < Duration::from_secs(timeout_secs) {
+        attempt += 1;
+
+        for iface in &interfaces {
+            let dest = SocketAddr::from((iface.broadcast, FURUNO_BEACON_PORT));
+            let _ = sock.send_to(&BEACON_ANNOUNCE, dest);
+            let _ = sock.send_to(&BEACON_REQUEST, dest);
+        }
+
+        // Also try the known Furuno subnet broadcast
+        let furuno_dest = SocketAddr::from((FURUNO_BEACON_BROADCAST, FURUNO_BEACON_PORT));
+        let _ = sock.send_to(&BEACON_ANNOUNCE, furuno_dest);
+        let _ = sock.send_to(&BEACON_REQUEST, furuno_dest);
+
+        // Listen for responses
+        let listen_until = Instant::now() + Duration::from_secs(1);
+        let mut buf = [0u8; 512];
+
+        while Instant::now() < listen_until {
+            match sock.recv_from(&mut buf) {
+                Ok((len, src)) => {
+                    let src_ip: Ipv4Addr = match src.ip() {
+                        std::net::IpAddr::V4(ip) => ip,
+                        _ => continue,
+                    };
+
+                    // Skip our own packets
+                    if interfaces.iter().any(|i| i.ip == src_ip) { continue; }
+
+                    if let Some(info) = parse_beacon_report(&buf[..len], src_ip) {
+                        // Find which interface can reach this radar
+                        let host_ip = interfaces.iter()
+                            .find(|i| same_subnet(i.ip, src_ip, i.broadcast))
+                            .map(|i| i.ip)
+                            .unwrap_or(interfaces[0].ip);
+
+                        println!("Radar found: {} at {} (via host {})", info.name, src_ip, host_ip);
+                        return Some((src_ip, host_ip));
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+
+        if attempt % 3 == 0 {
+            println!("  Still scanning... (attempt {attempt})");
+        }
+    }
+
+    None
+}
+
+/// Check if two IPs are on the same subnet.
+/// Uses the interface IP and broadcast to derive the network mask.
+fn same_subnet(iface_ip: Ipv4Addr, other_ip: Ipv4Addr, broadcast: Ipv4Addr) -> bool {
+    let ip = u32::from(iface_ip);
+    let other = u32::from(other_ip);
+    let brd = u32::from(broadcast);
+    // mask = ip ^ broadcast gives host bits, invert for network mask
+    let host_bits = ip ^ brd;
+    let mask = !host_bits;
+    (ip & mask) == (other & mask)
+}
+
+/// Detect the host IP address for a given radar IP by finding the interface
+/// on the same subnet.
+pub fn detect_host_ip(radar_ip: Ipv4Addr) -> Option<Ipv4Addr> {
+    let interfaces = detect_interfaces();
+    for iface in &interfaces {
+        if same_subnet(iface.ip, radar_ip, iface.broadcast) {
+            return Some(iface.ip);
+        }
+    }
+    None
+}
