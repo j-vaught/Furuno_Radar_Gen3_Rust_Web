@@ -495,12 +495,24 @@ static std::string BuildSystemMetricsJson() {
     return oss.str();
 }
 // Write a minimal HTTP response to the socket
-static void WriteHttpResponse(boost::asio::ip::tcp::socket &socket,
-                              const std::string &body,
-                              const std::string &contentType = "text/html")
+static std::string HttpStatusText(int statusCode) {
+    switch (statusCode) {
+        case 200: return "OK";
+        case 400: return "Bad Request";
+        case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+        case 500: return "Internal Server Error";
+        default: return "Unknown";
+    }
+}
+
+static void WriteHttpResponseWithStatus(boost::asio::ip::tcp::socket &socket,
+                                        int statusCode,
+                                        const std::string &body,
+                                        const std::string &contentType = "text/html")
 {
     std::string response;
-    response += "HTTP/1.1 200 OK\r\n";
+    response += "HTTP/1.1 " + std::to_string(statusCode) + " " + HttpStatusText(statusCode) + "\r\n";
     response += "Content-Type: " + contentType + "\r\n";
     response += "Connection: close\r\n";
     response += "Content-Length: " + std::to_string(body.size()) + "\r\n\r\n";
@@ -508,6 +520,52 @@ static void WriteHttpResponse(boost::asio::ip::tcp::socket &socket,
 
     boost::system::error_code ec;
     boost::asio::write(socket, boost::asio::buffer(response), ec);
+}
+
+static void WriteHttpResponse(boost::asio::ip::tcp::socket &socket,
+                              const std::string &body,
+                              const std::string &contentType = "text/html")
+{
+    WriteHttpResponseWithStatus(socket, 200, body, contentType);
+}
+
+static std::string JsonEscape(const std::string& input) {
+    std::ostringstream oss;
+    for (char ch : input) {
+        switch (ch) {
+            case '"': oss << "\\\""; break;
+            case '\\': oss << "\\\\"; break;
+            case '\b': oss << "\\b"; break;
+            case '\f': oss << "\\f"; break;
+            case '\n': oss << "\\n"; break;
+            case '\r': oss << "\\r"; break;
+            case '\t': oss << "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(ch) < 0x20) {
+                    oss << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                        << static_cast<int>(static_cast<unsigned char>(ch))
+                        << std::dec << std::setw(0) << std::setfill(' ');
+                } else {
+                    oss << ch;
+                }
+                break;
+        }
+    }
+    return oss.str();
+}
+
+static void WriteJsonError(boost::asio::ip::tcp::socket &socket,
+                           int statusCode,
+                           const std::string& errorCode,
+                           const std::string& message)
+{
+    std::ostringstream oss;
+    oss << "{"
+        << "\"ok\":false,"
+        << "\"error_code\":\"" << JsonEscape(errorCode) << "\","
+        << "\"message\":\"" << JsonEscape(message) << "\""
+        << "}";
+    WriteHttpResponseWithStatus(socket, statusCode, oss.str(), "application/json");
 }
 
 // Find the newest PNG file in a directory
@@ -648,6 +706,35 @@ static bool HandleStaticAssets(const std::string &path, boost::asio::ip::tcp::so
 //  UTILITY ENDPOINTS
 // ================================
 static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socket &socket){
+
+    if (path.rfind("/api_contract", 0) == 0) {
+        std::ostringstream oss;
+        oss << "{"
+            << "\"contract_version\":\"2026-03-06.v1\","
+            << "\"read_endpoint\":\"/get_current\","
+            << "\"format\":\"json_only\","
+            << "\"command_policy\":\"canonical_only\","
+            << "\"commands\":["
+            << "{\"name\":\"ALL\",\"device_getter\":true,\"notes\":\"Aggregates all canonical commands.\"},"
+            << "{\"name\":\"RANGE\",\"device_getter\":true},"
+            << "{\"name\":\"GAIN\",\"device_getter\":true},"
+            << "{\"name\":\"PULSE\",\"device_getter\":true},"
+            << "{\"name\":\"STC\",\"device_getter\":true},"
+            << "{\"name\":\"ANTREV\",\"device_getter\":true},"
+            << "{\"name\":\"ACSEA\",\"device_getter\":true},"
+            << "{\"name\":\"ACRAIN\",\"device_getter\":true},"
+            << "{\"name\":\"TX\",\"device_getter\":true},"
+            << "{\"name\":\"SWEEP\",\"device_getter\":false,"
+            << "\"warning\":\"SDK has write APIs for sweep/interpolation, but no getter APIs in current headers.\"}"
+            << "],"
+            << "\"errors\":{"
+            << "\"invalid_command\":400,"
+            << "\"invalid_params\":400"
+            << "}"
+            << "}";
+        WriteHttpResponse(socket, oss.str(), "application/json");
+        return true;
+    }
 
     if (path.rfind("/get_system_info", 0) == 0) {
         boost::system::error_code ip_ec;// Get local IP address from the socket's local endpoint
@@ -1260,172 +1347,300 @@ static bool HandlePatternControl(const std::string &method,
 // ================================
 static bool HandleRadarGetters(const std::string &path, boost::asio::ip::tcp::socket &socket){
     if (path.rfind("/get_current", 0) == 0) {
-        auto params  = ParseQueryParams(path);
-        std::string cmd   = params["command"];
-        int         radar = std::stoi(params["radarNo"]);
-        bool wantsJson = params.count("format") && params["format"] == "json";
-
-        // Reusable dummy vars
-        Furuno::INT16  i16_1 = 0;
-        Furuno::UINT16 u16_1 = 0, u16_2 = 0, u16_3 = 0, u16_4 = 0, u16_5=0;
-        Furuno::INT32  pic   = -2;
-        int            ret;
-
-        std::ostringstream report;
-        report << "<h2>Current Setting (" << cmd << ")</h2>\n"
-            << "<p>RadarNo=" << radar << "</p>\n";
-
-        if (cmd == "ALL" || cmd == "RANGE") {
-            // Match /set_range API first, then fallback to legacy getter.
-            Furuno::UINT16 rangeShort = 0;
-            ret = Furuno::RmcGetRange_v2(radar, &i16_1, &u16_1, &rangeShort);
-            report << "<p>RmcGetRange_v2 returned " << ret
-                << " → code=" << i16_1
-                << ", unit=" << u16_1
-                << ", unitShort=" << rangeShort << "</p>\n";
-            if (ret != 0) {
-                ret = Furuno::RmcGetRange(radar, &i16_1, &u16_1);
-                report << "<p>RmcGetRange fallback returned " << ret
-                    << " → code=" << i16_1
-                    << ", unit=" << u16_1 << "</p>\n";
-            }
-            if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
+        const auto params = ParseQueryParams(path);
+        if (!params.count("command")) {
+            WriteJsonError(socket, 400, "invalid_params", "Missing required query parameter: command");
+            return true;
+        }
+        if (!params.count("radarNo")) {
+            WriteJsonError(socket, 400, "invalid_params", "Missing required query parameter: radarNo");
+            return true;
         }
 
-        if (cmd == "ALL" || cmd == "GAIN") {
-            // Match /set_gain API first, then fallback to custom getter.
-            ret = Furuno::RmcGetGAIN(radar, &u16_1, &u16_2, &u16_3);
-            report << "<p>RmcGetGAIN returned " << ret
-                << " → mode=" << u16_1
-                << ", manual=" << u16_2
-                << ", auto=" << u16_3 << "</p>\n";
-            if (ret != 0) {
-                ret = Furuno::RmcGetCustomGAIN(radar, &pic, &u16_1, &u16_2, &u16_3);
-                report << "<p>RmcGetCustomGAIN fallback returned " << ret
-                    << " → mode=" << u16_1
-                    << ", manual=" << u16_2
-                    << ", auto=" << u16_3 << "</p>\n";
-            }
-            if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
+        int radar = 0;
+        try {
+            radar = std::stoi(params.at("radarNo"));
+        } catch (const std::exception&) {
+            WriteJsonError(socket, 400, "invalid_params", "Invalid radarNo. Must be an integer.");
+            return true;
         }
 
-        if (cmd == "ALL" || cmd == "PULSE") {
-            // RmcGetPulseWidth — gets pulse width & PRF
+        const std::string cmd = params.at("command");
+        const std::vector<std::string> canonical{
+            "ALL", "RANGE", "GAIN", "PULSE", "STC", "ANTREV", "ACSEA", "ACRAIN", "TX", "SWEEP"
+        };
+        if (std::find(canonical.begin(), canonical.end(), cmd) == canonical.end()) {
+            WriteJsonError(
+                socket,
+                400,
+                "invalid_command",
+                "Unsupported command '" + cmd + "'. Use /api_contract for canonical commands."
+            );
+            return true;
+        }
+
+        auto buildRangeJson = [&](int radarNo) {
+            Furuno::INT16 code = 0;
+            Furuno::UINT16 unit = 0;
+            Furuno::UINT16 unitShort = 0;
+            int ret = Furuno::RmcGetRange_v2(radarNo, &code, &unit, &unitShort);
+            Furuno::INT16 fallbackCode = 0;
+            Furuno::UINT16 fallbackUnit = 0;
+            int fallbackRet = 0;
+            bool usedFallback = false;
+            if (ret != 0) {
+                fallbackRet = Furuno::RmcGetRange(radarNo, &fallbackCode, &fallbackUnit);
+                usedFallback = true;
+            }
+            std::ostringstream oss;
+            oss << "{"
+                << "\"command\":\"RANGE\","
+                << "\"ret\":" << ret << ","
+                << "\"code\":" << code << ","
+                << "\"unit\":" << unit << ","
+                << "\"unit_short\":" << unitShort << ","
+                << "\"used_fallback\":" << (usedFallback ? "true" : "false");
+            if (usedFallback) {
+                oss << ",\"fallback_ret\":" << fallbackRet
+                    << ",\"fallback_code\":" << fallbackCode
+                    << ",\"fallback_unit\":" << fallbackUnit;
+            }
+            oss << "}";
+            return oss.str();
+        };
+
+        auto buildGainJson = [&](int radarNo) {
+            Furuno::UINT16 mode = 0, manual = 0, automatic = 0;
+            Furuno::INT32 picture = -2;
+            int ret = Furuno::RmcGetGAIN(radarNo, &mode, &manual, &automatic);
+            Furuno::UINT16 fmode = 0, fmanual = 0, fautomatic = 0;
+            int fallbackRet = 0;
+            bool usedFallback = false;
+            if (ret != 0) {
+                fallbackRet = Furuno::RmcGetCustomGAIN(radarNo, &picture, &fmode, &fmanual, &fautomatic);
+                usedFallback = true;
+            }
+            std::ostringstream oss;
+            oss << "{"
+                << "\"command\":\"GAIN\","
+                << "\"ret\":" << ret << ","
+                << "\"mode\":" << mode << ","
+                << "\"manual\":" << manual << ","
+                << "\"auto\":" << automatic << ","
+                << "\"used_fallback\":" << (usedFallback ? "true" : "false");
+            if (usedFallback) {
+                oss << ",\"fallback_ret\":" << fallbackRet
+                    << ",\"fallback_mode\":" << fmode
+                    << ",\"fallback_manual\":" << fmanual
+                    << ",\"fallback_auto\":" << fautomatic;
+            }
+            oss << "}";
+            return oss.str();
+        };
+
+        auto buildPulseJson = [&](int radarNo) {
             Furuno::INT16 pulse = -1;
             Furuno::INT16 range = -1;
-            Furuno::INT32 picPW = -1;
-            ret = Furuno::RmcGetPulseWidth(radar, &pulse, &range, &u16_1, &picPW);
-            report << "<p>RmcGetPulseWidth returned " << ret
-                << " → pulse=" << pulse
-                << ", range=" << range
-                << ", unit=" << u16_1
-                << ", pictureNo=" << picPW << "</p>\n";
+            Furuno::UINT16 unit = 0;
+            Furuno::INT32 pictureNo = -1;
+            int ret = Furuno::RmcGetPulseWidth(radarNo, &pulse, &range, &unit, &pictureNo);
+
+            int reqRet = -999;
+            int retryRet = ret;
+            Furuno::INT16 retryPulse = -1;
+            Furuno::INT16 retryRange = -1;
+            Furuno::UINT16 retryUnit = 0;
+            Furuno::INT32 retryPicture = -1;
+
+            Furuno::INT16 activeRange = 0;
+            Furuno::UINT16 activeUnit = 0;
+            Furuno::UINT16 activeUnitShort = 0;
+            int rangeRetForReq = -999;
             if (ret != 0) {
-                // Some radar/SDK combinations require an explicit pulse-width request first.
-                Furuno::INT16 activeRange = 0;
-                Furuno::UINT16 activeUnit = 0;
-                Furuno::UINT16 activeUnitShort = 0;
-                const int rangeRet = Furuno::RmcGetRange_v2(radar, &activeRange, &activeUnit, &activeUnitShort);
-                report << "<p>RmcGetRange_v2 (for pulse request context) returned " << rangeRet
-                    << " → code=" << activeRange
-                    << ", unit=" << activeUnit
-                    << ", unitShort=" << activeUnitShort << "</p>\n";
-
-                int reqRet = -999;
-                int retryRet = ret;
-                Furuno::INT16 pulseRetry = -1;
-                Furuno::INT16 rangeRetry = -1;
-                Furuno::UINT16 unitRetry = 0;
-                Furuno::INT32 picRetry = -1;
-
-                if (rangeRet == 0) {
+                rangeRetForReq = Furuno::RmcGetRange_v2(radarNo, &activeRange, &activeUnit, &activeUnitShort);
+                if (rangeRetForReq == 0) {
                     reqRet = Furuno::RmcReqPulseWidth(
-                        radar,
+                        radarNo,
                         static_cast<Furuno::UINT16>(activeRange),
                         static_cast<Furuno::UINT16>(activeUnit),
-                        0);
+                        0
+                    );
                     std::this_thread::sleep_for(std::chrono::milliseconds(120));
-                    retryRet = Furuno::RmcGetPulseWidth(radar, &pulseRetry, &rangeRetry, &unitRetry, &picRetry);
-                }
-
-                report << "<p>RmcReqPulseWidth returned " << reqRet << "</p>\n";
-                report << "<p>RmcGetPulseWidth retry returned " << retryRet
-                    << " → pulse=" << pulseRetry
-                    << ", range=" << rangeRetry
-                    << ", unit=" << unitRetry
-                    << ", pictureNo=" << picRetry << "</p>\n";
-
-                const auto it = g_lastPulseByRadar.find(radar);
-                if (it != g_lastPulseByRadar.end() && it->second.valid) {
-                    report << "<p>Fallback (last set request) → pulse=" << it->second.pulse
-                        << ", rangeIndex=" << it->second.rangeIndex
-                        << ", unit=" << it->second.rangeUnit << "</p>\n";
-                } else {
-                    report << "<p>No cached pulse setting available for fallback.</p>\n";
+                    retryRet = Furuno::RmcGetPulseWidth(radarNo, &retryPulse, &retryRange, &retryUnit, &retryPicture);
                 }
             }
-            if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
-        }
 
-        if (cmd == "ALL" || cmd == "STC") {
-            // RmcGetNear/Middle/FarSTC — gets STC curves
-            ret = Furuno::RmcGetNearSTC   (radar, &u16_1);
-            ret = Furuno::RmcGetMiddleSTC (radar, &u16_2);
-            ret = Furuno::RmcGetFarSTC    (radar, &u16_3);
+            const auto it = g_lastPulseByRadar.find(radarNo);
+            const bool hasFallback = it != g_lastPulseByRadar.end() && it->second.valid;
 
-            if (wantsJson) {
-                std::ostringstream js;
-                js << "{"
-                << "\"near\":"   << u16_1 << ","
-                << "\"middle\":" << u16_2 << ","
-                << "\"far\":"    << u16_3 << "}";
-                WriteHttpResponse(socket, js.str(), "application/json");
+            std::ostringstream oss;
+            oss << "{"
+                << "\"command\":\"PULSE\","
+                << "\"ret\":" << ret << ","
+                << "\"pulse\":" << pulse << ","
+                << "\"range\":" << range << ","
+                << "\"unit\":" << unit << ","
+                << "\"picture_no\":" << pictureNo;
+            if (ret != 0) {
+                oss << ",\"range_ret_for_req\":" << rangeRetForReq
+                    << ",\"req_ret\":" << reqRet
+                    << ",\"retry_ret\":" << retryRet
+                    << ",\"retry_pulse\":" << retryPulse
+                    << ",\"retry_range\":" << retryRange
+                    << ",\"retry_unit\":" << retryUnit
+                    << ",\"retry_picture_no\":" << retryPicture;
+            }
+            oss << ",\"fallback_last_set\":";
+            if (hasFallback) {
+                oss << "{"
+                    << "\"pulse\":" << it->second.pulse << ","
+                    << "\"range_index\":" << it->second.rangeIndex << ","
+                    << "\"unit\":" << it->second.rangeUnit
+                    << "}";
+            } else {
+                oss << "null";
+            }
+            oss << "}";
+            return oss.str();
+        };
+
+        auto buildStcJson = [&](int radarNo) {
+            Furuno::UINT16 nearVal = 0, middleVal = 0, farVal = 0;
+            const int nearRet = Furuno::RmcGetNearSTC(radarNo, &nearVal);
+            const int middleRet = Furuno::RmcGetMiddleSTC(radarNo, &middleVal);
+            const int farRet = Furuno::RmcGetFarSTC(radarNo, &farVal);
+            std::ostringstream oss;
+            oss << "{"
+                << "\"command\":\"STC\","
+                << "\"ret\":{"
+                << "\"near\":" << nearRet << ","
+                << "\"middle\":" << middleRet << ","
+                << "\"far\":" << farRet
+                << "},"
+                << "\"near\":" << nearVal << ","
+                << "\"middle\":" << middleVal << ","
+                << "\"far\":" << farVal
+                << "}";
+            return oss.str();
+        };
+
+        auto buildAntrevJson = [&](int radarNo) {
+            Furuno::UINT16 rollSpeed = 0, hiRpm = 0;
+            const int ret = Furuno::RmcGetAntennaRevolution(radarNo, &rollSpeed, &hiRpm);
+            std::ostringstream oss;
+            oss << "{"
+                << "\"command\":\"ANTREV\","
+                << "\"ret\":" << ret << ","
+                << "\"roll_speed\":" << rollSpeed << ","
+                << "\"hi_rpm\":" << hiRpm
+                << "}";
+            return oss.str();
+        };
+
+        auto buildAcseaJson = [&](int radarNo) {
+            Furuno::UINT16 status = 0, manual = 0, automatic = 0, mode = 0;
+            const int ret = Furuno::RmcGetACSEA(radarNo, &status, &manual, &automatic, &mode);
+            std::ostringstream oss;
+            oss << "{"
+                << "\"command\":\"ACSEA\","
+                << "\"ret\":" << ret << ","
+                << "\"status\":" << status << ","
+                << "\"manual\":" << manual << ","
+                << "\"auto\":" << automatic << ","
+                << "\"mode\":" << mode
+                << "}";
+            return oss.str();
+        };
+
+        auto buildAcrainJson = [&](int radarNo) {
+            Furuno::UINT16 status = 0, manual = 0, automatic = 0, ftcMode = 0, rainMode = 0;
+            const int ret = Furuno::RmcGetACRAIN(radarNo, &status, &manual, &automatic, &ftcMode, &rainMode);
+            std::ostringstream oss;
+            oss << "{"
+                << "\"command\":\"ACRAIN\","
+                << "\"ret\":" << ret << ","
+                << "\"status\":" << status << ","
+                << "\"manual\":" << manual << ","
+                << "\"auto\":" << automatic << ","
+                << "\"ftc_mode\":" << ftcMode << ","
+                << "\"rain_mode\":" << rainMode
+                << "}";
+            return oss.str();
+        };
+
+        auto buildTxJson = [&](int radarNo) {
+            Furuno::UINT16 mode = 0, wman = 0;
+            Furuno::UINT32 sendTime = 0, stopTime = 0;
+            const int ret = Furuno::RmcGetTxStby(radarNo, &mode, &wman, &sendTime, &stopTime);
+            std::ostringstream oss;
+            oss << "{"
+                << "\"command\":\"TX\","
+                << "\"ret\":" << ret << ","
+                << "\"mode\":" << mode << ","
+                << "\"wman\":" << wman << ","
+                << "\"send_time\":" << sendTime << ","
+                << "\"stop_time\":" << stopTime
+                << "}";
+            return oss.str();
+        };
+
+        auto buildSweepJson = [&]() {
+            std::ostringstream oss;
+            oss << "{"
+                << "\"command\":\"SWEEP\","
+                << "\"ret\":null,"
+                << "\"sweep_total\":null,"
+                << "\"interpolation\":null,"
+                << "\"warning\":\"No sweep/interpolation getter APIs are available in this SDK version.\""
+                << "}";
+            return oss.str();
+        };
+
+        std::ostringstream response;
+        response << "{"
+                 << "\"ok\":true,"
+                 << "\"radar_no\":" << radar << ",";
+        if (cmd == "ALL") {
+            response << "\"command\":\"ALL\","
+                     << "\"data\":{"
+                     << "\"RANGE\":" << buildRangeJson(radar) << ","
+                     << "\"GAIN\":" << buildGainJson(radar) << ","
+                     << "\"PULSE\":" << buildPulseJson(radar) << ","
+                     << "\"STC\":" << buildStcJson(radar) << ","
+                     << "\"ANTREV\":" << buildAntrevJson(radar) << ","
+                     << "\"ACSEA\":" << buildAcseaJson(radar) << ","
+                     << "\"ACRAIN\":" << buildAcrainJson(radar) << ","
+                     << "\"TX\":" << buildTxJson(radar) << ","
+                     << "\"SWEEP\":" << buildSweepJson()
+                     << "}";
+        } else {
+            response << "\"command\":\"" << cmd << "\","
+                     << "\"data\":";
+            if (cmd == "RANGE") {
+                response << buildRangeJson(radar);
+            } else if (cmd == "GAIN") {
+                response << buildGainJson(radar);
+            } else if (cmd == "PULSE") {
+                response << buildPulseJson(radar);
+            } else if (cmd == "STC") {
+                response << buildStcJson(radar);
+            } else if (cmd == "ANTREV") {
+                response << buildAntrevJson(radar);
+            } else if (cmd == "ACSEA") {
+                response << buildAcseaJson(radar);
+            } else if (cmd == "ACRAIN") {
+                response << buildAcrainJson(radar);
+            } else if (cmd == "TX") {
+                response << buildTxJson(radar);
+            } else if (cmd == "SWEEP") {
+                response << buildSweepJson();
+            } else {
+                WriteJsonError(socket, 400, "invalid_command", "Unsupported command.");
                 return true;
             }
-
-            report << "<p>STC: near="  << u16_1
-                << ", middle="       << u16_2
-                << ", far="          << u16_3 << "</p>\n";
-            if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
-            
-            
         }
-
-
-        if (cmd == "ALL" || cmd == "ANTREV") {
-            // RmcGetAntennaRevolution — roll-speed & high-RPM
-            ret = Furuno::RmcGetAntennaRevolution(radar, &u16_1, &u16_2);
-            report << "<p>RmcGetAntennaRevolution returned " << ret
-                << " → rollSpeed=" << u16_1
-                << ", hiRpm="      << u16_2 << "</p>\n";
-            if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
-        }
-
-        if (cmd == "ALL" || cmd == "ACSEA") {
-            // RmcGetACSEA — sea clutter manual/auto/mode
-            ret = Furuno::RmcGetACSEA(radar, &u16_1, &u16_2, &u16_3, &u16_4);
-            report << "<p>RmcGetACSEA returned " << ret
-                << " → status=" << u16_1
-                << ", manual="   << u16_2
-                << ", auto="     << u16_3
-                << ", mode="     << u16_4 << "</p>\n";
-            if (cmd != "ALL") { WriteHttpResponse(socket, report.str()); return true; }
-        }
-
-        if (cmd == "ALL" || cmd == "ACRAIN") {
-            ret = Furuno::RmcGetACRAIN(radar,&u16_1, &u16_2, &u16_3, &u16_4, &u16_5);
-            report << "<p>RmcGetACRAIN returned " << ret
-                << " → status="     << u16_1
-                << ", manual="      << u16_2
-                << ", auto="        << u16_3
-                << ", ftcMode="     << u16_4
-                << ", rainMode="    << u16_5
-                << "</p>\n";
-            if (cmd != "ALL") {WriteHttpResponse(socket, report.str()); return true; }
-        }
-
-        // If we reach here, the command was "ALL"
-        WriteHttpResponse(socket, report.str());
+        response << "}";
+        WriteHttpResponse(socket, response.str(), "application/json");
         return true;
     }
     return false;

@@ -32,6 +32,48 @@ const clamp01 = value => Math.max(0, Math.min(1, value));
 let calibrationActive = false;
 const patternQueue = [];
 let lastLoadedPattern = null;
+let apiContract = null;
+
+const fallbackReadCommandMap = Object.freeze({
+  TX: 'TX',
+  RANGE: 'RANGE',
+  PULSE: 'PULSE',
+  GAIN: 'GAIN',
+  STC: 'STC',
+  ACSEA: 'ACSEA',
+  ACRAIN: 'ACRAIN',
+  ANTREV: 'ANTREV',
+  SWEEP: 'SWEEP',
+  ALL: 'ALL'
+});
+
+function getReadCommand(name) {
+  if (apiContract && apiContract.commandMap && apiContract.commandMap[name]) {
+    return apiContract.commandMap[name];
+  }
+  return fallbackReadCommandMap[name] || name;
+}
+
+function jsonPre(value) {
+  return `<pre>${JSON.stringify(value, null, 2)}</pre>`;
+}
+
+async function loadApiContract() {
+  try {
+    const resp = await fetch('/api_contract');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const commandMap = {};
+    const names = new Set((data.commands || []).map(c => c.name));
+    Object.keys(fallbackReadCommandMap).forEach(key => {
+      const canonical = fallbackReadCommandMap[key];
+      if (names.has(canonical)) commandMap[key] = canonical;
+    });
+    apiContract = { ...data, commandMap };
+  } catch (err) {
+    apiContract = { commandMap: { ...fallbackReadCommandMap } };
+  }
+}
 
 function triggerFileInput() {
   const input = byId('patternFile');
@@ -40,6 +82,8 @@ function triggerFileInput() {
 
 // Setup file input auto-load and gain mode selector
 document.addEventListener('DOMContentLoaded', () => {
+  loadApiContract().catch(() => {});
+
   const fileInput = byId('patternFile');
   if (fileInput) {
     fileInput.addEventListener('change', () => {
@@ -623,8 +667,10 @@ function toggleEcho(mode){
     .then(r=>r.text()).then(t=>setCallout('txResult', t, 'info'));
 }
 function refreshTx(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=TX`)
-    .then(r=>r.text()).then(t=>setCallout('txResult', t, 'info'));
+  const cmd = getReadCommand('TX');
+  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(d=>setCallout('txResult', jsonPre(d), 'info'))
+    .catch(err=>setCallout('txResult', `Failed: ${err.message}`, 'error'));
 }
 function beginCalibration() {
   fetch('/begin_calibration')
@@ -893,13 +939,17 @@ function setPulse(){
     .then(r=>r.text()).then(t=>setCallout('pulseResult', t, 'info'));
 }
 function refreshRange(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=RANGE`)
-    .then(r=>r.text()).then(t=>setCallout('rangeResult', t, 'info'));
+  const cmd = getReadCommand('RANGE');
+  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(d=>setCallout('rangeResult', jsonPre(d), 'info'))
+    .catch(err=>setCallout('rangeResult', `Failed: ${err.message}`, 'error'));
 }
 
 function refreshPulse(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=PULSE`)
-    .then(r=>r.text()).then(t=>setCallout('pulseResult', t, 'info'));
+  const cmd = getReadCommand('PULSE');
+  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(d=>setCallout('rangeResult', jsonPre(d), 'info'))
+    .catch(err=>setCallout('rangeResult', `Failed: ${err.message}`, 'error'));
 }
 
 /* ---------- GAIN & CLUTTER ---------- */
@@ -920,13 +970,21 @@ function setACRAIN(){
     .then(r=>r.text()).then(t=>setCallout('clutterResult', t, 'info'));
 }
 function refreshGain(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=GAIN`)
-    .then(r=>r.text()).then(t=>setCallout('gainResult', t, 'info'));
+  const cmd = getReadCommand('GAIN');
+  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(d=>setCallout('gainResult', jsonPre(d), 'info'))
+    .catch(err=>setCallout('gainResult', `Failed: ${err.message}`, 'error'));
 }
 
 function refreshClutter(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=CLUTTER`)
-    .then(r=>r.text()).then(t=>setCallout('clutterResult', t, 'info'));
+  const seaCmd = getReadCommand('ACSEA');
+  const rainCmd = getReadCommand('ACRAIN');
+  Promise.all([
+    apiGet(`/get_current?radarNo=${v('radarNo')}&command=${seaCmd}`),
+    apiGet(`/get_current?radarNo=${v('radarNo')}&command=${rainCmd}`)
+  ])
+    .then(([sea, rain]) => setCallout('clutterResult', jsonPre({ sea, rain }), 'info'))
+    .catch(err=>setCallout('clutterResult', `Failed: ${err.message}`, 'error'));
 }
 function setRezBoost() {
   fetch(`/set_bearing_resolution?radarNo=${v('radarNo')}&mode=${v('rezboostMode')}`)
@@ -958,13 +1016,15 @@ function setHighRpm(){
     .catch(err => setCallout('antennaResult', `Failed: ${err.message}`, 'error'));
 }
 function refreshAntenna(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=ANTENNA`)
-    .then(r=>r.text()).then(t=>setCallout('antennaResult', t, 'info'))
+  const cmd = getReadCommand('ANTREV');
+  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(d=>setCallout('antennaResult', jsonPre(d), 'info'))
     .catch(err => setCallout('antennaResult', `Failed: ${err.message}`, 'error'));
 }
 function refreshDisplay(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=SWEEP`)
-    .then(r=>r.text()).then(t=>setCallout('displaySweepResult', t, 'info'))
+  const cmd = getReadCommand('SWEEP');
+  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(d=>setCallout('displaySweepResult', jsonPre(d), 'info'))
     .catch(err => setCallout('displaySweepResult', `Failed: ${err.message}`, 'error'));
 }
 
@@ -997,10 +1057,12 @@ async function setSTC() {
 async function refreshSTC() {
   const radarNo = +$('#radarNo').value;
   if (Number.isNaN(radarNo)) return;
-  const data = await apiGet(`/get_current?command=STC&radarNo=${radarNo}&format=json`);
-  $('#nearStc').value = data.near;
-  $('#midStc').value  = data.middle;
-  $('#farStc').value  = data.far;
+  const cmd = getReadCommand('STC');
+  const payload = await apiGet(`/get_current?command=${cmd}&radarNo=${radarNo}`);
+  const data = payload && payload.data ? payload.data : {};
+  $('#nearStc').value = data.near ?? 0;
+  $('#midStc').value  = data.middle ?? 0;
+  $('#farStc').value  = data.far ?? 0;
   setCallout('gainResult', `STC updated @ ${new Date().toLocaleTimeString()}`, 'info');
 }
 
