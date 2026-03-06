@@ -69,9 +69,15 @@ struct RadarEchoData {
     Furuno::UINT16 gain;
     Furuno::UINT8  echo[1024];
 };
-std::vector<RadarEchoData> radarEchoBuffer;
-Furuno::INT16 lastSweepAngle = -1;
 std::atomic<uint64_t> completedRotationCount{0};
+
+struct CallbackAccumulator {
+    std::vector<RadarEchoData> currentSweep;
+    Furuno::INT16 lastAngle = -1;
+};
+
+static CallbackAccumulator g_callbackAccumulator;
+static std::mutex g_callbackAccumulatorMutex;
 
 // ───────────────────────────────────────────────────────────────
 // Async Sweep Writing (CSV + PNG) Threading
@@ -226,54 +232,74 @@ static void __stdcall RadarEchoCallback(
     Furuno::INT16 sweep_len, Furuno::INT16 scale, Furuno::INT16 range,
     Furuno::INT16 angle, Furuno::INT16 heading, Furuno::INT16 h_flg)
 {
-
+    (void)heading;
+    (void)h_flg;
     // Custom gain for this pulse
     Furuno::UINT16 gain = 0;
     Furuno::UINT16 mode = 0;
     Furuno::UINT16 autom = 0;
-    int ret = Furuno::RmcGetGAIN(no, &mode, &gain, &autom);
+    (void)Furuno::RmcGetGAIN(no, &mode, &gain, &autom);
 
-    // Store radar echo data
-    radarEchoBuffer.push_back({status, sweep_len, scale, range, angle, gain, {}});
-    memcpy(radarEchoBuffer.back().echo, echo, sweep_len);
+    const int safeSweepLen = std::clamp<int>(sweep_len, 0, 1024);
+    SweepWriteJob job;
+    bool hasCompletedSweep = false;
 
-    // Full rotation check
-    if (lastSweepAngle != -1 && (angle < lastSweepAngle || angle > 8196)) {
-        auto now = std::chrono::system_clock::now();
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()) % 1000;
-        std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    {
+        std::lock_guard<std::mutex> lock(g_callbackAccumulatorMutex);
 
-        char timeStr[20];
-        std::strftime(timeStr, sizeof(timeStr), "%Y%m%d_%H%M%S", std::localtime(&now_c));
+        RadarEchoData sample{
+            status,
+            static_cast<Furuno::INT16>(safeSweepLen),
+            scale,
+            range,
+            angle,
+            gain,
+            {}
+        };
+        if (echo != nullptr && safeSweepLen > 0) {
+            memcpy(sample.echo, echo, static_cast<size_t>(safeSweepLen));
+        }
+        g_callbackAccumulator.currentSweep.push_back(sample);
 
-        std::ostringstream filename;
-        filename << timeStr << "_" << std::setw(3) << std::setfill('0') << ms.count();
+        // Full rotation check
+        if (g_callbackAccumulator.lastAngle != -1 &&
+            (angle < g_callbackAccumulator.lastAngle || angle > 8196)) {
+            auto now = std::chrono::system_clock::now();
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch()) % 1000;
+            std::time_t now_c = std::chrono::system_clock::to_time_t(now);
 
-        std::string base = filename.str();
-        fs::path csvPath = fs::path("runtime/output/raw/csv") / (base + ".csv");
-        fs::path pngPath = fs::path("runtime/output/images/unprocessed") / (base + ".png");
-        fs::path trailPath = fs::path("runtime/output/images/echo_trail") / (base + ".png");
+            char timeStr[20];
+            std::strftime(timeStr, sizeof(timeStr), "%Y%m%d_%H%M%S", std::localtime(&now_c));
 
-        // Instead of writing files here, move the buffer into a job:
-        SweepWriteJob job;
-        job.data = std::move(radarEchoBuffer); // move data!
-        job.csvFilename = csvPath.string();
-        job.pngFilename = pngPath.string();
-        job.trailFilename = trailPath.string();
+            std::ostringstream filename;
+            filename << timeStr << "_" << std::setw(3) << std::setfill('0') << ms.count();
 
+            std::string base = filename.str();
+            fs::path csvPath = fs::path("runtime/output/raw/csv") / (base + ".csv");
+            fs::path pngPath = fs::path("runtime/output/images/unprocessed") / (base + ".png");
+            fs::path trailPath = fs::path("runtime/output/images/echo_trail") / (base + ".png");
+
+            job.data = std::move(g_callbackAccumulator.currentSweep);
+            job.csvFilename = csvPath.string();
+            job.pngFilename = pngPath.string();
+            job.trailFilename = trailPath.string();
+            hasCompletedSweep = true;
+
+            g_callbackAccumulator.currentSweep.clear();
+            g_callbackAccumulator.lastAngle = -1;
+        } else {
+            g_callbackAccumulator.lastAngle = angle;
+        }
+    }
+
+    if (hasCompletedSweep) {
         {
             std::lock_guard<std::mutex> lock(sweepQueueMutex);
             sweepQueue.push(std::move(job));
         }
-        
         sweepQueueCV.notify_one();
         completedRotationCount.fetch_add(1, std::memory_order_release);
-
-        radarEchoBuffer.clear();
-        lastSweepAngle = -1;
-    } else {
-        lastSweepAngle = angle;
     }
 }
 
