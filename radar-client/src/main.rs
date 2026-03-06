@@ -48,7 +48,7 @@ fn main() {
         "validate" => run_validate(),
         "web" => {
             let port: u16 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(8080);
-            let web_dir = args.get(3).map(|s| s.as_str()).unwrap_or("../main/web");
+            let web_dir = args.get(3).map(|s| s.as_str()).unwrap_or("../web");
             web::start_server(RADAR_IP, HOST_IP, web_dir, port);
         }
         _ => {
