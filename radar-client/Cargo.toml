@@ -1,0 +1,12 @@
+[package]
+name = "radar-client"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "radar-client"
+path = "src/main.rs"
+
+[dependencies]
+socket2 = "0.5"
+libc = "0.2"
