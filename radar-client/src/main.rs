@@ -1,19 +1,20 @@
+#[allow(dead_code)]
+mod protocol;
+
 use std::io::{BufRead, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::os::unix::io::AsRawFd;
 use std::time::Duration;
 
+use protocol::{Spoke, decode_echo_packet, parse_echo_metadata};
+
 const RADAR_IP: Ipv4Addr = Ipv4Addr::new(172, 31, 3, 226);
 const HOST_IP: Ipv4Addr = Ipv4Addr::new(172, 31, 1, 100);
 
-const PORT_DISCOVERY: u16 = 10010;
-const PORT_CONTROL: u16 = 10100;
-const PORT_ECHO: u16 = 10024;
-const MULTICAST_ECHO: Ipv4Addr = Ipv4Addr::new(239, 255, 0, 2);
-
-// Auth payload: type=0x08, subtype=0x01, length=0x0038, then copyright string
-const AUTH_PAYLOAD: &[u8] = b"\x08\x01\x00\x38\x01\x00\x00\x00\x00\x01\x00\x00\
-COPYRIGHT (C) 2001 FURUNO ELECTRIC CO.,LTD. ";
+const PORT_DISCOVERY: u16 = protocol::FURUNO_BEACON_PORT;
+const PORT_CONTROL: u16 = protocol::FURUNO_CONTROL_PORT;
+const PORT_ECHO: u16 = protocol::FURUNO_DATA_PORT;
+const MULTICAST_ECHO: Ipv4Addr = protocol::FURUNO_MULTICAST;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -268,7 +269,7 @@ fn run_full() {
 
         // Send keepalive every 5 seconds
         if keepalive_timer.elapsed() > Duration::from_secs(5) {
-            let _ = ctrl.write_all(b"\x00\x00\x00\x08\x00\x00\x00\x00");
+            let _ = ctrl.write_all(protocol::KEEPALIVE);
             keepalive_timer = std::time::Instant::now();
         }
     }
@@ -414,8 +415,8 @@ fn do_auth() -> bool {
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
 
-    print!("Sending auth payload ({} bytes)... ", AUTH_PAYLOAD.len());
-    stream.write_all(AUTH_PAYLOAD).expect("write failed");
+    print!("Sending auth payload ({} bytes)... ", protocol::AUTH_PAYLOAD.len());
+    stream.write_all(protocol::AUTH_PAYLOAD).expect("write failed");
     println!("sent");
 
     // Read response (expect 12 bytes: 09 01 00 0C 01 00 00 00 00 64 00 00)
@@ -472,7 +473,7 @@ fn read_and_print_messages(stream: &mut TcpStream, timeout: Duration) {
             Ok(n) => {
                 let data = &buf[..n];
                 // Check if it's the binary keepalive (00 00 00 08 00 00 00 00)
-                if n == 8 && data == b"\x00\x00\x00\x08\x00\x00\x00\x00" {
+                if n == 8 && data == protocol::KEEPALIVE {
                     println!("  <- [keepalive]");
                     continue;
                 }
@@ -552,96 +553,7 @@ fn elapsed_str(start: std::time::Instant) -> String {
     format!("{secs:6.1}s")
 }
 
-// --- Echo Packet Decoder ---
-// Based on Furuno NXT protocol as documented in the mayara project.
-// Packet structure:
-//   [0..16]  - metadata header
-//   [16..]   - sweep_count sub-spokes, each with 4-byte header (angle LE u16 + heading LE u16)
-//              followed by encoding-3 compressed echo data, padded to 4-byte alignment.
-
-struct EchoMetadata {
-    sweep_count: u32,
-    sweep_len: u32,
-    encoding: u8,
-}
-
-fn parse_echo_metadata(data: &[u8]) -> EchoMetadata {
-    let sweep_count = (data[9] >> 1) as u32;
-    let sweep_len = (((data[11] & 0x07) as u32) << 8) | data[10] as u32;
-    let encoding = (data[11] & 0x18) >> 3;
-    EchoMetadata { sweep_count, sweep_len, encoding }
-}
-
-/// Decode encoding 3: RLE with copy-from-previous-spoke support.
-/// Returns (decoded spoke data, bytes consumed from input).
-fn decode_sweep_encoding_3(sweep: &[u8], prev_spoke: &[u8], sweep_len: usize) -> (Vec<u8>, usize) {
-    let mut spoke = Vec::with_capacity(sweep_len);
-    let mut used = 0;
-    let mut strength: u8 = 0;
-
-    while spoke.len() < sweep_len && used < sweep.len() {
-        let b = sweep[used];
-        if b & 0x03 == 0 {
-            // Raw amplitude value (multiples of 4: 0x00, 0x04, ..., 0xFC)
-            strength = b;
-            spoke.push(strength);
-        } else {
-            let mut repeat = (b >> 2) as usize;
-            if repeat == 0 { repeat = 64; }
-            if b & 0x01 == 0 {
-                // Copy from previous spoke
-                for _ in 0..repeat {
-                    let i = spoke.len();
-                    strength = if prev_spoke.len() > i { prev_spoke[i] } else { 0 };
-                    spoke.push(strength);
-                    if spoke.len() >= sweep_len { break; }
-                }
-            } else {
-                // Repeat previous strength
-                for _ in 0..repeat {
-                    spoke.push(strength);
-                    if spoke.len() >= sweep_len { break; }
-                }
-            }
-        }
-        used += 1;
-    }
-
-    // Pad consumed bytes to 4-byte alignment
-    used = (used + 3) & !3;
-    (spoke, used)
-}
-
-/// Decode a raw UDP echo packet into multiple spokes.
-/// Uses the 16-byte metadata header and encoding-3 sub-spoke format.
-fn decode_echo_packet(pkt: &[u8], prev_spoke: &mut Vec<u8>, out: &mut Vec<Spoke>) {
-    if pkt.len() < 20 { return; }
-
-    let meta = parse_echo_metadata(pkt);
-    if meta.encoding != 3 { return; } // Only encoding 3 supported for now
-
-    let mut sweep = &pkt[16..];
-
-    for _ in 0..meta.sweep_count {
-        if sweep.len() < 4 { break; }
-
-        // 4-byte sub-spoke header: angle (LE u16) + heading (LE u16)
-        let angle = u16::from_le_bytes([sweep[0], sweep[1]]);
-        // heading = u16::from_le_bytes([sweep[2], sweep[3]]); // available if needed
-        sweep = &sweep[4..];
-
-        let (spoke_data, used) = decode_sweep_encoding_3(sweep, prev_spoke, meta.sweep_len as usize);
-        if used > sweep.len() { break; }
-        sweep = &sweep[used..];
-
-        // Apply display conversion: wire value >> 2
-        let echo: Vec<u8> = spoke_data.iter().map(|&b| b >> 2).collect();
-
-        *prev_spoke = spoke_data;
-
-        out.push(Spoke { angle_ticks: angle, echo });
-    }
-}
+// Echo decoding is now in protocol.rs (supports all 4 encoding types)
 
 // --- Command Test Harness ---
 
@@ -717,7 +629,7 @@ fn collect_rotation_stats(
         }
         let _ = ctrl.read(&mut ctrl_buf);
         if keepalive_timer.elapsed() > Duration::from_secs(5) {
-            let _ = ctrl.write_all(b"\x00\x00\x00\x08\x00\x00\x00\x00");
+            let _ = ctrl.write_all(protocol::KEEPALIVE);
             keepalive_timer = std::time::Instant::now();
         }
     }
@@ -1111,11 +1023,6 @@ const PPI_SIZE: usize = 800;
 const PPI_NUM_RANGE_BINS: usize = 868;
 const PPI_ANGLE_TICKS: f64 = 8192.0;
 
-struct Spoke {
-    angle_ticks: u16,
-    echo: Vec<u8>,
-}
-
 fn run_dump_raw(count: usize) {
     println!("=== Raw Packet Dump ({count} packets) ===\n");
 
@@ -1298,7 +1205,7 @@ fn run_render_csv(csv_path: &str, out_path: &str) {
         let echo: Vec<u8> = fields[5..].iter()
             .map(|v| v.parse::<u8>().unwrap_or(0))
             .collect();
-        spokes.push(Spoke { angle_ticks: angle, echo });
+        spokes.push(Spoke { angle_ticks: angle, heading_ticks: 0, echo });
     }
 
     println!("Loaded {} spokes, rendering {}x{} PPI...", spokes.len(), PPI_SIZE, PPI_SIZE);
@@ -1418,7 +1325,7 @@ fn run_render_live(out_path: &str) {
 
         // Keepalive
         if keepalive_timer.elapsed() > Duration::from_secs(5) {
-            let _ = ctrl.write_all(b"\x00\x00\x00\x08\x00\x00\x00\x00");
+            let _ = ctrl.write_all(protocol::KEEPALIVE);
             keepalive_timer = std::time::Instant::now();
         }
     }
