@@ -59,7 +59,8 @@
 │   │   ├── lasterror.h
 │   │   └── fectype.h                  # moved out of FECLIB/
 │   └── lib/
-│       └── libNAVNETDLL.so            # canonical single shared library file
+│       ├── libNAVNETDLL.so            # canonical build/link target
+│       └── libNAVNETDLL.so.01.95.0000 # SONAME compatibility link for runtime loader
 ├── main/                              # runtime application bundle (replaces sample/)
 │   ├── src/
 │   │   ├── main.cpp                   # renamed from Furuno_Sample.cpp
@@ -169,8 +170,9 @@ Verification:
 - Clean compile with updated header include chain.
 
 ### Step 8: Library filename normalization
-- Replace versioned/symlink pair with single canonical binary: `furuno/lib/libNAVNETDLL.so`.
-- Update scripts and docs to only reference canonical filename.
+- Keep canonical binary as `furuno/lib/libNAVNETDLL.so`.
+- Keep SONAME compatibility path `furuno/lib/libNAVNETDLL.so.01.95.0000` as a symlink.
+- Update scripts/docs to treat `libNAVNETDLL.so` as canonical while preserving runtime compatibility.
 
 Verification:
 - Build links with `-lNAVNETDLL`.
