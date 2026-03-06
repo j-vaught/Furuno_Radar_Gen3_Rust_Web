@@ -945,6 +945,72 @@ fn run_test_commands() {
             restore_ack: "$N89,",
             label: "scan_hi",
         },
+        // --- Pulse width ---
+        TestPair {
+            name: "Pulse width: S1 (short) -> L (long)",
+            setup_cmd: "$S68,0,0,0,0,0\r\n",   // S1 at range 0
+            setup_ack: "$N68,",
+            apply_cmd: "$S68,5,0,0,0,0\r\n",    // L (long) at range 0
+            apply_ack: "$N68,",
+            restore_cmd: "$S68,0,0,0,0,0\r\n",
+            restore_ack: "$N68,",
+            label: "pulse_long",
+        },
+        // --- Near STC ---
+        TestPair {
+            name: "Near STC: 0 -> 4",
+            setup_cmd: "$S85,0\r\n",
+            setup_ack: "$N85,",
+            apply_cmd: "$S85,4\r\n",
+            apply_ack: "$N85,",
+            restore_cmd: "$S85,0\r\n",
+            restore_ack: "$N85,",
+            label: "near_stc",
+        },
+        // --- Middle STC ---
+        TestPair {
+            name: "Middle STC: 0 -> 3",
+            setup_cmd: "$S86,0\r\n",
+            setup_ack: "$N86,",
+            apply_cmd: "$S86,3\r\n",
+            apply_ack: "$N86,",
+            restore_cmd: "$S86,0\r\n",
+            restore_ack: "$N86,",
+            label: "mid_stc",
+        },
+        // --- Far STC ---
+        TestPair {
+            name: "Far STC: 0 -> 2",
+            setup_cmd: "$S87,0\r\n",
+            setup_ack: "$N87,",
+            apply_cmd: "$S87,2\r\n",
+            apply_ack: "$N87,",
+            restore_cmd: "$S87,0\r\n",
+            restore_ack: "$N87,",
+            label: "far_stc",
+        },
+        // --- Main bang suppression ---
+        TestPair {
+            name: "Main bang: 0 -> 200",
+            setup_cmd: "$S83,0,0\r\n",
+            setup_ack: "$N83,",
+            apply_cmd: "$S83,200,0\r\n",
+            apply_ack: "$N83,",
+            restore_cmd: "$S83,0,0\r\n",
+            restore_ack: "$N83,",
+            label: "mainbang",
+        },
+        // --- Antenna height ---
+        TestPair {
+            name: "Antenna height: 0 -> 15m",
+            setup_cmd: "$S84,0,0,0\r\n",
+            setup_ack: "$N84,",
+            apply_cmd: "$S84,0,15,0\r\n",
+            apply_ack: "$N84,",
+            restore_cmd: "$S84,0,0,0\r\n",
+            restore_ack: "$N84,",
+            label: "ant_height",
+        },
     ];
 
     struct TestResult {
