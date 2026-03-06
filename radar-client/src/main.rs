@@ -842,182 +842,182 @@ fn run_test_commands() {
     // Test sequence: each test = (description, command, ack_prefix, expected_behavior)
     // ============================================================
 
-    struct TestCase {
+    // Each test pair: setup (optional) -> capture BEFORE -> apply command -> capture AFTER -> restore
+    struct TestPair {
         name: &'static str,
-        cmd: &'static str,
-        ack_prefix: &'static str,
-        png_suffix: &'static str,
+        setup_cmd: &'static str,       // optional: set the "before" state explicitly
+        setup_ack: &'static str,
+        apply_cmd: &'static str,
+        apply_ack: &'static str,
+        restore_cmd: &'static str,
+        restore_ack: &'static str,
+        label: &'static str,
     }
 
     let tests = [
-        // --- Baseline ---
-        TestCase {
-            name: "Baseline (default settings)",
-            cmd: "",  // no command, just collect
-            ack_prefix: "",
-            png_suffix: "baseline",
+        TestPair {
+            name: "Range: 0.125 NM -> 2 NM",
+            setup_cmd: "$S62,0,0,0\r\n",
+            setup_ack: "$N62,",
+            apply_cmd: "$S62,6,0,0\r\n",
+            apply_ack: "$N62,",
+            restore_cmd: "$S62,0,0,0\r\n",
+            restore_ack: "$N62,",
+            label: "range_2nm",
         },
-        // --- Range changes ---
-        TestCase {
-            name: "Range 0 (0.125 NM)",
-            cmd: "$S62,0,0,0\r\n",
-            ack_prefix: "$N62,",
-            png_suffix: "range0",
+        TestPair {
+            name: "Range: 0.125 NM -> 8 NM",
+            setup_cmd: "$S62,0,0,0\r\n",
+            setup_ack: "$N62,",
+            apply_cmd: "$S62,10,0,0\r\n",
+            apply_ack: "$N62,",
+            restore_cmd: "$S62,0,0,0\r\n",
+            restore_ack: "$N62,",
+            label: "range_8nm",
         },
-        TestCase {
-            name: "Range 6 (2 NM)",
-            cmd: "$S62,6,0,0\r\n",
-            ack_prefix: "$N62,",
-            png_suffix: "range6",
+        TestPair {
+            name: "Gain: 0 -> 100",
+            setup_cmd: "$S63,0,0,0,80,0\r\n",
+            setup_ack: "$N63,",
+            apply_cmd: "$S63,0,100,0,80,0\r\n",
+            apply_ack: "$N63,",
+            restore_cmd: "$S63,1,0,0,80,0\r\n",
+            restore_ack: "$N63,",
+            label: "gain_0v100",
         },
-        TestCase {
-            name: "Range 10 (8 NM)",
-            cmd: "$S62,10,0,0\r\n",
-            ack_prefix: "$N62,",
-            png_suffix: "range10",
+        TestPair {
+            name: "Sea clutter: 0 -> 100",
+            setup_cmd: "$S64,0,0,50,0,0,0\r\n",
+            setup_ack: "$N64,",
+            apply_cmd: "$S64,0,100,50,0,0,0\r\n",
+            apply_ack: "$N64,",
+            restore_cmd: "$S64,0,0,50,0,0,0\r\n",
+            restore_ack: "$N64,",
+            label: "sea_100",
         },
-        TestCase {
-            name: "Range 0 (restore 0.125 NM)",
-            cmd: "$S62,0,0,0\r\n",
-            ack_prefix: "$N62,",
-            png_suffix: "range0_restore",
+        TestPair {
+            name: "Rain clutter: 0 -> 100",
+            setup_cmd: "$S65,0,0,0,0,0,0\r\n",
+            setup_ack: "$N65,",
+            apply_cmd: "$S65,0,100,0,0,0,0\r\n",
+            apply_ack: "$N65,",
+            restore_cmd: "$S65,0,0,0,0,0,0\r\n",
+            restore_ack: "$N65,",
+            label: "rain_100",
         },
-        // --- Gain changes ---
-        TestCase {
-            name: "Gain manual=50",
-            cmd: "$S63,0,50,0,80,0\r\n",
-            ack_prefix: "$N63,",
-            png_suffix: "gain50",
+        TestPair {
+            name: "RezBoost: off -> High",
+            setup_cmd: "$SEE,0,0\r\n",
+            setup_ack: "$NEE,",
+            apply_cmd: "$SEE,3,0\r\n",
+            apply_ack: "$NEE,",
+            restore_cmd: "$SEE,0,0\r\n",
+            restore_ack: "$NEE,",
+            label: "rezboost_high",
         },
-        TestCase {
-            name: "Gain manual=200",
-            cmd: "$S63,0,200,0,80,0\r\n",
-            ack_prefix: "$N63,",
-            png_suffix: "gain200",
+        TestPair {
+            name: "Interference rejection: off -> on",
+            setup_cmd: "$S67,0,0,0,0\r\n",
+            setup_ack: "$N67,",
+            apply_cmd: "$S67,0,0,2,0\r\n",
+            apply_ack: "$N67,",
+            restore_cmd: "$S67,0,0,0,0\r\n",
+            restore_ack: "$N67,",
+            label: "ir",
         },
-        TestCase {
-            name: "Gain auto",
-            cmd: "$S63,1,0,0,80,0\r\n",
-            ack_prefix: "$N63,",
-            png_suffix: "gain_auto",
+        TestPair {
+            name: "Noise reduction: off -> on",
+            setup_cmd: "$S67,0,3,0,0\r\n",
+            setup_ack: "$N67,",
+            apply_cmd: "$S67,0,3,1,0\r\n",
+            apply_ack: "$N67,",
+            restore_cmd: "$S67,0,3,0,0\r\n",
+            restore_ack: "$N67,",
+            label: "nr",
         },
-        // --- Sea clutter ---
-        TestCase {
-            name: "Sea clutter manual=100",
-            cmd: "$S64,0,100,50,0,0,0\r\n",
-            ack_prefix: "$N64,",
-            png_suffix: "sea100",
-        },
-        TestCase {
-            name: "Sea clutter off",
-            cmd: "$S64,0,0,50,0,0,0\r\n",
-            ack_prefix: "$N64,",
-            png_suffix: "sea0",
-        },
-        // --- Rain clutter ---
-        TestCase {
-            name: "Rain clutter manual=100",
-            cmd: "$S65,0,100,0,0,0,0\r\n",
-            ack_prefix: "$N65,",
-            png_suffix: "rain100",
-        },
-        TestCase {
-            name: "Rain clutter off",
-            cmd: "$S65,0,0,0,0,0,0\r\n",
-            ack_prefix: "$N65,",
-            png_suffix: "rain0",
-        },
-        // --- Bearing resolution (RezBoost) ---
-        TestCase {
-            name: "RezBoost High (3)",
-            cmd: "$SEE,3,0\r\n",
-            ack_prefix: "$NEE,",
-            png_suffix: "rezboost3",
-        },
-        TestCase {
-            name: "RezBoost Off (0)",
-            cmd: "$SEE,0,0\r\n",
-            ack_prefix: "$NEE,",
-            png_suffix: "rezboost0",
-        },
-        // --- Interference rejection ---
-        TestCase {
-            name: "Interference rejection ON",
-            cmd: "$S67,0,0,2,0\r\n",
-            ack_prefix: "$N67,",
-            png_suffix: "ir_on",
-        },
-        TestCase {
-            name: "Interference rejection OFF",
-            cmd: "$S67,0,0,0,0\r\n",
-            ack_prefix: "$N67,",
-            png_suffix: "ir_off",
-        },
-        // --- Noise reduction ---
-        TestCase {
-            name: "Noise reduction ON",
-            cmd: "$S67,0,3,1,0\r\n",
-            ack_prefix: "$N67,",
-            png_suffix: "nr_on",
-        },
-        TestCase {
-            name: "Noise reduction OFF",
-            cmd: "$S67,0,3,0,0\r\n",
-            ack_prefix: "$N67,",
-            png_suffix: "nr_off",
-        },
-        // --- Scan speed ---
-        TestCase {
-            name: "Scan speed HI",
-            cmd: "$S89,1,0\r\n",
-            ack_prefix: "$N89,",
-            png_suffix: "scan_hi",
-        },
-        TestCase {
-            name: "Scan speed normal",
-            cmd: "$S89,0,0\r\n",
-            ack_prefix: "$N89,",
-            png_suffix: "scan_normal",
+        TestPair {
+            name: "Scan speed: normal -> HI",
+            setup_cmd: "$S89,0,0\r\n",
+            setup_ack: "$N89,",
+            apply_cmd: "$S89,1,0\r\n",
+            apply_ack: "$N89,",
+            restore_cmd: "$S89,0,0\r\n",
+            restore_ack: "$N89,",
+            label: "scan_hi",
         },
     ];
 
-    // Results table
-    let mut results: Vec<(String, bool, String)> = Vec::new(); // (name, ack_ok, stats_summary)
+    struct TestResult {
+        name: String,
+        ack_ok: bool,
+        before_stats: String,
+        after_stats: String,
+    }
+    let mut results: Vec<TestResult> = Vec::new();
 
     let output_dir = "test_output";
     let _ = std::fs::create_dir_all(output_dir);
 
     for (i, test) in tests.iter().enumerate() {
-        println!("\n{}", "=".repeat(60));
+        println!("\n{}", "=".repeat(70));
         println!("TEST {}/{}: {}", i + 1, tests.len(), test.name);
-        println!("{}", "=".repeat(60));
+        println!("{}", "=".repeat(70));
 
-        // Send command (if any)
-        let ack_ok = if !test.cmd.is_empty() {
-            println!("  CMD: {}", test.cmd.trim());
-            send_and_wait_ack(&mut ctrl, test.cmd, test.ack_prefix)
-        } else {
-            println!("  (no command — baseline capture)");
-            true
-        };
-
-        // Wait a moment for settings to take effect
-        std::thread::sleep(Duration::from_millis(500));
-
-        // Collect one rotation of echo data
-        println!("  Collecting echo data...");
-        let (spokes, stats) = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
-        println!("  STATS: {stats}");
-
-        // Render PPI
-        if !spokes.is_empty() {
-            let png_path = format!("{}/test_{}.png", output_dir, test.png_suffix);
-            let pixels = render_ppi(&spokes);
-            write_png(&png_path, &pixels, PPI_SIZE, PPI_SIZE);
-            println!("  IMAGE: {png_path}");
+        // --- SETUP: explicitly set the "before" state ---
+        if !test.setup_cmd.is_empty() {
+            println!("  SETUP: {}", test.setup_cmd.trim());
+            send_and_wait_ack(&mut ctrl, test.setup_cmd, test.setup_ack);
+            std::thread::sleep(Duration::from_millis(500));
+            // Drain one rotation for setup to settle
+            let _ = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
         }
 
-        results.push((test.name.to_string(), ack_ok, format!("{stats}")));
+        // --- BEFORE: capture with current settings ---
+        println!("  [BEFORE] Collecting echo data...");
+        let (before_spokes, before_stats) = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+        println!("  [BEFORE] {before_stats}");
+
+        if !before_spokes.is_empty() {
+            let png_path = format!("{}/{:02}_{}_BEFORE.png", output_dir, i + 1, test.label);
+            let pixels = render_ppi(&before_spokes);
+            write_png(&png_path, &pixels, PPI_SIZE, PPI_SIZE);
+            println!("  [BEFORE] {png_path}");
+        }
+
+        // --- APPLY command ---
+        println!("  CMD: {}", test.apply_cmd.trim());
+        let ack_ok = send_and_wait_ack(&mut ctrl, test.apply_cmd, test.apply_ack);
+
+        // Wait for settings to take effect
+        std::thread::sleep(Duration::from_millis(500));
+
+        // --- AFTER: capture with new settings ---
+        println!("  [AFTER]  Collecting echo data...");
+        let (after_spokes, after_stats) = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+        println!("  [AFTER]  {after_stats}");
+
+        if !after_spokes.is_empty() {
+            let png_path = format!("{}/{:02}_{}_AFTER.png", output_dir, i + 1, test.label);
+            let pixels = render_ppi(&after_spokes);
+            write_png(&png_path, &pixels, PPI_SIZE, PPI_SIZE);
+            println!("  [AFTER]  {png_path}");
+        }
+
+        results.push(TestResult {
+            name: test.name.to_string(),
+            ack_ok,
+            before_stats: format!("{before_stats}"),
+            after_stats: format!("{after_stats}"),
+        });
+
+        // --- RESTORE to defaults ---
+        println!("  RESTORE: {}", test.restore_cmd.trim());
+        send_and_wait_ack(&mut ctrl, test.restore_cmd, test.restore_ack);
+        std::thread::sleep(Duration::from_millis(500));
+        // Drain one rotation to let restored settings settle
+        {
+            let _ = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+        }
     }
 
     // TX OFF
@@ -1026,16 +1026,16 @@ fn run_test_commands() {
     let _ = ctrl.write_all(b"$S69,1,0,0,0,0,0\r\n");
 
     // Print summary table
-    println!("\n\n{}", "=".repeat(80));
-    println!("SUMMARY");
-    println!("{}", "=".repeat(80));
-    println!("{:<35} {:>4}  {}", "Test", "ACK", "Echo Stats");
-    println!("{}", "-".repeat(80));
-    for (name, ack, stats) in &results {
-        let ack_str = if *ack { "OK" } else { "FAIL" };
-        println!("{:<35} {:>4}  {}", name, ack_str, stats);
+    println!("\n\n{}", "=".repeat(120));
+    println!("SUMMARY — BEFORE vs AFTER for each command");
+    println!("{}", "=".repeat(120));
+    for r in &results {
+        let ack_str = if r.ack_ok { "OK" } else { "FAIL" };
+        println!("\n  {} [ACK: {}]", r.name, ack_str);
+        println!("    BEFORE: {}", r.before_stats);
+        println!("    AFTER:  {}", r.after_stats);
     }
-    println!("{}", "-".repeat(80));
+    println!("\n{}", "-".repeat(120));
     println!("TX OFF sent. Done.");
 }
 
