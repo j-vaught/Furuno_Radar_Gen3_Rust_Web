@@ -26,6 +26,13 @@ Validate that:
 - For batch loops, include `sleep 5` between each set/get cycle.
 - If a command still appears stale, retry the getter once after another `sleep 5`.
 
+## 2.2 Anti-Stale Validation Rule
+
+- Do not validate a setting with only one valid write.
+- For each setting with getter support, run an `A -> B -> A` sequence using two distinct valid values.
+- Require each readback to match the expected value for that exact step.
+- If readback stays unchanged across A/B/A, mark as failure (likely stale getter or failed setter).
+
 ## 3. Preconditions
 
 - Repo root: `/usr/lib/NAVNETDLL`
@@ -210,35 +217,77 @@ curl -s 'http://127.0.0.1:8080/set_interpolation?enable=2'
 sleep 5
 ```
 
-## 8. Bulk Set/Readback Verification Loop
+## 8. Anti-Stale A/B/A Verification
 
-Run this shell loop to set many values and read them back:
+Use strict checks so stale readbacks do not pass.
 
 ```bash
 BASE='http://127.0.0.1:8080'
 
-for g in 0 25 50 75 100; do
-  curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=$g&autoValue=0" >/dev/null
-  sleep 5
-  curl -s "$BASE/get_current?radarNo=0&command=GAIN" | grep -E "manual=$g|manual="
-done
+assert_has() {
+  local body="$1"
+  local needle="$2"
+  local label="$3"
+  if echo "$body" | grep -q "$needle"; then
+    echo "PASS: $label ($needle)"
+  else
+    echo "FAIL: $label expected [$needle]"
+    echo "$body"
+  fi
+}
 
-for p in 0 1 2 3 4 5; do
-  curl -s "$BASE/set_pulse_width?radarNo=0&pulse=$p&rangeIndex=2&rangeUnit=0" >/dev/null
-  sleep 5
-  curl -s "$BASE/get_current?radarNo=0&command=PULSE" | grep -E "pulse=$p|pulse="
-done
+# Gain A -> B -> A
+curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=15&autoValue=0" >/dev/null
+sleep 5
+g1=$(curl -s "$BASE/get_current?radarNo=0&command=GAIN")
+assert_has "$g1" "manual=15" "GAIN step A1"
 
-for r in 0 2 6 10 14 19 21; do
-  curl -s "$BASE/set_range?radarNo=0&rangeIndex=$r&rangeUnit=0" >/dev/null
-  sleep 5
-  curl -s "$BASE/get_current?radarNo=0&command=RANGE" | grep -E "code=$r|code="
-done
+curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=85&autoValue=0" >/dev/null
+sleep 5
+g2=$(curl -s "$BASE/get_current?radarNo=0&command=GAIN")
+assert_has "$g2" "manual=85" "GAIN step B"
+
+curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=15&autoValue=0" >/dev/null
+sleep 5
+g3=$(curl -s "$BASE/get_current?radarNo=0&command=GAIN")
+assert_has "$g3" "manual=15" "GAIN step A2"
+
+# Pulse A -> B -> A (with fixed range context)
+curl -s "$BASE/set_pulse_width?radarNo=0&pulse=1&rangeIndex=2&rangeUnit=0" >/dev/null
+sleep 5
+p1=$(curl -s "$BASE/get_current?radarNo=0&command=PULSE")
+assert_has "$p1" "pulse=1" "PULSE step A1"
+
+curl -s "$BASE/set_pulse_width?radarNo=0&pulse=5&rangeIndex=2&rangeUnit=0" >/dev/null
+sleep 5
+p2=$(curl -s "$BASE/get_current?radarNo=0&command=PULSE")
+assert_has "$p2" "pulse=5" "PULSE step B"
+
+curl -s "$BASE/set_pulse_width?radarNo=0&pulse=1&rangeIndex=2&rangeUnit=0" >/dev/null
+sleep 5
+p3=$(curl -s "$BASE/get_current?radarNo=0&command=PULSE")
+assert_has "$p3" "pulse=1" "PULSE step A2"
+
+# Range A -> B -> A
+curl -s "$BASE/set_range?radarNo=0&rangeIndex=2&rangeUnit=0" >/dev/null
+sleep 5
+r1=$(curl -s "$BASE/get_current?radarNo=0&command=RANGE")
+assert_has "$r1" "code=2" "RANGE step A1"
+
+curl -s "$BASE/set_range?radarNo=0&rangeIndex=10&rangeUnit=0" >/dev/null
+sleep 5
+r2=$(curl -s "$BASE/get_current?radarNo=0&command=RANGE")
+assert_has "$r2" "code=10" "RANGE step B"
+
+curl -s "$BASE/set_range?radarNo=0&rangeIndex=2&rangeUnit=0" >/dev/null
+sleep 5
+r3=$(curl -s "$BASE/get_current?radarNo=0&command=RANGE")
+assert_has "$r3" "code=2" "RANGE step A2"
 ```
 
 Pass criteria:
-- setters return code text (preferably `0`)
-- getters remain responsive and show plausible values
+- each A/B/A step readback matches the expected value
+- no step relies on previous/stale state
 - no server crash or hang
 
 ## 9. Data Output and Behavior Checks
@@ -254,12 +303,12 @@ Run a simple A/B gain impact check:
 ```bash
 BASE='http://127.0.0.1:8080'
 curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=10&autoValue=0" >/dev/null
-sleep 2
+sleep 5
 low=$(ls -1t /usr/lib/NAVNETDLL/main/runtime/output/raw/csv | head -n1)
 awk -F, 'NR>1{for(i=6;i<=NF;i++){s+=$i;n++}} END{print "low_avg=",(n?s/n:0)}' "/usr/lib/NAVNETDLL/main/runtime/output/raw/csv/$low"
 
 curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=90&autoValue=0" >/dev/null
-sleep 2
+sleep 5
 high=$(ls -1t /usr/lib/NAVNETDLL/main/runtime/output/raw/csv | head -n1)
 awk -F, 'NR>1{for(i=6;i<=NF;i++){s+=$i;n++}} END{print "high_avg=",(n?s/n:0)}' "/usr/lib/NAVNETDLL/main/runtime/output/raw/csv/$high"
 ```
@@ -271,7 +320,7 @@ Pass criterion:
 
 ```bash
 curl -s 'http://127.0.0.1:8080/system_metrics'
-sleep 2
+sleep 5
 curl -s 'http://127.0.0.1:8080/system_metrics'
 ```
 
