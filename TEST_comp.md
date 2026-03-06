@@ -79,13 +79,17 @@ Expected:
 ## 5. Baseline Smoke Checks
 
 ```bash
+curl -s 'http://127.0.0.1:8080/api_contract'
 curl -s 'http://127.0.0.1:8080/toggle_echo?radarNo=0&mode=on'
 curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=ALL'
+curl -s -i 'http://127.0.0.1:8080/get_current?radarNo=0&command=CLUTTER'
 ```
 
 Expected:
+- `/api_contract` returns JSON with canonical command list
 - TX setter reports return code
-- `command=ALL` prints range/gain/pulse/stc/antrev/acsea/acrain sections
+- `command=ALL` returns JSON object with per-command sections
+- non-canonical command (`CLUTTER`) returns HTTP 400 JSON error
 
 ## 6. Settings Panel Coverage Matrix
 
@@ -100,9 +104,9 @@ Use this matrix to test valid, min, max, and out-of-bounds values.
 | Pulse | `/set_pulse_width` | `pulse=0..5` plus range context | `pulse=-1` | `pulse=6` | `command=PULSE` |
 | Gain Manual | `/set_gain` | `status=0`, `manualValue=0..100` | `manualValue=-1` | `manualValue=101` | `command=GAIN` |
 | Gain Auto | `/set_gain` | `status=1`, `autoValue=0..100` | `autoValue=-1` | `autoValue=101` | `command=GAIN` |
-| STC Near | `/set_near_stc` | `value=0..4` | `value=-1` | `value=5` | `command=STC&format=json` |
-| STC Middle | `/set_middle_stc` | `value=0..3` | `value=-1` | `value=4` | `command=STC&format=json` |
-| STC Far | `/set_far_stc` | `value=0..2` | `value=-1` | `value=3` | `command=STC&format=json` |
+| STC Near | `/set_near_stc` | `value=0..4` | `value=-1` | `value=5` | `command=STC` |
+| STC Middle | `/set_middle_stc` | `value=0..3` | `value=-1` | `value=4` | `command=STC` |
+| STC Far | `/set_far_stc` | `value=0..2` | `value=-1` | `value=3` | `command=STC` |
 | Antenna Rotation | `/set_antenna_revolution` | `rollSpeed=0..2`, `hiRpm=0..1` | `rollSpeed=-1` | `rollSpeed=3` | `command=ANTREV` |
 | RezBoost | `/set_bearing_resolution` | `mode=0..3` | `mode=-1` (server clamp expected) | `mode=99` (server clamp expected) | same endpoint response includes read/set |
 | A/C SEA | `/set_acsea` | `status=0|1`, manual/auto `0..100`, `mode=0|1` | manual/auto `-1` | manual/auto `101` | `command=ACSEA` |
@@ -153,7 +157,7 @@ curl -s 'http://127.0.0.1:8080/set_middle_stc?radarNo=0&value=0'
 sleep 5
 curl -s 'http://127.0.0.1:8080/set_far_stc?radarNo=0&value=0'
 sleep 5
-curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=STC&format=json'
+curl -s 'http://127.0.0.1:8080/get_current?radarNo=0&command=STC'
 curl -s 'http://127.0.0.1:8080/set_near_stc?radarNo=0&value=-1'
 sleep 5
 curl -s 'http://127.0.0.1:8080/set_middle_stc?radarNo=0&value=4'
@@ -240,49 +244,49 @@ assert_has() {
 curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=15&autoValue=0" >/dev/null
 sleep 5
 g1=$(curl -s "$BASE/get_current?radarNo=0&command=GAIN")
-assert_has "$g1" "manual=15" "GAIN step A1"
+assert_has "$g1" "\"manual\":15" "GAIN step A1"
 
 curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=85&autoValue=0" >/dev/null
 sleep 5
 g2=$(curl -s "$BASE/get_current?radarNo=0&command=GAIN")
-assert_has "$g2" "manual=85" "GAIN step B"
+assert_has "$g2" "\"manual\":85" "GAIN step B"
 
 curl -s "$BASE/set_gain?radarNo=0&status=0&manualValue=15&autoValue=0" >/dev/null
 sleep 5
 g3=$(curl -s "$BASE/get_current?radarNo=0&command=GAIN")
-assert_has "$g3" "manual=15" "GAIN step A2"
+assert_has "$g3" "\"manual\":15" "GAIN step A2"
 
 # Pulse A -> B -> A (with fixed range context)
 curl -s "$BASE/set_pulse_width?radarNo=0&pulse=1&rangeIndex=2&rangeUnit=0" >/dev/null
 sleep 5
 p1=$(curl -s "$BASE/get_current?radarNo=0&command=PULSE")
-assert_has "$p1" "pulse=1" "PULSE step A1"
+assert_has "$p1" "\"pulse\":1" "PULSE step A1"
 
 curl -s "$BASE/set_pulse_width?radarNo=0&pulse=5&rangeIndex=2&rangeUnit=0" >/dev/null
 sleep 5
 p2=$(curl -s "$BASE/get_current?radarNo=0&command=PULSE")
-assert_has "$p2" "pulse=5" "PULSE step B"
+assert_has "$p2" "\"pulse\":5" "PULSE step B"
 
 curl -s "$BASE/set_pulse_width?radarNo=0&pulse=1&rangeIndex=2&rangeUnit=0" >/dev/null
 sleep 5
 p3=$(curl -s "$BASE/get_current?radarNo=0&command=PULSE")
-assert_has "$p3" "pulse=1" "PULSE step A2"
+assert_has "$p3" "\"pulse\":1" "PULSE step A2"
 
 # Range A -> B -> A
 curl -s "$BASE/set_range?radarNo=0&rangeIndex=2&rangeUnit=0" >/dev/null
 sleep 5
 r1=$(curl -s "$BASE/get_current?radarNo=0&command=RANGE")
-assert_has "$r1" "code=2" "RANGE step A1"
+assert_has "$r1" "\"code\":2" "RANGE step A1"
 
 curl -s "$BASE/set_range?radarNo=0&rangeIndex=10&rangeUnit=0" >/dev/null
 sleep 5
 r2=$(curl -s "$BASE/get_current?radarNo=0&command=RANGE")
-assert_has "$r2" "code=10" "RANGE step B"
+assert_has "$r2" "\"code\":10" "RANGE step B"
 
 curl -s "$BASE/set_range?radarNo=0&rangeIndex=2&rangeUnit=0" >/dev/null
 sleep 5
 r3=$(curl -s "$BASE/get_current?radarNo=0&command=RANGE")
-assert_has "$r3" "code=2" "RANGE step A2"
+assert_has "$r3" "\"code\":2" "RANGE step A2"
 ```
 
 Pass criteria:
@@ -329,13 +333,11 @@ Expected:
 - `snapshots_consumed <= snapshots_produced`
 - `snapshot_queue_high_watermark >= 1` under active capture
 
-## 11. Known UI/API Mismatches To Track During Test
+## 11. Contract Behavior Checks
 
-- `refreshClutter()` currently calls `command=CLUTTER`, but backend getters use `ACSEA` and `ACRAIN`.
-- `refreshAntenna()` currently calls `command=ANTENNA`, but backend getter uses `ANTREV`.
-- `refreshDisplay()` currently calls `command=SWEEP`, but backend has no `SWEEP` getter.
-
-Treat these as expected current behavior unless fixed in code. Keep them in test reports.
+- `/get_current` is JSON-only.
+- Only canonical commands are accepted; invalid command values must return HTTP 400 JSON.
+- `SWEEP` should return `null` data fields plus a warning message when getter APIs are unavailable.
 
 ## 12. Failure Checklist
 
@@ -349,6 +351,7 @@ If tests fail:
 
 Record:
 - branch + commit hash
+- `/api_contract` response snapshot
 - test start/end times
 - whether `radarNo=0` was enforced for all setter/getter commands
 - per-setting results for valid/min/max/out-of-bounds
