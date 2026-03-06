@@ -95,3 +95,26 @@ Default filter: `host 172.31.3.226 or net 239.255.0.0/16`
   - 03:48:42 - `toggle_echo mode=on` (TX resume)
   - 03:48:57 - Capture stop
 - **Notes:** Packet count much lower than equivalent duration (2080 vs ~3400 expected) - confirms echo packets stop during standby. Look for TX command packets near timestamps and echo gap between 03:48:27-03:48:42.
+
+## Session 6: Multi-Parameter Sweep (active)
+- **File:** `20260306_035029_multi_param_sweep.pcap`
+- **Duration:** ~120s
+- **Size:** 4.6M (4,804,182 bytes)
+- **Total packets:** 8,815
+- **Drops:** 0
+- **Filter:** `host 172.31.3.226 or net 239.255.0.0/16`
+- **Command timestamps:**
+  - 03:50:29 - Capture start (baseline)
+  - 03:50:39 - `set_range rangeIndex=6` (2 NM)
+  - 03:50:49 - `set_gain status=0 manualValue=150`
+  - 03:50:59 - `set_pulse_width pulse=1 rangeIndex=6` (short-2)
+  - 03:51:09 - `set_near_stc value=2`
+  - 03:51:19 - `set_middle_stc value=2`
+  - 03:51:29 - `set_far_stc value=1`
+  - 03:51:39 - `set_antenna_revolution rollSpeed=2 hiRpm=0`
+  - 03:51:49 - `set_acsea status=0 manual=100`
+  - 03:51:59 - `set_acrain status=0 manual=50 ftcMode=1 rainMode=1`
+  - 03:52:09 - `set_bearing_resolution mode=3` (High)
+  - 03:52:19 - Reset all to defaults (8 curl commands)
+  - 03:52:29 - Capture stop
+- **Notes:** Comprehensive command sweep covering 11 parameter types. Each command should produce host->radar TCP payload near its timestamp. Reset burst at 03:52:19 should show 8 rapid commands.
