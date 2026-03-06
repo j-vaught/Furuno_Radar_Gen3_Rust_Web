@@ -754,174 +754,199 @@ fn run_test_commands() {
     // Test sequence: each test = (description, command, ack_prefix, expected_behavior)
     // ============================================================
 
-    // Each test pair: setup (optional) -> capture BEFORE -> apply command -> capture AFTER -> restore
-    struct TestPair {
+    // Each test pair: setup -> capture BEFORE -> apply command -> capture AFTER -> restore
+    struct DynTestPair {
         name: &'static str,
-        setup_cmd: &'static str,       // optional: set the "before" state explicitly
+        setup_cmd: String,
         setup_ack: &'static str,
-        apply_cmd: &'static str,
+        apply_cmd: String,
         apply_ack: &'static str,
-        restore_cmd: &'static str,
+        restore_cmd: String,
         restore_ack: &'static str,
         label: &'static str,
     }
 
-    let tests = [
-        TestPair {
+    let tests = vec![
+        DynTestPair {
             name: "Range: 0.125 NM -> 2 NM",
-            setup_cmd: "$S62,0,0,0\r\n",
+            setup_cmd: protocol::cmd_range(0),
             setup_ack: "$N62,",
-            apply_cmd: "$S62,6,0,0\r\n",
+            apply_cmd: protocol::cmd_range(6),
             apply_ack: "$N62,",
-            restore_cmd: "$S62,0,0,0\r\n",
+            restore_cmd: protocol::cmd_range(0),
             restore_ack: "$N62,",
             label: "range_2nm",
         },
-        TestPair {
+        DynTestPair {
             name: "Range: 0.125 NM -> 8 NM",
-            setup_cmd: "$S62,0,0,0\r\n",
+            setup_cmd: protocol::cmd_range(0),
             setup_ack: "$N62,",
-            apply_cmd: "$S62,10,0,0\r\n",
+            apply_cmd: protocol::cmd_range(10),
             apply_ack: "$N62,",
-            restore_cmd: "$S62,0,0,0\r\n",
+            restore_cmd: protocol::cmd_range(0),
             restore_ack: "$N62,",
             label: "range_8nm",
         },
-        TestPair {
+        DynTestPair {
             name: "Gain: 0 -> 100",
-            setup_cmd: "$S63,0,0,0,80,0\r\n",
+            setup_cmd: protocol::cmd_gain(false, 0),
             setup_ack: "$N63,",
-            apply_cmd: "$S63,0,100,0,80,0\r\n",
+            apply_cmd: protocol::cmd_gain(false, 100),
             apply_ack: "$N63,",
-            restore_cmd: "$S63,1,0,0,80,0\r\n",
+            restore_cmd: protocol::cmd_gain(true, 0),
             restore_ack: "$N63,",
             label: "gain_0v100",
         },
-        TestPair {
+        DynTestPair {
             name: "Sea clutter: 0 -> 100",
-            setup_cmd: "$S64,0,0,50,0,0,0\r\n",
+            setup_cmd: protocol::cmd_sea_clutter(false, 0),
             setup_ack: "$N64,",
-            apply_cmd: "$S64,0,100,50,0,0,0\r\n",
+            apply_cmd: protocol::cmd_sea_clutter(false, 100),
             apply_ack: "$N64,",
-            restore_cmd: "$S64,0,0,50,0,0,0\r\n",
+            restore_cmd: protocol::cmd_sea_clutter(false, 0),
             restore_ack: "$N64,",
             label: "sea_100",
         },
-        TestPair {
+        DynTestPair {
             name: "Rain clutter: 0 -> 100",
-            setup_cmd: "$S65,0,0,0,0,0,0\r\n",
+            setup_cmd: protocol::cmd_rain_clutter(false, 0),
             setup_ack: "$N65,",
-            apply_cmd: "$S65,0,100,0,0,0,0\r\n",
+            apply_cmd: protocol::cmd_rain_clutter(false, 100),
             apply_ack: "$N65,",
-            restore_cmd: "$S65,0,0,0,0,0,0\r\n",
+            restore_cmd: protocol::cmd_rain_clutter(false, 0),
             restore_ack: "$N65,",
             label: "rain_100",
         },
-        TestPair {
+        DynTestPair {
             name: "RezBoost: off -> High",
-            setup_cmd: "$SEE,0,0\r\n",
+            setup_cmd: protocol::cmd_rezboost(0),
             setup_ack: "$NEE,",
-            apply_cmd: "$SEE,3,0\r\n",
+            apply_cmd: protocol::cmd_rezboost(3),
             apply_ack: "$NEE,",
-            restore_cmd: "$SEE,0,0\r\n",
+            restore_cmd: protocol::cmd_rezboost(0),
             restore_ack: "$NEE,",
             label: "rezboost_high",
         },
-        TestPair {
+        DynTestPair {
             name: "Interference rejection: off -> on",
-            setup_cmd: "$S67,0,0,0,0\r\n",
+            setup_cmd: protocol::cmd_interference_rejection(false),
             setup_ack: "$N67,",
-            apply_cmd: "$S67,0,0,2,0\r\n",
+            apply_cmd: protocol::cmd_interference_rejection(true),
             apply_ack: "$N67,",
-            restore_cmd: "$S67,0,0,0,0\r\n",
+            restore_cmd: protocol::cmd_interference_rejection(false),
             restore_ack: "$N67,",
             label: "ir",
         },
-        TestPair {
+        DynTestPair {
             name: "Noise reduction: off -> on",
-            setup_cmd: "$S67,0,3,0,0\r\n",
+            setup_cmd: protocol::cmd_noise_reduction(false),
             setup_ack: "$N67,",
-            apply_cmd: "$S67,0,3,1,0\r\n",
+            apply_cmd: protocol::cmd_noise_reduction(true),
             apply_ack: "$N67,",
-            restore_cmd: "$S67,0,3,0,0\r\n",
+            restore_cmd: protocol::cmd_noise_reduction(false),
             restore_ack: "$N67,",
             label: "nr",
         },
-        TestPair {
+        DynTestPair {
             name: "Scan speed: normal -> HI",
-            setup_cmd: "$S89,0,0\r\n",
+            setup_cmd: protocol::cmd_scan_speed(0),
             setup_ack: "$N89,",
-            apply_cmd: "$S89,1,0\r\n",
+            apply_cmd: protocol::cmd_scan_speed(1),
             apply_ack: "$N89,",
-            restore_cmd: "$S89,0,0\r\n",
+            restore_cmd: protocol::cmd_scan_speed(0),
             restore_ack: "$N89,",
             label: "scan_hi",
         },
-        // --- Pulse width ---
-        TestPair {
+        DynTestPair {
             name: "Pulse width: S1 (short) -> L (long)",
-            setup_cmd: "$S68,0,0,0,0,0\r\n",   // S1 at range 0
+            setup_cmd: protocol::cmd_pulse_width(0, 0),
             setup_ack: "$N68,",
-            apply_cmd: "$S68,5,0,0,0,0\r\n",    // L (long) at range 0
+            apply_cmd: protocol::cmd_pulse_width(5, 0),
             apply_ack: "$N68,",
-            restore_cmd: "$S68,0,0,0,0,0\r\n",
+            restore_cmd: protocol::cmd_pulse_width(0, 0),
             restore_ack: "$N68,",
             label: "pulse_long",
         },
-        // --- Near STC ---
-        TestPair {
+        DynTestPair {
             name: "Near STC: 0 -> 4",
-            setup_cmd: "$S85,0\r\n",
+            setup_cmd: protocol::cmd_near_stc(0),
             setup_ack: "$N85,",
-            apply_cmd: "$S85,4\r\n",
+            apply_cmd: protocol::cmd_near_stc(4),
             apply_ack: "$N85,",
-            restore_cmd: "$S85,0\r\n",
+            restore_cmd: protocol::cmd_near_stc(0),
             restore_ack: "$N85,",
             label: "near_stc",
         },
-        // --- Middle STC ---
-        TestPair {
+        DynTestPair {
             name: "Middle STC: 0 -> 3",
-            setup_cmd: "$S86,0\r\n",
+            setup_cmd: protocol::cmd_middle_stc(0),
             setup_ack: "$N86,",
-            apply_cmd: "$S86,3\r\n",
+            apply_cmd: protocol::cmd_middle_stc(3),
             apply_ack: "$N86,",
-            restore_cmd: "$S86,0\r\n",
+            restore_cmd: protocol::cmd_middle_stc(0),
             restore_ack: "$N86,",
             label: "mid_stc",
         },
-        // --- Far STC ---
-        TestPair {
+        DynTestPair {
             name: "Far STC: 0 -> 2",
-            setup_cmd: "$S87,0\r\n",
+            setup_cmd: protocol::cmd_far_stc(0),
             setup_ack: "$N87,",
-            apply_cmd: "$S87,2\r\n",
+            apply_cmd: protocol::cmd_far_stc(2),
             apply_ack: "$N87,",
-            restore_cmd: "$S87,0\r\n",
+            restore_cmd: protocol::cmd_far_stc(0),
             restore_ack: "$N87,",
             label: "far_stc",
         },
-        // --- Main bang suppression ---
-        TestPair {
+        DynTestPair {
             name: "Main bang: 0 -> 200",
-            setup_cmd: "$S83,0,0\r\n",
+            setup_cmd: protocol::cmd_main_bang(0),
             setup_ack: "$N83,",
-            apply_cmd: "$S83,200,0\r\n",
+            apply_cmd: protocol::cmd_main_bang(200),
             apply_ack: "$N83,",
-            restore_cmd: "$S83,0,0\r\n",
+            restore_cmd: protocol::cmd_main_bang(0),
             restore_ack: "$N83,",
             label: "mainbang",
         },
-        // --- Antenna height ---
-        TestPair {
+        DynTestPair {
             name: "Antenna height: 0 -> 15m",
-            setup_cmd: "$S84,0,0,0\r\n",
+            setup_cmd: protocol::cmd_antenna_height(0),
             setup_ack: "$N84,",
-            apply_cmd: "$S84,0,15,0\r\n",
+            apply_cmd: protocol::cmd_antenna_height(15),
             apply_ack: "$N84,",
-            restore_cmd: "$S84,0,0,0\r\n",
+            restore_cmd: protocol::cmd_antenna_height(0),
             restore_ack: "$N84,",
             label: "ant_height",
+        },
+        // --- New features from protocol.rs ---
+        DynTestPair {
+            name: "Bird mode: off -> high",
+            setup_cmd: protocol::cmd_bird_mode(0),
+            setup_ack: "$NED,",
+            apply_cmd: protocol::cmd_bird_mode(3),
+            apply_ack: "$NED,",
+            restore_cmd: protocol::cmd_bird_mode(0),
+            restore_ack: "$NED,",
+            label: "bird_high",
+        },
+        DynTestPair {
+            name: "Doppler: off -> target analyzer",
+            setup_cmd: protocol::cmd_doppler(0),
+            setup_ack: "$NEF,",
+            apply_cmd: protocol::cmd_doppler(1),
+            apply_ack: "$NEF,",
+            restore_cmd: protocol::cmd_doppler(0),
+            restore_ack: "$NEF,",
+            label: "doppler_target",
+        },
+        DynTestPair {
+            name: "No-transmit sector: off -> 90-180 deg",
+            setup_cmd: protocol::cmd_no_transmit_sectors(0, 0, 0, 0, false),
+            setup_ack: "$N77,",
+            apply_cmd: protocol::cmd_no_transmit_sectors(90, 180, 0, 0, false),
+            apply_ack: "$N77,",
+            restore_cmd: protocol::cmd_no_transmit_sectors(0, 0, 0, 0, false),
+            restore_ack: "$N77,",
+            label: "blind_sector",
         },
     ];
 
@@ -944,7 +969,7 @@ fn run_test_commands() {
         // --- SETUP: explicitly set the "before" state ---
         if !test.setup_cmd.is_empty() {
             println!("  SETUP: {}", test.setup_cmd.trim());
-            send_and_wait_ack(&mut ctrl, test.setup_cmd, test.setup_ack);
+            send_and_wait_ack(&mut ctrl, &test.setup_cmd, test.setup_ack);
             std::thread::sleep(Duration::from_millis(500));
             // Drain one rotation for setup to settle
             let _ = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
@@ -964,7 +989,7 @@ fn run_test_commands() {
 
         // --- APPLY command ---
         println!("  CMD: {}", test.apply_cmd.trim());
-        let ack_ok = send_and_wait_ack(&mut ctrl, test.apply_cmd, test.apply_ack);
+        let ack_ok = send_and_wait_ack(&mut ctrl, &test.apply_cmd, test.apply_ack);
 
         // Wait for settings to take effect
         std::thread::sleep(Duration::from_millis(500));
@@ -990,7 +1015,7 @@ fn run_test_commands() {
 
         // --- RESTORE to defaults ---
         println!("  RESTORE: {}", test.restore_cmd.trim());
-        send_and_wait_ack(&mut ctrl, test.restore_cmd, test.restore_ack);
+        send_and_wait_ack(&mut ctrl, &test.restore_cmd, test.restore_ack);
         std::thread::sleep(Duration::from_millis(500));
         // Drain one rotation to let restored settings settle
         {
