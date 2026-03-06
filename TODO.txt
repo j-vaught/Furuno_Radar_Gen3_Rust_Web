@@ -9,7 +9,7 @@ Make the system status page more comprehensive.
 Make the start recording button more prominent on the front page.
 Add a detailed document detailing all the commands, how it all works with LaTeX diagrams and such, etc., etc.
 
-auto-connect to radar regardless of IP address set, and no static IP.
+auto-connect to radar regardless of IP address set, and no static IP. [DONE - auto-discovery via UDP beacon + --radar-ip/--host-ip flags]
 Build out more comprehensive and formal test suite. [DONE - 27 integration tests in tests.rs, all pass]
 
 Also need to rename reverse or do something with it since it was only used during the Rust building process, but I need it for writing the doc I used to develop the Rust-based library.
