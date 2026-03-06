@@ -75,7 +75,7 @@ def find_newest(directory: Path) -> Path | None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="weights/yolo26_best.onnx")
+    parser.add_argument("--model", default="ml/weights/yolo26_best.onnx")
     parser.add_argument("--trail-dir", default="images/echo_trail")
     parser.add_argument("--output-dir", default="images/yolo_detect")
     parser.add_argument("--conf", type=float, default=0.25)

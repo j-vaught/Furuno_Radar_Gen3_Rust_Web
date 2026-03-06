@@ -596,27 +596,27 @@ void StartWebServerThread() {
 // ================================
 static bool HandleStaticAssets(const std::string &path, boost::asio::ip::tcp::socket &socket){
     if (path == "/" || path == "/index" || path == "/index.html") {
-        WriteHttpResponse(socket, LoadFileContent("index.html"));
+        WriteHttpResponse(socket, LoadFileContent("web/index.html"));
         return true;
     }
     if (path == "/radar" || path == "/radar.html") {
-        WriteHttpResponse(socket, LoadFileContent("radar.html"));
+        WriteHttpResponse(socket, LoadFileContent("web/radar.html"));
         return true;
     }
     if (path == "/settings" || path == "/settings.html") {
-        WriteHttpResponse(socket, LoadFileContent("settings.html"));
+        WriteHttpResponse(socket, LoadFileContent("web/settings.html"));
         return true;
     }
     if (path == "/status" || path == "/status.html") {
-        WriteHttpResponse(socket, LoadFileContent("status.html"));
+        WriteHttpResponse(socket, LoadFileContent("web/status.html"));
         return true;
     }
     if (path.rfind("/styles.css",0)==0) {
-        WriteHttpResponse(socket, LoadFileContent("styles.css"), "text/css");
+        WriteHttpResponse(socket, LoadFileContent("web/styles.css"), "text/css");
         return true;
     }
     if (path.rfind("/script.js",0)==0) {
-        WriteHttpResponse(socket, LoadFileContent("script.js"), "application/javascript");
+        WriteHttpResponse(socket, LoadFileContent("web/script.js"), "application/javascript");
         return true;
     }
     return false;
