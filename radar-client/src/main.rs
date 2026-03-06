@@ -35,6 +35,10 @@ fn main() {
             let out_path = args.get(2).map(|s| s.as_str()).unwrap_or("radar_live.png");
             run_render_live(out_path);
         }
+        "dump-raw" => {
+            let count: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
+            run_dump_raw(count);
+        }
         _ => {
             eprintln!("Usage: radar-client <handshake|tx-on|tx-off|echo|full|command|render-csv|render-live>");
             std::process::exit(1);
@@ -547,6 +551,112 @@ fn elapsed_str(start: std::time::Instant) -> String {
     format!("{secs:6.1}s")
 }
 
+// --- Echo Packet Decoder ---
+
+/// Decode a raw UDP echo packet into multiple spokes.
+/// Body is split into sub-spokes by separators: <az_lo> <az_hi> 00 00
+/// where the azimuth increments by ~12 ticks per sub-spoke.
+/// Each sub-spoke's data uses: FE xx / FD xx = value xx (escape pairs), other bytes = raw value.
+fn decode_echo_packet(pkt: &[u8], header_az: u16, out: &mut Vec<Spoke>) {
+    if pkt.len() < 22 { return; }
+    let body = &pkt[18..];
+
+    // Find section boundaries by scanning for <xx> <yy> 00 00 patterns
+    // where xx,yy form an azimuth value (0..8191, LE).
+    // The azimuth in separators increments from the header azimuth.
+    let mut boundaries: Vec<(usize, u16)> = Vec::new(); // (offset_after_separator, azimuth)
+
+    let mut i = 3; // skip body prefix 00 00 00
+    while i + 3 < body.len() {
+        if body[i + 2] == 0x00 && body[i + 3] == 0x00 {
+            let az_candidate = u16::from_le_bytes([body[i], body[i + 1]]);
+            // Valid azimuth: 0..8191, and the high byte must be <= 0x1F
+            if body[i + 1] <= 0x1F {
+                // Verify: after 00 00, next byte should look like section start
+                // (FE, FD, or a data byte >= 0x38 which is common for echo headers)
+                let after = i + 4;
+                if after < body.len() {
+                    let next = body[after];
+                    if next == 0xFE || next == 0xFD || next >= 0x38 || next == 0x00 {
+                        boundaries.push((after, az_candidate));
+                        i = after;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Build section ranges: first section is body[3..first_boundary_start-4],
+    // subsequent sections are between boundaries.
+    // Each boundary offset points to the byte AFTER the 00 00 (section start).
+    let mut sections: Vec<(&[u8], u16)> = Vec::new(); // (data, azimuth)
+
+    // First section: from body[3] (skip 00 00 00 prefix) to the first separator
+    if boundaries.is_empty() {
+        // No separators found — single section
+        let data = &body[3..];
+        sections.push((data, header_az));
+    } else {
+        // First section ends 4 bytes before the first boundary (separator is 4 bytes: az_lo az_hi 00 00)
+        let first_end = boundaries[0].0 - 4;
+        if first_end > 3 {
+            sections.push((&body[3..first_end], header_az));
+        }
+
+        // Middle sections: between boundaries
+        for w in 0..boundaries.len() {
+            let sec_start = boundaries[w].0;
+            let sec_end = if w + 1 < boundaries.len() {
+                boundaries[w + 1].0 - 4
+            } else {
+                body.len()
+            };
+            if sec_start < sec_end {
+                sections.push((&body[sec_start..sec_end], boundaries[w].1));
+            }
+        }
+    }
+
+    for (section, az) in &sections {
+        // Skip 00 00 prefix at start of each section (except first which already skipped)
+        let data = if section.len() > 2 && section[0] == 0x00 && section[1] == 0x00 {
+            &section[2..]
+        } else {
+            *section
+        };
+
+        // Decode: FE xx / FD xx = echo value xx (escape pair).
+        // Raw bytes divisible by 4 (0x00..0xFC step 4) are echo amplitudes.
+        // Other raw bytes are control/metadata — skip them.
+        let mut bins: Vec<u8> = Vec::new();
+        let mut j = 0;
+        while j < data.len() {
+            if (data[j] == 0xFE || data[j] == 0xFD) && j + 1 < data.len() {
+                bins.push(data[j + 1]);
+                j += 2;
+            } else if data[j] % 4 == 0 {
+                bins.push(data[j]);
+                j += 1;
+            } else {
+                // Control byte — skip
+                j += 1;
+            }
+        }
+
+        if bins.is_empty() { continue; }
+
+        // Scale decoded bins to 868 via nearest-neighbor interpolation
+        let mut echo = vec![0u8; PPI_NUM_RANGE_BINS];
+        for bin in 0..PPI_NUM_RANGE_BINS {
+            let src = bin * bins.len() / PPI_NUM_RANGE_BINS;
+            echo[bin] = bins[src];
+        }
+        out.push(Spoke { angle_ticks: *az, echo });
+    }
+}
+
 // --- PPI Rendering ---
 
 const PPI_SIZE: usize = 800;
@@ -556,6 +666,138 @@ const PPI_ANGLE_TICKS: f64 = 8192.0;
 struct Spoke {
     angle_ticks: u16,
     echo: Vec<u8>,
+}
+
+fn run_dump_raw(count: usize) {
+    println!("=== Raw Packet Dump ({count} packets) ===\n");
+
+    let auth_ok = do_auth();
+    if !auth_ok { eprintln!("Auth failed"); std::process::exit(1); }
+
+    let mut ctrl = do_connect_control();
+    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
+    send_command(&mut ctrl, "$R96,,,,,,,\n");
+    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
+
+    let init_cmds = include_str!("init_commands.txt");
+    for line in init_cmds.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        ctrl.write_all(line.as_bytes()).expect("write failed");
+        ctrl.write_all(b"\r\n").expect("write failed");
+    }
+    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
+
+    send_command(&mut ctrl, "$S69,2,0,0,0,0,0\r\n");
+    send_command(&mut ctrl, "$S85,0\r\n");
+    send_command(&mut ctrl, "$S86,0\r\n");
+    send_command(&mut ctrl, "$S87,0\r\n");
+    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
+    ctrl.set_nonblocking(true).unwrap();
+
+    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).expect("socket");
+    sock.set_reuse_address(true).unwrap();
+    unsafe {
+        let optval: i32 = 1;
+        libc::setsockopt(sock.as_raw_fd(), libc::SOL_SOCKET, libc::SO_REUSEPORT, &optval as *const _ as *const libc::c_void, std::mem::size_of::<i32>() as u32);
+    }
+    sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into()).expect("bind");
+    let echo_socket: UdpSocket = sock.into();
+    echo_socket.join_multicast_v4(&MULTICAST_ECHO, &HOST_IP).expect("join multicast");
+    echo_socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+
+    let mut buf = [0u8; 2048];
+    let mut ctrl_buf = [0u8; 4096];
+
+    // Wait for first rotation wrap to get diverse azimuths
+    let mut prev_az_dump: Option<u16> = None;
+    let mut rotation_seen = false;
+    loop {
+        match echo_socket.recv_from(&mut buf) {
+            Ok((len, _)) if len >= 18 => {
+                let az = u16::from_le_bytes([buf[16], buf[17]]);
+                if let Some(prev) = prev_az_dump {
+                    if az < prev.saturating_sub(1000) {
+                        rotation_seen = true;
+                        break;
+                    }
+                }
+                prev_az_dump = Some(az);
+            }
+            _ => {}
+        }
+        let _ = ctrl.read(&mut ctrl_buf);
+    }
+    if rotation_seen {
+        println!("First rotation seen, now capturing diverse azimuths...\n");
+    }
+
+    for pkt_num in 0..count {
+        match echo_socket.recv_from(&mut buf) {
+            Ok((len, _src)) => {
+                let az_raw = u16::from_le_bytes([buf[16], buf[17]]);
+                let az_deg = az_raw as f64 / 8192.0 * 360.0;
+                println!("--- Packet #{pkt_num} | len={len} | az_raw={az_raw} ({az_deg:.1}) ---");
+
+                // Print header (first 18 bytes)
+                print!("  HDR: ");
+                for i in 0..18.min(len) {
+                    print!("{:02X} ", buf[i]);
+                }
+                println!();
+
+                // Print body in rows of 32
+                let body = &buf[18..len];
+                println!("  BODY ({} bytes):", body.len());
+                for row in 0..(body.len() + 31) / 32 {
+                    let start = row * 32;
+                    let end = (start + 32).min(body.len());
+                    print!("    {:04X}: ", start);
+                    for i in start..end {
+                        print!("{:02X} ", body[i]);
+                    }
+                    println!();
+                }
+
+                // Analyze body structure
+                let mut fe_count = 0;
+                let mut fd_count = 0;
+                let mut i = 0;
+                while i < body.len() {
+                    if body[i] == 0xFE && i + 1 < body.len() {
+                        fe_count += 1;
+                        i += 2;
+                    } else if body[i] == 0xFD {
+                        fd_count += 1;
+                        i += 1;
+                    } else {
+                        i += 1;
+                    }
+                }
+                println!("  Stats: FE-pairs={fe_count}, FD-bytes={fd_count}, non-FE/FD={}", body.len() - fe_count * 2 - fd_count);
+
+                // Show first section (before first FE pair) separately
+                let first_fe = body.iter().position(|&b| b == 0xFE).unwrap_or(body.len());
+                print!("  Pre-FE section ({first_fe} bytes): ");
+                for i in 0..first_fe.min(64) {
+                    print!("{:02X} ", body[i]);
+                }
+                if first_fe > 64 { print!("..."); }
+                println!("\n");
+            }
+            Err(e) => {
+                eprintln!("recv error: {e}");
+                break;
+            }
+        }
+        let _ = ctrl.read(&mut ctrl_buf);
+    }
+
+    // TX OFF
+    ctrl.set_nonblocking(false).unwrap();
+    ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+    let _ = ctrl.write_all(b"$S69,1,0,0,0,0,0\r\n");
+    println!("TX OFF sent. Done.");
 }
 
 fn run_render_csv(csv_path: &str, out_path: &str) {
@@ -633,7 +875,11 @@ fn run_render_live(out_path: &str) {
             std::mem::size_of::<i32>() as u32,
         );
     }
-    sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into()).expect("bind");
+    // Try binding to INADDR_ANY first; fall back to multicast address if C++ app holds the port
+    let bind_result = sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into());
+    if bind_result.is_err() {
+        sock.bind(&SocketAddr::from((MULTICAST_ECHO, PORT_ECHO)).into()).expect("bind multicast addr");
+    }
     let echo_socket: UdpSocket = sock.into();
     echo_socket.join_multicast_v4(&MULTICAST_ECHO, &HOST_IP).expect("join multicast");
     echo_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
@@ -669,12 +915,12 @@ fn run_render_live(out_path: &str) {
 
                 // Only collect after first wrap (clean full rotation)
                 if rotation_count >= 1 {
-                    // Use raw body bytes as echo amplitudes (simple approach)
-                    let body = &buf[18..len];
-                    let echo: Vec<u8> = body.iter().map(|&b| {
-                        if b >= 0xFE { 0 } else { b } // Treat FE/FF as zero (likely control bytes)
-                    }).collect();
-                    spokes.push(Spoke { angle_ticks: az, echo });
+                    let before = spokes.len();
+                    decode_echo_packet(&buf[..len], az, &mut spokes);
+                    let added = spokes.len() - before;
+                    if added == 0 || spokes.len() < 50 {
+                        eprintln!("  pkt az={az} len={len} body_len={} sections_added={added}", len - 18);
+                    }
                 }
             }
             Err(_) => {
@@ -770,7 +1016,7 @@ fn render_ppi(spokes: &[Spoke]) -> Vec<u8> {
             if bin >= num_bins { continue; }
 
             let amplitude = echo[bin];
-            if amplitude == 0 { continue; }
+            if amplitude < 40 { continue; } // STC-like threshold: reject near-range noise
 
             // Map amplitude to green color (radar style)
             let intensity = (amplitude as f64 / 252.0 * 255.0).min(255.0) as u8;
