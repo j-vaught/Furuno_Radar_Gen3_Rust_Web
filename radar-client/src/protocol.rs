@@ -743,57 +743,35 @@ pub struct NetInterface {
 }
 
 /// Detect all IPv4 network interfaces with broadcast addresses.
-/// Parses /proc/net/if_inet6 is not needed — uses `ip -4 addr` output.
+/// Uses the `if-addrs` crate for cross-platform support (Linux, macOS, Windows).
 pub fn detect_interfaces() -> Vec<NetInterface> {
-    let output = match std::process::Command::new("ip")
-        .args(["-4", "-o", "addr", "show"])
-        .output()
-    {
-        Ok(o) => o,
+    let addrs = match if_addrs::get_if_addrs() {
+        Ok(a) => a,
         Err(_) => return Vec::new(),
     };
 
-    let text = String::from_utf8_lossy(&output.stdout);
     let mut interfaces = Vec::new();
-
-    for line in text.lines() {
-        // Format: "2: eth0    inet 172.31.1.100/16 brd 172.31.255.255 ..."
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        let name_idx = parts.iter().position(|&p| p == "inet");
-        if name_idx.is_none() { continue; }
-        let name_idx = name_idx.unwrap();
-
-        // Interface name is at index 1, strip trailing colon-like chars
-        let iface_name = if parts.len() > 1 {
-            parts[1].trim_end_matches(':').to_string()
-        } else {
-            continue;
-        };
-
+    for iface in addrs {
         // Skip loopback
-        if iface_name == "lo" { continue; }
+        if iface.is_loopback() { continue; }
 
-        // IP is after "inet", may have /prefix
-        if name_idx + 1 >= parts.len() { continue; }
-        let ip_str = parts[name_idx + 1].split('/').next().unwrap_or("");
-        let ip: Ipv4Addr = match ip_str.parse() {
-            Ok(ip) => ip,
-            Err(_) => continue,
+        // Only IPv4
+        let ip = match iface.addr {
+            if_addrs::IfAddr::V4(ref v4) => v4.ip,
+            _ => continue,
         };
 
-        // Broadcast is after "brd"
-        let brd_idx = parts.iter().position(|&p| p == "brd");
-        let broadcast = if let Some(bi) = brd_idx {
-            if bi + 1 < parts.len() {
-                parts[bi + 1].parse().unwrap_or(Ipv4Addr::BROADCAST)
-            } else {
-                Ipv4Addr::BROADCAST
-            }
-        } else {
-            Ipv4Addr::BROADCAST
+        // Broadcast — use provided or fall back to 255.255.255.255
+        let broadcast = match iface.addr {
+            if_addrs::IfAddr::V4(ref v4) => v4.broadcast.unwrap_or(Ipv4Addr::BROADCAST),
+            _ => Ipv4Addr::BROADCAST,
         };
 
-        interfaces.push(NetInterface { name: iface_name, ip, broadcast });
+        interfaces.push(NetInterface {
+            name: iface.name.clone(),
+            ip,
+            broadcast,
+        });
     }
 
     interfaces
@@ -902,11 +880,11 @@ pub fn detect_host_ip(radar_ip: Ipv4Addr) -> Option<Ipv4Addr> {
 }
 
 /// Ensure the host can reach the radar's subnet. If no interface is on the
-/// same /16 as the radar, automatically add a secondary IP alias to a physical
-/// ethernet interface (eth0, end0, enp*, etc.).
+/// same subnet as the radar, automatically add a secondary IP alias using
+/// the appropriate platform command (Linux: ip, macOS: ifconfig, Windows: netsh).
 ///
 /// Returns the host IP to use for communicating with the radar.
-/// Falls back to DEFAULT_HOST_IP (172.31.1.100) if auto-configuration fails.
+/// Falls back to fallback_host if auto-configuration fails.
 pub fn ensure_subnet_reachable(radar_ip: Ipv4Addr, fallback_host: Ipv4Addr) -> Ipv4Addr {
     // First check if we already have an interface on the radar's subnet
     if let Some(hip) = detect_host_ip(radar_ip) {
@@ -914,64 +892,122 @@ pub fn ensure_subnet_reachable(radar_ip: Ipv4Addr, fallback_host: Ipv4Addr) -> I
     }
 
     // No interface on the radar's subnet — try to add one
-    // Pick a host IP on the radar's /16: use the first two octets from radar, last two from fallback
+    // Pick a host IP on the radar's /16: first two octets from radar, last two from fallback
     let r = radar_ip.octets();
     let f = fallback_host.octets();
     let alias_ip = Ipv4Addr::new(r[0], r[1], f[2], f[3]);
 
     // Find a physical ethernet interface to attach to
     let interfaces = detect_interfaces();
-    let eth_iface = interfaces.iter()
-        .find(|i| i.name.starts_with("eth") || i.name.starts_with("end") || i.name.starts_with("enp"))
-        .or_else(|| interfaces.first());
+    let eth_iface = find_ethernet_interface(&interfaces);
 
     let iface_name = match eth_iface {
         Some(i) => i.name.clone(),
         None => {
             eprintln!("No network interface found to add alias");
+            print_manual_instructions(alias_ip, "eth0");
             return fallback_host;
         }
     };
 
-    // Check if this alias already exists (avoid duplicates)
-    let check = std::process::Command::new("ip")
-        .args(["-4", "-o", "addr", "show", "dev", &iface_name])
-        .output();
-    if let Ok(out) = check {
-        let text = String::from_utf8_lossy(&out.stdout);
-        if text.contains(&alias_ip.to_string()) {
-            println!("Alias {alias_ip} already exists on {iface_name}");
-            return alias_ip;
-        }
+    // Check if this alias already exists via detect_interfaces (cross-platform)
+    let fresh = detect_interfaces();
+    if fresh.iter().any(|i| i.ip == alias_ip) {
+        println!("Alias {alias_ip} already exists");
+        return alias_ip;
     }
 
-    println!("No interface on radar subnet — adding {alias_ip}/16 to {iface_name}...");
+    println!("No interface on radar subnet — adding {alias_ip} to {iface_name}...");
 
+    let success = add_ip_alias(&iface_name, alias_ip);
+
+    if success {
+        println!("Added {alias_ip} to {iface_name}");
+        alias_ip
+    } else {
+        print_manual_instructions(alias_ip, &iface_name);
+        fallback_host
+    }
+}
+
+/// Find a physical ethernet interface, preferring wired adapters.
+fn find_ethernet_interface(interfaces: &[NetInterface]) -> Option<&NetInterface> {
+    // Linux: eth*, end*, enp*, ens*
+    // macOS: en0, en1, etc.
+    // Windows: "Ethernet", "Local Area Connection", etc.
+    interfaces.iter()
+        .find(|i| {
+            let n = i.name.to_lowercase();
+            n.starts_with("eth") || n.starts_with("end") || n.starts_with("enp")
+                || n.starts_with("ens") || n == "en0" || n == "en1"
+                || n.contains("ethernet") || n.contains("local area")
+        })
+        .or_else(|| interfaces.first())
+}
+
+/// Add an IP alias to a network interface. Returns true on success.
+#[cfg(target_os = "linux")]
+fn add_ip_alias(iface: &str, ip: Ipv4Addr) -> bool {
     let result = std::process::Command::new("sudo")
-        .args(["ip", "addr", "add", &format!("{alias_ip}/16"), "dev", &iface_name])
+        .args(["ip", "addr", "add", &format!("{ip}/16"), "dev", iface])
         .output();
-
     match result {
-        Ok(out) if out.status.success() => {
-            println!("Added {alias_ip}/16 to {iface_name}");
-            alias_ip
-        }
+        Ok(out) if out.status.success() => true,
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            // "RTNETLINK answers: File exists" means it's already there
-            if stderr.contains("File exists") {
-                println!("Alias {alias_ip}/16 already on {iface_name}");
-                alias_ip
-            } else {
-                eprintln!("Failed to add alias: {stderr}");
-                eprintln!("Try running: sudo ip addr add {alias_ip}/16 dev {iface_name}");
-                fallback_host
-            }
+            if stderr.contains("File exists") { true }
+            else { eprintln!("Failed to add alias: {stderr}"); false }
         }
-        Err(e) => {
-            eprintln!("Could not run sudo: {e}");
-            eprintln!("Try running: sudo ip addr add {alias_ip}/16 dev {iface_name}");
-            fallback_host
+        Err(e) => { eprintln!("Could not run sudo: {e}"); false }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn add_ip_alias(iface: &str, ip: Ipv4Addr) -> bool {
+    let result = std::process::Command::new("sudo")
+        .args(["ifconfig", iface, "alias", &ip.to_string(), "255.255.0.0"])
+        .output();
+    match result {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            eprintln!("Failed to add alias: {stderr}");
+            false
         }
+        Err(e) => { eprintln!("Could not run sudo: {e}"); false }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn add_ip_alias(iface: &str, ip: Ipv4Addr) -> bool {
+    let result = std::process::Command::new("netsh")
+        .args(["interface", "ip", "add", "address", iface, &ip.to_string(), "255.255.0.0"])
+        .output();
+    match result {
+        Ok(out) if out.status.success() => true,
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            eprintln!("Failed to add alias: {stderr}");
+            false
+        }
+        Err(e) => { eprintln!("Could not run netsh: {e}"); false }
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn add_ip_alias(_iface: &str, _ip: Ipv4Addr) -> bool {
+    eprintln!("Auto-alias not supported on this platform");
+    false
+}
+
+/// Print platform-specific manual instructions for adding the alias.
+fn print_manual_instructions(ip: Ipv4Addr, iface: &str) {
+    eprintln!("Please manually add {ip}/16 to your network interface:");
+    if cfg!(target_os = "linux") {
+        eprintln!("  sudo ip addr add {ip}/16 dev {iface}");
+    } else if cfg!(target_os = "macos") {
+        eprintln!("  sudo ifconfig {iface} alias {ip} 255.255.0.0");
+    } else if cfg!(target_os = "windows") {
+        eprintln!("  netsh interface ip add address \"{iface}\" {ip} 255.255.0.0");
     }
 }
