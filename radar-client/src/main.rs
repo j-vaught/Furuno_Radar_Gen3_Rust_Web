@@ -7,6 +7,8 @@ mod echo;
 mod modes;
 mod testing;
 mod calibrate;
+#[cfg(test)]
+mod tests;
 
 use std::net::Ipv4Addr;
 
