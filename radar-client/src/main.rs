@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::os::unix::io::AsRawFd;
 use std::time::Duration;
@@ -26,8 +26,17 @@ fn main() {
         "echo" => run_echo_listen(),
         "full" => run_full(),
         "command" => run_command_test(),
+        "render-csv" => {
+            let csv_path = args.get(2).expect("Usage: radar-client render-csv <csv_file> [output.png]");
+            let out_path = args.get(3).map(|s| s.as_str()).unwrap_or("radar_ppi.png");
+            run_render_csv(csv_path, out_path);
+        }
+        "render-live" => {
+            let out_path = args.get(2).map(|s| s.as_str()).unwrap_or("radar_live.png");
+            run_render_live(out_path);
+        }
         _ => {
-            eprintln!("Usage: radar-client <handshake|tx-on|tx-off|echo|full|command>");
+            eprintln!("Usage: radar-client <handshake|tx-on|tx-off|echo|full|command|render-csv|render-live>");
             std::process::exit(1);
         }
     }
@@ -536,4 +545,276 @@ fn parse_echo_header(data: &[u8]) -> EchoHeader {
 fn elapsed_str(start: std::time::Instant) -> String {
     let secs = start.elapsed().as_secs_f64();
     format!("{secs:6.1}s")
+}
+
+// --- PPI Rendering ---
+
+const PPI_SIZE: usize = 800;
+const PPI_NUM_RANGE_BINS: usize = 868;
+const PPI_ANGLE_TICKS: f64 = 8192.0;
+
+struct Spoke {
+    angle_ticks: u16,
+    echo: Vec<u8>,
+}
+
+fn run_render_csv(csv_path: &str, out_path: &str) {
+    println!("Rendering PPI from CSV: {csv_path}");
+
+    let file = std::fs::File::open(csv_path).expect("Failed to open CSV");
+    let reader = std::io::BufReader::new(file);
+    let mut spokes = Vec::new();
+
+    for (i, line) in reader.lines().enumerate() {
+        let line = line.expect("read line");
+        if i == 0 { continue; } // skip header
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() < 6 { continue; }
+        let angle: u16 = fields[4].parse().unwrap_or(0);
+        let echo: Vec<u8> = fields[5..].iter()
+            .map(|v| v.parse::<u8>().unwrap_or(0))
+            .collect();
+        spokes.push(Spoke { angle_ticks: angle, echo });
+    }
+
+    println!("Loaded {} spokes, rendering {}x{} PPI...", spokes.len(), PPI_SIZE, PPI_SIZE);
+    let pixels = render_ppi(&spokes);
+    write_png(out_path, &pixels, PPI_SIZE, PPI_SIZE);
+    println!("Saved: {out_path}");
+}
+
+fn run_render_live(out_path: &str) {
+    println!("=== Live PPI Capture ===\n");
+
+    let auth_ok = do_auth();
+    if !auth_ok {
+        eprintln!("Auth failed");
+        std::process::exit(1);
+    }
+
+    let mut ctrl = do_connect_control();
+    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
+
+    send_command(&mut ctrl, "$R96,,,,,,,\n");
+    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
+
+    let init_cmds = include_str!("init_commands.txt");
+    for line in init_cmds.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        ctrl.write_all(line.as_bytes()).expect("write failed");
+        ctrl.write_all(b"\r\n").expect("write failed");
+    }
+    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
+
+    println!("Sending TX ON...");
+    send_command(&mut ctrl, "$S69,2,0,0,0,0,0\r\n");
+    send_command(&mut ctrl, "$S85,0\r\n");
+    send_command(&mut ctrl, "$S86,0\r\n");
+    send_command(&mut ctrl, "$S87,0\r\n");
+    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
+
+    ctrl.set_nonblocking(true).unwrap();
+
+    // Join multicast for echo data
+    let sock = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    ).expect("socket");
+    sock.set_reuse_address(true).unwrap();
+    unsafe {
+        let optval: i32 = 1;
+        libc::setsockopt(
+            sock.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_REUSEPORT,
+            &optval as *const _ as *const libc::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+    sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into()).expect("bind");
+    let echo_socket: UdpSocket = sock.into();
+    echo_socket.join_multicast_v4(&MULTICAST_ECHO, &HOST_IP).expect("join multicast");
+    echo_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+
+    // Collect one full rotation of echo data
+    let mut buf = [0u8; 2048];
+    let mut ctrl_buf = [0u8; 4096];
+    let mut spokes: Vec<Spoke> = Vec::new();
+    let mut prev_az: Option<u16> = None;
+    let mut rotation_count = 0u32;
+    let mut keepalive_timer = std::time::Instant::now();
+    let start = std::time::Instant::now();
+
+    println!("Collecting echo data for 2 full rotations...");
+
+    loop {
+        match echo_socket.recv_from(&mut buf) {
+            Ok((len, _)) => {
+                if len < 20 { continue; }
+                let az = u16::from_le_bytes([buf[16], buf[17]]);
+
+                // Detect rotation wrap
+                if let Some(prev) = prev_az {
+                    if az < prev.saturating_sub(1000) {
+                        rotation_count += 1;
+                        println!("  Rotation {} complete ({} spokes so far)", rotation_count, spokes.len());
+                        if rotation_count >= 2 {
+                            break;
+                        }
+                    }
+                }
+                prev_az = Some(az);
+
+                // Only collect after first wrap (clean full rotation)
+                if rotation_count >= 1 {
+                    // Use raw body bytes as echo amplitudes (simple approach)
+                    let body = &buf[18..len];
+                    let echo: Vec<u8> = body.iter().map(|&b| {
+                        if b >= 0xFE { 0 } else { b } // Treat FE/FF as zero (likely control bytes)
+                    }).collect();
+                    spokes.push(Spoke { angle_ticks: az, echo });
+                }
+            }
+            Err(_) => {
+                if start.elapsed() > Duration::from_secs(30) {
+                    eprintln!("Timeout collecting echo data");
+                    break;
+                }
+            }
+        }
+
+        // Drain control channel
+        let _ = ctrl.read(&mut ctrl_buf);
+
+        // Keepalive
+        if keepalive_timer.elapsed() > Duration::from_secs(5) {
+            let _ = ctrl.write_all(b"\x00\x00\x00\x08\x00\x00\x00\x00");
+            keepalive_timer = std::time::Instant::now();
+        }
+    }
+
+    // TX OFF
+    ctrl.set_nonblocking(false).unwrap();
+    ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+    let _ = ctrl.write_all(b"$S69,1,0,0,0,0,0\r\n");
+
+    if spokes.is_empty() {
+        eprintln!("No spokes collected");
+        return;
+    }
+
+    println!("Collected {} raw spokes, rendering PPI...", spokes.len());
+    let pixels = render_ppi(&spokes);
+    write_png(out_path, &pixels, PPI_SIZE, PPI_SIZE);
+    println!("Saved: {out_path}");
+    println!("TX OFF sent. Done.");
+}
+
+fn render_ppi(spokes: &[Spoke]) -> Vec<u8> {
+    let size = PPI_SIZE;
+    let center = size as f64 / 2.0;
+    let max_r = center - 2.0;
+
+    // RGBA image: black background
+    let mut pixels = vec![0u8; size * size * 4];
+
+    // Set alpha to 255 for all pixels (opaque black background)
+    for y in 0..size {
+        for x in 0..size {
+            let idx = (y * size + x) * 4;
+            pixels[idx + 3] = 255; // alpha
+        }
+    }
+
+    // Sort spokes by angle
+    let mut sorted: Vec<(f64, &[u8])> = spokes.iter()
+        .map(|s| (s.angle_ticks as f64 / PPI_ANGLE_TICKS * std::f64::consts::TAU, s.echo.as_slice()))
+        .collect();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+    // For each pixel, find the nearest spoke and range bin
+    for y in 0..size {
+        for x in 0..size {
+            let dx = x as f64 - center;
+            let dy = -(y as f64 - center); // Y-up for proper orientation (north=up)
+            let r = (dx * dx + dy * dy).sqrt();
+            if r < 1.0 || r > max_r { continue; }
+
+            // Angle: 0=north, clockwise
+            let mut angle = dy.atan2(dx);
+            // Convert from math angle (east=0, CCW) to radar angle (north=0, CW)
+            angle = std::f64::consts::FRAC_PI_2 - angle;
+            if angle < 0.0 { angle += std::f64::consts::TAU; }
+
+            // Find nearest spoke
+            let spoke_idx = match sorted.binary_search_by(|s| s.0.partial_cmp(&angle).unwrap()) {
+                Ok(i) => i,
+                Err(i) => {
+                    if i == 0 { sorted.len() - 1 }
+                    else if i >= sorted.len() { 0 }
+                    else {
+                        let d1 = (sorted[i - 1].0 - angle).abs();
+                        let d2 = (sorted[i].0 - angle).abs();
+                        if d1 < d2 { i - 1 } else { i }
+                    }
+                }
+            };
+
+            let echo = sorted[spoke_idx].1;
+            let num_bins = echo.len().min(PPI_NUM_RANGE_BINS);
+            if num_bins == 0 { continue; }
+
+            let bin = ((r / max_r) * num_bins as f64) as usize;
+            if bin >= num_bins { continue; }
+
+            let amplitude = echo[bin];
+            if amplitude == 0 { continue; }
+
+            // Map amplitude to green color (radar style)
+            let intensity = (amplitude as f64 / 252.0 * 255.0).min(255.0) as u8;
+            let idx = (y * size + x) * 4;
+            // Garnet-to-white color scheme based on brand colors
+            pixels[idx] = intensity;                                    // R
+            pixels[idx + 1] = (intensity as u32 * 180 / 255) as u8;   // G (warm tint)
+            pixels[idx + 2] = (intensity as u32 * 20 / 255) as u8;    // B
+        }
+    }
+
+    // Draw crosshairs
+    let c = center as usize;
+    for i in 0..size {
+        let idx = (c * size + i) * 4;
+        pixels[idx] = 54; pixels[idx + 1] = 54; pixels[idx + 2] = 54; // 90% black
+        let idx = (i * size + c) * 4;
+        pixels[idx] = 54; pixels[idx + 1] = 54; pixels[idx + 2] = 54;
+    }
+
+    // Draw range rings
+    for ring in 1..=4 {
+        let ring_r = max_r * ring as f64 / 4.0;
+        let steps = (ring_r * std::f64::consts::TAU) as usize;
+        for s in 0..steps {
+            let angle = s as f64 / steps as f64 * std::f64::consts::TAU;
+            let px = (center + ring_r * angle.cos()) as usize;
+            let py = (center - ring_r * angle.sin()) as usize;
+            if px < size && py < size {
+                let idx = (py * size + px) * 4;
+                pixels[idx] = 54; pixels[idx + 1] = 54; pixels[idx + 2] = 54;
+            }
+        }
+    }
+
+    pixels
+}
+
+fn write_png(path: &str, pixels: &[u8], width: usize, height: usize) {
+    let file = std::fs::File::create(path).expect("create PNG file");
+    let ref mut w = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(w, width as u32, height as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("write PNG header");
+    writer.write_image_data(pixels).expect("write PNG data");
 }
