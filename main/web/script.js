@@ -936,7 +936,7 @@ function setRange(cb){
 function setPulse(){
   fetch(`/set_pulse_width?radarNo=${v('radarNo')}&pulse=${v('pwPulse')}`
        + `&rangeIndex=${v('rangeIndex')}&rangeUnit=0`)
-    .then(r=>r.text()).then(t=>setCallout('pulseResult', t, 'info'));
+    .then(r=>r.text()).then(t=>setCallout('rangeResult', t, 'info'));
 }
 function refreshRange(){
   const cmd = getReadCommand('RANGE');
