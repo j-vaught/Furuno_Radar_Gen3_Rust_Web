@@ -79,6 +79,7 @@ struct SweepWriteJob {
     std::vector<RadarEchoData> data;
     std::string csvFilename;
     std::string pngFilename;
+    std::string trailFilename;
 };
 
 std::queue<SweepWriteJob> sweepQueue;
@@ -103,6 +104,7 @@ static void PrintSensorList(void);
 static void StartRadarModule();
 static int ReadLicenseFile(const char*, char[4][VENDOR_TXT_LINE_CHAR_MAX]);
 void WriteEchoImage(const std::vector<RadarEchoData>&, const std::string&);
+void WriteTrailImage(const std::vector<RadarEchoData>&, const std::string&);
 void WriteEchoCSV(const std::vector<RadarEchoData>&, const std::string&);
 void SweepWriterThread();
 
@@ -243,12 +245,14 @@ static void __stdcall RadarEchoCallback(
         std::string base = filename.str();
         fs::path csvPath = fs::path("data") / (base + ".csv");
         fs::path pngPath = fs::path("frames") / (base + ".csv.png");
+        fs::path trailPath = fs::path("trail_rgb") / (base + ".png");
 
         // Instead of writing files here, move the buffer into a job:
         SweepWriteJob job;
         job.data = std::move(radarEchoBuffer); // move data!
         job.csvFilename = csvPath.string();
         job.pngFilename = pngPath.string();
+        job.trailFilename = trailPath.string();
 
         {
             std::lock_guard<std::mutex> lock(sweepQueueMutex);
@@ -312,39 +316,179 @@ static int ReadLicenseFile(const char *path, char vendorlic[4][VENDOR_TXT_LINE_C
     return 0;
 }
 
-void WriteEchoImage(const std::vector<RadarEchoData>& dataBuffer, const std::string& filename) {
-    if (dataBuffer.empty()) return;
+// ───────────────────────────────────────────────────────────────
+// Scene-generator–style PPI rendering (LUT-based polar→Cartesian)
+// Matches imsel-lab/radar-scene-augmentation constants exactly.
+// ───────────────────────────────────────────────────────────────
+static constexpr int    PPI_NUM_RANGE_BINS        = 868;
+static constexpr int    PPI_NUM_PULSES            = 720;
+static constexpr int    PPI_IMAGE_SIZE            = 1735;
+static constexpr double PPI_ANGLE_TICKS_PER_ROT   = 8192.0;
+static constexpr double PPI_TWO_PI                = 2.0 * M_PI;
+static constexpr double PPI_MAX_GAP_RAD           = 1.0 * M_PI / 180.0; // 1 degree
+static constexpr int    TRAIL_LEN                 = 6;
+static constexpr int    DECAY_STEP                = (255 + TRAIL_LEN - 1) / TRAIL_LEN; // ceil(255/6)=43
 
-    // Ensure directory exists
-    fs::path filepath(filename);
-    fs::path dir = filepath.parent_path();
-    if (!dir.empty() && !fs::exists(dir)) {
-        fs::create_directories(dir);
-    }
-    // Find max sweep length
-    int maxRadius = 0;
-    for (const auto& e : dataBuffer) if (e.sweep_len > maxRadius) maxRadius = e.sweep_len;
-    if (maxRadius <= 0) return;
+// Per-pixel LUT: maps image (y,x) → (pulse_idx, bin_idx) or invalid
+struct PpiLut {
+    std::vector<bool>   valid;
+    std::vector<int>    pulse_idx;
+    std::vector<int>    bin_idx;
+    bool                built = false;
+};
+static PpiLut ppiLut;
 
-    int w = 2 * maxRadius, h = 2 * maxRadius, cx = maxRadius, cy = maxRadius;
-    std::vector<uint8_t> px(w * h * 4, 0);
-    for (int i = 0; i < w * h; ++i) px[i * 4 + 3] = 255; // alpha
-
-    // Draw echoes
-    constexpr double TWO_PI = 2.0 * M_PI;
-    for (const auto& entry : dataBuffer) {
-        double angleRad = (entry.angle / 8196.0) * TWO_PI;
-        for (int r = 0; r < entry.sweep_len; ++r) {
-            int x = int(std::round(cx + r * std::cos(angleRad)));
-            int y = int(std::round(cy + r * std::sin(angleRad)));
-            if (x < 0 || x >= w || y < 0 || y >= h) continue;
-            int idx = (y * w + x) * 4;
-            px[idx] = px[idx + 1] = px[idx + 2] = entry.echo[r];
+static void BuildPpiLut() {
+    const int sz = PPI_IMAGE_SIZE;
+    const double center = sz / 2.0;
+    ppiLut.valid.resize(sz * sz);
+    ppiLut.pulse_idx.resize(sz * sz);
+    ppiLut.bin_idx.resize(sz * sz);
+    for (int y = 0; y < sz; ++y) {
+        for (int x = 0; x < sz; ++x) {
+            int i = y * sz + x;
+            double dx = x - center;
+            double dy = center - y;
+            double r  = std::sqrt(dx * dx + dy * dy);
+            double r_norm = r / center;
+            if (r_norm <= 1.0) {
+                ppiLut.valid[i] = true;
+                double theta = std::atan2(dx, dy); // north-up
+                if (theta < 0.0) theta += PPI_TWO_PI;
+                ppiLut.pulse_idx[i] = static_cast<int>((theta / PPI_TWO_PI) * PPI_NUM_PULSES) % PPI_NUM_PULSES;
+                int b = static_cast<int>(r_norm * PPI_NUM_RANGE_BINS);
+                if (b >= PPI_NUM_RANGE_BINS) b = PPI_NUM_RANGE_BINS - 1;
+                ppiLut.bin_idx[i] = b;
+            } else {
+                ppiLut.valid[i] = false;
+            }
         }
     }
+    ppiLut.built = true;
+}
 
-    if (!stbi_write_png(filename.c_str(), w, h, 4, px.data(), w * 4))
+// Regularise raw sweeps → fixed 720×868 echo grid (nearest-pulse, 1° max gap)
+static void RegulariseEchoArray(const std::vector<RadarEchoData>& dataBuffer,
+                                uint8_t echo[PPI_NUM_PULSES][PPI_NUM_RANGE_BINS]) {
+    memset(echo, 0, sizeof(uint8_t) * PPI_NUM_PULSES * PPI_NUM_RANGE_BINS);
+    if (dataBuffer.empty()) return;
+
+    // Pre-compute angles for all raw pulses
+    struct RawPulse { double angle_rad; const RadarEchoData* data; };
+    std::vector<RawPulse> raw;
+    raw.reserve(dataBuffer.size());
+    for (const auto& e : dataBuffer) {
+        double a = (e.angle / PPI_ANGLE_TICKS_PER_ROT) * PPI_TWO_PI;
+        raw.push_back({a, &e});
+    }
+    std::sort(raw.begin(), raw.end(), [](const RawPulse& a, const RawPulse& b) {
+        return a.angle_rad < b.angle_rad;
+    });
+
+    const double angle_step = PPI_TWO_PI / PPI_NUM_PULSES;
+    for (int i = 0; i < PPI_NUM_PULSES; ++i) {
+        double target = i * angle_step;
+        // Find nearest raw pulse
+        int best_idx = 0;
+        double best_diff = 1e9;
+        for (int j = 0; j < (int)raw.size(); ++j) {
+            double diff = std::abs(raw[j].angle_rad - target);
+            diff = std::min(diff, PPI_TWO_PI - diff);
+            if (diff < best_diff) {
+                best_diff = diff;
+                best_idx = j;
+            }
+        }
+        if (best_diff <= PPI_MAX_GAP_RAD) {
+            const auto* p = raw[best_idx].data;
+            int n = std::min((int)p->sweep_len, PPI_NUM_RANGE_BINS);
+            for (int b = 0; b < n; ++b) echo[i][b] = p->echo[b];
+        }
+    }
+}
+
+// Render grayscale PPI from echo array via LUT
+static void RenderMono(const uint8_t echo[PPI_NUM_PULSES][PPI_NUM_RANGE_BINS],
+                       uint8_t* image) {
+    const int sz = PPI_IMAGE_SIZE;
+    memset(image, 0, sz * sz);
+    for (int i = 0; i < sz * sz; ++i) {
+        if (ppiLut.valid[i]) {
+            image[i] = echo[ppiLut.pulse_idx[i]][ppiLut.bin_idx[i]];
+        }
+    }
+}
+
+// Persistent trail state (lives across frames, used by SweepWriterThread only)
+static std::vector<uint8_t> trailG;          // green history channel
+static std::vector<uint8_t> prevCurrentR;    // previous frame's red channel
+static bool trailInitialised = false;
+
+// Write mono + trail from a pre-rendered mono buffer (called from SweepWriterThread)
+static void WriteMono(const uint8_t* mono, const std::string& filename) {
+    fs::path dir = fs::path(filename).parent_path();
+    if (!dir.empty() && !fs::exists(dir)) fs::create_directories(dir);
+
+    const int sz = PPI_IMAGE_SIZE;
+    const int npx = sz * sz;
+    std::vector<uint8_t> px(npx * 4);
+    for (int i = 0; i < npx; ++i) {
+        px[i * 4 + 0] = mono[i];
+        px[i * 4 + 1] = mono[i];
+        px[i * 4 + 2] = mono[i];
+        px[i * 4 + 3] = 255;
+    }
+    if (!stbi_write_png(filename.c_str(), sz, sz, 4, px.data(), sz * 4))
         fprintf(stderr, "Failed to write PNG: %s\n", filename.c_str());
+}
+
+static void WriteTrail(const uint8_t* mono, const std::string& filename) {
+    fs::path dir = fs::path(filename).parent_path();
+    if (!dir.empty() && !fs::exists(dir)) fs::create_directories(dir);
+
+    const int sz = PPI_IMAGE_SIZE;
+    const int npx = sz * sz;
+
+    // Initialise trail buffers on first call
+    if (!trailInitialised) {
+        trailG.assign(npx, 0);
+        prevCurrentR.assign(npx, 0);
+        trailInitialised = true;
+    }
+
+    // Current red: 255 where echo > 0, else 0
+    std::vector<uint8_t> currentR(npx);
+    for (int i = 0; i < npx; ++i)
+        currentR[i] = (mono[i] > 0) ? 255 : 0;
+
+    // Decay trail green, then merge previous red into history
+    for (int i = 0; i < npx; ++i) {
+        int g = static_cast<int>(trailG[i]) - DECAY_STEP;
+        if (g < 0) g = 0;
+        trailG[i] = static_cast<uint8_t>(g);
+        if (prevCurrentR[i] > trailG[i])
+            trailG[i] = prevCurrentR[i];
+    }
+
+    // Write RGB: R=current, G=trail (hidden under red), B=0
+    std::vector<uint8_t> px(npx * 3);
+    for (int i = 0; i < npx; ++i) {
+        px[i * 3 + 0] = currentR[i];                              // R
+        px[i * 3 + 1] = (currentR[i] > 0) ? 0 : trailG[i];      // G (no yellow)
+        px[i * 3 + 2] = 0;                                        // B
+    }
+    if (!stbi_write_png(filename.c_str(), sz, sz, 3, px.data(), sz * 3))
+        fprintf(stderr, "Failed to write trail PNG: %s\n", filename.c_str());
+
+    prevCurrentR = currentR;
+}
+
+// Public entry points (kept for forward-declaration compatibility)
+void WriteEchoImage(const std::vector<RadarEchoData>& dataBuffer, const std::string& filename) {
+    (void)dataBuffer; (void)filename; // now handled by SweepWriterThread directly
+}
+void WriteTrailImage(const std::vector<RadarEchoData>& dataBuffer, const std::string& filename) {
+    (void)dataBuffer; (void)filename; // now handled by SweepWriterThread directly
 }
 
 void WriteEchoCSV(const std::vector<RadarEchoData>& dataBuffer, const std::string& filename) {
@@ -379,8 +523,20 @@ void SweepWriterThread() {
             job = std::move(sweepQueue.front());
             sweepQueue.pop();
         }
+
+        // CSV is independent — write first
         WriteEchoCSV(job.data, job.csvFilename);
-        WriteEchoImage(job.data, job.pngFilename);
+
+        // Build LUT once, then regularise + render mono once per frame
+        if (!ppiLut.built) BuildPpiLut();
+        uint8_t echo[PPI_NUM_PULSES][PPI_NUM_RANGE_BINS];
+        RegulariseEchoArray(job.data, echo);
+        static std::vector<uint8_t> mono(PPI_IMAGE_SIZE * PPI_IMAGE_SIZE);
+        RenderMono(echo, mono.data());
+
+        // Write both outputs from the shared mono buffer
+        WriteMono(mono.data(), job.pngFilename);
+        WriteTrail(mono.data(), job.trailFilename);
     }
 }
 // ========== UTILITIES ==========

@@ -17,8 +17,16 @@
   </header>
 
   <main class="layout-radar">
+    <!-- View mode selector -->
+    <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">
+      <label style="font-weight:600;">View:</label>
+      <button type="button" id="viewMono" class="btn btn--sm btn--active" onclick="setRadarView('mono')">Mono</button>
+      <button type="button" id="viewTrail" class="btn btn--sm" onclick="setRadarView('trail')">Echo Trail</button>
+      <button type="button" id="viewDetect" class="btn btn--sm" onclick="setRadarView('detect')">YOLO Detections</button>
+    </div>
+
     <section class="panel panel--preview-full">
-      <h2>Live Radar View</h2>
+      <h2 id="radarViewTitle">Live Radar View</h2>
       <div class="radar-viewport">
         <canvas id="radarHistoryCanvas" class="preview preview--radar-full" width="1024" height="1024" aria-label="Radar history view"></canvas>
         <img id="radarImage" class="preview preview--radar-full radar-fallback" src="/newest_png" alt="No radar image">
@@ -46,8 +54,41 @@
   </main>
 
   <footer>
-    Live view refreshes every 500ms for maximum updates. Adjust the controls above to tune how many frames are layered (1–50) and what colors are used.
+    Live view refreshes every 500ms. Use the view selector above to switch between Mono, Echo Trail (red/green), and YOLO Detection overlay.
   </footer>
+
+  <script>
+    // Radar view mode switcher
+    let radarViewMode = 'mono';
+    const viewEndpoints = { mono: '/newest_png', trail: '/newest_trail', detect: '/newest_detection' };
+    const viewTitles = { mono: 'Live Radar View', trail: 'Echo Trail View', detect: 'YOLO Detection View' };
+
+    function setRadarView(mode) {
+      radarViewMode = mode;
+      document.querySelectorAll('[id^="view"]').forEach(b => b.classList.remove('btn--active'));
+      const btn = document.getElementById('view' + mode.charAt(0).toUpperCase() + mode.slice(1));
+      if (btn) btn.classList.add('btn--active');
+      const title = document.getElementById('radarViewTitle');
+      if (title) title.textContent = viewTitles[mode] || 'Radar View';
+    }
+
+    // Override the image source used by the existing refresh loop
+    const _origEndpoint = '/newest_png';
+    const _patchRefresh = setInterval(() => {
+      const img = document.getElementById('radarImage');
+      if (!img) return;
+      // Intercept: swap the src the refresh loop would set
+      const observer = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          if (m.attributeName === 'src' && img.src.includes(_origEndpoint)) {
+            img.src = img.src.replace(_origEndpoint, viewEndpoints[radarViewMode]);
+          }
+        }
+      });
+      observer.observe(img, { attributes: true, attributeFilter: ['src'] });
+      clearInterval(_patchRefresh);
+    }, 100);
+  </script>
 
   <script src="/script.js" defer></script>
 </body>

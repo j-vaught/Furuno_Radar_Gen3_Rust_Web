@@ -668,6 +668,48 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         boost::asio::write(socket, boost::asio::buffer(buf.data(), buf.size()), e);
         return true;
     }
+    if (path.rfind("/newest_detection", 0) == 0) {
+        std::string det_path = "detections/latest.png";
+        std::ifstream ifs(det_path, std::ios::binary);
+        if (!ifs) {
+            WriteHttpResponse(socket, "No detection image yet.\r\n", "text/plain");
+            return true;
+        }
+        std::vector<char> buf((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        std::string header =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: image/png\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n"
+            "Content-Length: " + std::to_string(buf.size()) + "\r\n\r\n";
+        boost::system::error_code e;
+        boost::asio::write(socket, boost::asio::buffer(header), e);
+        boost::asio::write(socket, boost::asio::buffer(buf.data(), buf.size()), e);
+        return true;
+    }
+    if (path.rfind("/newest_trail", 0) == 0) {
+        std::string newest = FindNewestPNGFile("trail_rgb");
+        if (newest.empty()) {
+            WriteHttpResponse(socket, "No trail image yet.\r\n", "text/plain");
+            return true;
+        }
+        std::ifstream ifs("trail_rgb/" + newest, std::ios::binary);
+        if (!ifs) {
+            WriteHttpResponse(socket, "Cannot open trail PNG.\r\n", "text/plain");
+            return true;
+        }
+        std::vector<char> buf((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        std::string header =
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: image/png\r\n"
+            "Cache-Control: no-cache\r\n"
+            "Connection: close\r\n"
+            "Content-Length: " + std::to_string(buf.size()) + "\r\n\r\n";
+        boost::system::error_code e;
+        boost::asio::write(socket, boost::asio::buffer(header), e);
+        boost::asio::write(socket, boost::asio::buffer(buf.data(), buf.size()), e);
+        return true;
+    }
     return false;
 }
 
