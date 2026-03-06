@@ -39,8 +39,9 @@ fn main() {
             let count: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(5);
             run_dump_raw(count);
         }
+        "test-commands" => run_test_commands(),
         _ => {
-            eprintln!("Usage: radar-client <handshake|tx-on|tx-off|echo|full|command|render-csv|render-live>");
+            eprintln!("Usage: radar-client <handshake|tx-on|tx-off|echo|full|command|render-csv|render-live|test-commands>");
             std::process::exit(1);
         }
     }
@@ -640,6 +641,402 @@ fn decode_echo_packet(pkt: &[u8], prev_spoke: &mut Vec<u8>, out: &mut Vec<Spoke>
 
         out.push(Spoke { angle_ticks: angle, echo });
     }
+}
+
+// --- Command Test Harness ---
+
+struct EchoStats {
+    num_spokes: usize,
+    num_nonzero_spokes: usize,
+    mean_amplitude: f64,
+    max_amplitude: u8,
+    nonzero_bins_pct: f64,
+    sweep_len: u32,
+    encoding: u8,
+    sweep_count_per_pkt: u32,
+}
+
+impl std::fmt::Display for EchoStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "spokes={} nonzero={} mean_amp={:.1} max_amp={} nz_bins={:.1}% sweep_len={} enc={} sweeps/pkt={}",
+            self.num_spokes, self.num_nonzero_spokes, self.mean_amplitude,
+            self.max_amplitude, self.nonzero_bins_pct, self.sweep_len, self.encoding, self.sweep_count_per_pkt)
+    }
+}
+
+/// Collect echo data for one full rotation and compute statistics.
+fn collect_rotation_stats(
+    echo_socket: &UdpSocket,
+    ctrl: &mut TcpStream,
+    prev_spoke_data: &mut Vec<u8>,
+) -> (Vec<Spoke>, EchoStats) {
+    let mut buf = [0u8; 2048];
+    let mut ctrl_buf = [0u8; 4096];
+    let mut spokes: Vec<Spoke> = Vec::new();
+    let mut prev_az: Option<u16> = None;
+    let mut rotation_count = 0u32;
+    let start = std::time::Instant::now();
+    let mut keepalive_timer = std::time::Instant::now();
+    let mut last_sweep_len: u32 = 0;
+    let mut last_encoding: u8 = 0;
+    let mut last_sweep_count: u32 = 0;
+
+    loop {
+        match echo_socket.recv_from(&mut buf) {
+            Ok((len, _)) => {
+                if len < 20 { continue; }
+                let az = u16::from_le_bytes([buf[16], buf[17]]);
+
+                // Parse metadata for stats
+                let meta = parse_echo_metadata(&buf[..len]);
+                last_sweep_len = meta.sweep_len;
+                last_encoding = meta.encoding;
+                last_sweep_count = meta.sweep_count;
+
+                if let Some(prev) = prev_az {
+                    if az < prev.saturating_sub(1000) {
+                        rotation_count += 1;
+                        if rotation_count >= 2 { break; }
+                    }
+                }
+                prev_az = Some(az);
+
+                if rotation_count >= 1 {
+                    decode_echo_packet(&buf[..len], prev_spoke_data, &mut spokes);
+                } else {
+                    let mut discard = Vec::new();
+                    decode_echo_packet(&buf[..len], prev_spoke_data, &mut discard);
+                }
+            }
+            Err(_) => {
+                if start.elapsed() > Duration::from_secs(15) {
+                    eprintln!("    Timeout collecting rotation");
+                    break;
+                }
+            }
+        }
+        let _ = ctrl.read(&mut ctrl_buf);
+        if keepalive_timer.elapsed() > Duration::from_secs(5) {
+            let _ = ctrl.write_all(b"\x00\x00\x00\x08\x00\x00\x00\x00");
+            keepalive_timer = std::time::Instant::now();
+        }
+    }
+
+    // Compute stats
+    let num_spokes = spokes.len();
+    let mut total_amp: u64 = 0;
+    let mut total_bins: u64 = 0;
+    let mut nonzero_bins: u64 = 0;
+    let mut max_amp: u8 = 0;
+    let mut nonzero_spokes = 0usize;
+
+    for spoke in &spokes {
+        let has_nonzero = spoke.echo.iter().any(|&b| b > 0);
+        if has_nonzero { nonzero_spokes += 1; }
+        for &b in &spoke.echo {
+            total_bins += 1;
+            total_amp += b as u64;
+            if b > 0 { nonzero_bins += 1; }
+            if b > max_amp { max_amp = b; }
+        }
+    }
+
+    let mean_amp = if total_bins > 0 { total_amp as f64 / total_bins as f64 } else { 0.0 };
+    let nz_pct = if total_bins > 0 { nonzero_bins as f64 / total_bins as f64 * 100.0 } else { 0.0 };
+
+    let stats = EchoStats {
+        num_spokes,
+        num_nonzero_spokes: nonzero_spokes,
+        mean_amplitude: mean_amp,
+        max_amplitude: max_amp,
+        nonzero_bins_pct: nz_pct,
+        sweep_len: last_sweep_len,
+        encoding: last_encoding,
+        sweep_count_per_pkt: last_sweep_count,
+    };
+
+    (spokes, stats)
+}
+
+/// Send a command and wait for the $N acknowledgment on the control channel.
+fn send_and_wait_ack(ctrl: &mut TcpStream, cmd: &str, expected_prefix: &str) -> bool {
+    ctrl.set_nonblocking(false).unwrap();
+    ctrl.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+    ctrl.write_all(cmd.as_bytes()).expect("write failed");
+
+    let mut buf = [0u8; 4096];
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut all_responses = String::new();
+
+    while std::time::Instant::now() < deadline {
+        match ctrl.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                let text = String::from_utf8_lossy(&buf[..n]);
+                all_responses.push_str(&text);
+                for line in all_responses.lines() {
+                    if line.starts_with(expected_prefix) {
+                        println!("    ACK: {line}");
+                        ctrl.set_nonblocking(true).unwrap();
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    eprintln!("    No ACK for {expected_prefix} (got: {})", all_responses.trim().replace('\n', " | "));
+    ctrl.set_nonblocking(true).unwrap();
+    false
+}
+
+fn run_test_commands() {
+    println!("=== Command Verification Test ===\n");
+
+    // Boot up
+    let auth_ok = do_auth();
+    if !auth_ok { eprintln!("Auth failed"); std::process::exit(1); }
+    println!();
+
+    let mut ctrl = do_connect_control();
+    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
+    send_command(&mut ctrl, "$R96,,,,,,,\n");
+    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
+
+    let init_cmds = include_str!("init_commands.txt");
+    for line in init_cmds.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        ctrl.write_all(line.as_bytes()).expect("write failed");
+        ctrl.write_all(b"\r\n").expect("write failed");
+    }
+    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
+
+    // TX ON
+    println!("Sending TX ON...");
+    send_command(&mut ctrl, "$S69,2,0,0,0,0,0\r\n");
+    send_command(&mut ctrl, "$S85,0\r\n");
+    send_command(&mut ctrl, "$S86,0\r\n");
+    send_command(&mut ctrl, "$S87,0\r\n");
+    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
+    ctrl.set_nonblocking(true).unwrap();
+
+    // Setup echo socket
+    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).expect("socket");
+    sock.set_reuse_address(true).unwrap();
+    unsafe {
+        let optval: i32 = 1;
+        libc::setsockopt(sock.as_raw_fd(), libc::SOL_SOCKET, libc::SO_REUSEPORT,
+            &optval as *const _ as *const libc::c_void, std::mem::size_of::<i32>() as u32);
+    }
+    let bind_result = sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into());
+    if bind_result.is_err() {
+        sock.bind(&SocketAddr::from((MULTICAST_ECHO, PORT_ECHO)).into()).expect("bind");
+    }
+    let echo_socket: UdpSocket = sock.into();
+    echo_socket.join_multicast_v4(&MULTICAST_ECHO, &HOST_IP).expect("join multicast");
+    echo_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+
+    let mut prev_spoke_data: Vec<u8> = Vec::new();
+
+    // ============================================================
+    // Test sequence: each test = (description, command, ack_prefix, expected_behavior)
+    // ============================================================
+
+    struct TestCase {
+        name: &'static str,
+        cmd: &'static str,
+        ack_prefix: &'static str,
+        png_suffix: &'static str,
+    }
+
+    let tests = [
+        // --- Baseline ---
+        TestCase {
+            name: "Baseline (default settings)",
+            cmd: "",  // no command, just collect
+            ack_prefix: "",
+            png_suffix: "baseline",
+        },
+        // --- Range changes ---
+        TestCase {
+            name: "Range 0 (0.125 NM)",
+            cmd: "$S62,0,0,0\r\n",
+            ack_prefix: "$N62,",
+            png_suffix: "range0",
+        },
+        TestCase {
+            name: "Range 6 (2 NM)",
+            cmd: "$S62,6,0,0\r\n",
+            ack_prefix: "$N62,",
+            png_suffix: "range6",
+        },
+        TestCase {
+            name: "Range 10 (8 NM)",
+            cmd: "$S62,10,0,0\r\n",
+            ack_prefix: "$N62,",
+            png_suffix: "range10",
+        },
+        TestCase {
+            name: "Range 0 (restore 0.125 NM)",
+            cmd: "$S62,0,0,0\r\n",
+            ack_prefix: "$N62,",
+            png_suffix: "range0_restore",
+        },
+        // --- Gain changes ---
+        TestCase {
+            name: "Gain manual=50",
+            cmd: "$S63,0,50,0,80,0\r\n",
+            ack_prefix: "$N63,",
+            png_suffix: "gain50",
+        },
+        TestCase {
+            name: "Gain manual=200",
+            cmd: "$S63,0,200,0,80,0\r\n",
+            ack_prefix: "$N63,",
+            png_suffix: "gain200",
+        },
+        TestCase {
+            name: "Gain auto",
+            cmd: "$S63,1,0,0,80,0\r\n",
+            ack_prefix: "$N63,",
+            png_suffix: "gain_auto",
+        },
+        // --- Sea clutter ---
+        TestCase {
+            name: "Sea clutter manual=100",
+            cmd: "$S64,0,100,50,0,0,0\r\n",
+            ack_prefix: "$N64,",
+            png_suffix: "sea100",
+        },
+        TestCase {
+            name: "Sea clutter off",
+            cmd: "$S64,0,0,50,0,0,0\r\n",
+            ack_prefix: "$N64,",
+            png_suffix: "sea0",
+        },
+        // --- Rain clutter ---
+        TestCase {
+            name: "Rain clutter manual=100",
+            cmd: "$S65,0,100,0,0,0,0\r\n",
+            ack_prefix: "$N65,",
+            png_suffix: "rain100",
+        },
+        TestCase {
+            name: "Rain clutter off",
+            cmd: "$S65,0,0,0,0,0,0\r\n",
+            ack_prefix: "$N65,",
+            png_suffix: "rain0",
+        },
+        // --- Bearing resolution (RezBoost) ---
+        TestCase {
+            name: "RezBoost High (3)",
+            cmd: "$SEE,3,0\r\n",
+            ack_prefix: "$NEE,",
+            png_suffix: "rezboost3",
+        },
+        TestCase {
+            name: "RezBoost Off (0)",
+            cmd: "$SEE,0,0\r\n",
+            ack_prefix: "$NEE,",
+            png_suffix: "rezboost0",
+        },
+        // --- Interference rejection ---
+        TestCase {
+            name: "Interference rejection ON",
+            cmd: "$S67,0,0,2,0\r\n",
+            ack_prefix: "$N67,",
+            png_suffix: "ir_on",
+        },
+        TestCase {
+            name: "Interference rejection OFF",
+            cmd: "$S67,0,0,0,0\r\n",
+            ack_prefix: "$N67,",
+            png_suffix: "ir_off",
+        },
+        // --- Noise reduction ---
+        TestCase {
+            name: "Noise reduction ON",
+            cmd: "$S67,0,3,1,0\r\n",
+            ack_prefix: "$N67,",
+            png_suffix: "nr_on",
+        },
+        TestCase {
+            name: "Noise reduction OFF",
+            cmd: "$S67,0,3,0,0\r\n",
+            ack_prefix: "$N67,",
+            png_suffix: "nr_off",
+        },
+        // --- Scan speed ---
+        TestCase {
+            name: "Scan speed HI",
+            cmd: "$S89,1,0\r\n",
+            ack_prefix: "$N89,",
+            png_suffix: "scan_hi",
+        },
+        TestCase {
+            name: "Scan speed normal",
+            cmd: "$S89,0,0\r\n",
+            ack_prefix: "$N89,",
+            png_suffix: "scan_normal",
+        },
+    ];
+
+    // Results table
+    let mut results: Vec<(String, bool, String)> = Vec::new(); // (name, ack_ok, stats_summary)
+
+    let output_dir = "test_output";
+    let _ = std::fs::create_dir_all(output_dir);
+
+    for (i, test) in tests.iter().enumerate() {
+        println!("\n{}", "=".repeat(60));
+        println!("TEST {}/{}: {}", i + 1, tests.len(), test.name);
+        println!("{}", "=".repeat(60));
+
+        // Send command (if any)
+        let ack_ok = if !test.cmd.is_empty() {
+            println!("  CMD: {}", test.cmd.trim());
+            send_and_wait_ack(&mut ctrl, test.cmd, test.ack_prefix)
+        } else {
+            println!("  (no command — baseline capture)");
+            true
+        };
+
+        // Wait a moment for settings to take effect
+        std::thread::sleep(Duration::from_millis(500));
+
+        // Collect one rotation of echo data
+        println!("  Collecting echo data...");
+        let (spokes, stats) = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+        println!("  STATS: {stats}");
+
+        // Render PPI
+        if !spokes.is_empty() {
+            let png_path = format!("{}/test_{}.png", output_dir, test.png_suffix);
+            let pixels = render_ppi(&spokes);
+            write_png(&png_path, &pixels, PPI_SIZE, PPI_SIZE);
+            println!("  IMAGE: {png_path}");
+        }
+
+        results.push((test.name.to_string(), ack_ok, format!("{stats}")));
+    }
+
+    // TX OFF
+    ctrl.set_nonblocking(false).unwrap();
+    ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+    let _ = ctrl.write_all(b"$S69,1,0,0,0,0,0\r\n");
+
+    // Print summary table
+    println!("\n\n{}", "=".repeat(80));
+    println!("SUMMARY");
+    println!("{}", "=".repeat(80));
+    println!("{:<35} {:>4}  {}", "Test", "ACK", "Echo Stats");
+    println!("{}", "-".repeat(80));
+    for (name, ack, stats) in &results {
+        let ack_str = if *ack { "OK" } else { "FAIL" };
+        println!("{:<35} {:>4}  {}", name, ack_str, stats);
+    }
+    println!("{}", "-".repeat(80));
+    println!("TX OFF sent. Done.");
 }
 
 // --- PPI Rendering ---
