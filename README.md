@@ -8,11 +8,25 @@ Private Furuno NAVNET integration repository.
 - `g++`
 - `libboost-all-dev`
 
-Install Boost:
+Install required packages:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y libboost-all-dev
+sudo apt-get install -y g++ libboost-all-dev
+```
+
+Optional (only needed for YOLO daemon):
+
+```bash
+sudo apt-get install -y python3 python3-pip
+python3 -m pip install --upgrade pip
+python3 -m pip install numpy pillow onnxruntime
+```
+
+Verify required setup:
+
+```bash
+./scripts/check_prereqs.sh
 ```
 
 ## Quick Start (recommended)
