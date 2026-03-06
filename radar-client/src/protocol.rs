@@ -638,6 +638,18 @@ pub fn parse_response(line: &str) -> Option<(&str, Vec<&str>)> {
     Some((parts[0], parts[1..].to_vec()))
 }
 
+/// Parse a $N ack line into owned (id, values).
+/// E.g. "$N62,0,0,0" -> Some(("62", vec!["0","0","0"]))
+pub fn parse_ack(line: &str) -> Option<(String, Vec<String>)> {
+    let (id, vals) = parse_response(line)?;
+    Some((id.to_string(), vals.iter().map(|s| s.to_string()).collect()))
+}
+
+/// Returns true if the given data looks like a binary keepalive (8 bytes starting with 0x00).
+pub fn is_keepalive(data: &[u8]) -> bool {
+    data.len() == 8 && data[0] == 0x00 && data == KEEPALIVE
+}
+
 // --- Calibration Pattern ---
 
 /// A single step in a calibration pattern sequence.
