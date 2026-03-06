@@ -42,8 +42,9 @@ fn main() {
         }
         "test-commands" => run_test_commands(),
         "calibrate" => run_calibrate(&args[2..]),
+        "discover" => run_discover(),
         _ => {
-            eprintln!("Usage: radar-client <handshake|tx-on|tx-off|echo|full|command|render-csv|render-live|test-commands|calibrate>");
+            eprintln!("Usage: radar-client <handshake|tx-on|tx-off|echo|full|command|render-csv|render-live|test-commands|calibrate|discover>");
             std::process::exit(1);
         }
     }
@@ -1647,4 +1648,55 @@ fn run_calibrate(args: &[String]) {
     ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
     let _ = ctrl.write_all(protocol::cmd_tx_state(1).as_bytes());
     println!("\nCalibration complete. {} steps executed. TX OFF.", total_steps);
+}
+
+// --- Auto-Discovery ---
+
+fn run_discover() {
+    println!("=== Radar Discovery (UDP broadcast {}:{}) ===\n",
+        protocol::FURUNO_BEACON_BROADCAST, protocol::FURUNO_BEACON_PORT);
+
+    let sock = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).expect("bind");
+    sock.set_broadcast(true).expect("set broadcast");
+    sock.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+
+    let dest = SocketAddr::from((protocol::FURUNO_BEACON_BROADCAST, protocol::FURUNO_BEACON_PORT));
+
+    // Send beacon announce
+    println!("Sending beacon announce...");
+    sock.send_to(&protocol::BEACON_ANNOUNCE, dest).expect("send announce");
+
+    // Send beacon request
+    println!("Sending beacon request...");
+    sock.send_to(&protocol::BEACON_REQUEST, dest).expect("send request");
+
+    // Listen for responses
+    let mut buf = [0u8; 512];
+    let start = std::time::Instant::now();
+
+    println!("Listening for responses (5s timeout)...\n");
+
+    while start.elapsed() < Duration::from_secs(5) {
+        match sock.recv_from(&mut buf) {
+            Ok((len, src)) => {
+                println!("Response from {src}: {len} bytes");
+                print!("  ");
+                for b in &buf[..len.min(64)] {
+                    print!("{b:02X} ");
+                }
+                if len > 64 { print!("..."); }
+                println!();
+
+                if let Some(info) = protocol::parse_beacon_report(&buf[..len], src.ip().to_string().parse().unwrap_or(Ipv4Addr::UNSPECIFIED)) {
+                    println!("  Radar found: {}", info);
+
+                    // Request model info
+                    sock.send_to(&protocol::BEACON_REQUEST_MODEL, src).expect("send model request");
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    println!("\nDiscovery complete.");
 }
