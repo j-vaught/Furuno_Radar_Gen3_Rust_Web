@@ -33,7 +33,7 @@
   - Echo data flowing at each setting
   - ARPA target acquisition (if available)
   - Transmit OFF → disconnect
-- Capture the same lifecycle 2-3 times for reproducibility
+- Capture the same lifecycle 5-7 times for reproducibility
 - Output: `reverse/captures/*.pcap`, `reverse/captures/session_log.md`
 
 ### 0.2 — Identify Protocol Basics from Pcaps (1-2 hrs)
