@@ -118,3 +118,21 @@ Default filter: `host 172.31.3.226 or net 239.255.0.0/16`
   - 03:52:19 - Reset all to defaults (8 curl commands)
   - 03:52:29 - Capture stop
 - **Notes:** Comprehensive command sweep covering 11 parameter types. Each command should produce host->radar TCP payload near its timestamp. Reset burst at 03:52:19 should show 8 rapid commands.
+
+## Session 7: Cold Start Init (app restart)
+- **File:** `20260306_035400_cold_start_init.pcap`
+- **Duration:** ~67s (from pre-start to post-TX-on)
+- **Size:** 1.0M (1,037,153 bytes)
+- **Total packets:** 2,172
+- **Drops:** 0
+- **Filter:** `host 172.31.3.226 or net 239.255.0.0/16 or dst 172.31.255.255`
+- **Key events observed:**
+  - 03:53:40 - tcpdump starts, radar heartbeat on 10034 already present
+  - 03:53:47 - App starts, sends SSDP discovery to 239.255.255.250:1900 (3 packets)
+  - 03:53:47 - TCP SYN to 172.31.3.226:10010 (discovery handshake: sends 56 bytes, gets 12 back, connection closed)
+  - 03:53:48 - TCP SYN to 172.31.3.226:10100 (persistent control channel opens)
+  - 03:53:48 - Radar sends initial 24-byte payload on 10100
+  - 03:53:49 - Host sends 12-byte command to radar on 10100
+  - 03:54:32 - TX turned on via web UI
+  - 03:54:47 - Capture stop (echoes flowing)
+- **Notes:** CRITICAL capture. Shows the full init handshake sequence. Init involves: (1) SSDP multicast discovery, (2) TCP connection to port 10010 with 56-byte handshake payload (closed immediately), (3) TCP connection to port 10100 (persistent control channel). No echo data until TX is explicitly enabled.
