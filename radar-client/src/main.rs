@@ -47,7 +47,7 @@ fn resolve_ips(args: &[String]) {
 
     if let Some(rip) = radar_ip {
         let hip = host_ip.unwrap_or_else(|| {
-            protocol::detect_host_ip(rip).unwrap_or(DEFAULT_HOST_IP)
+            protocol::ensure_subnet_reachable(rip, DEFAULT_HOST_IP)
         });
         let _ = RESOLVED_RADAR_IP.set(rip);
         let _ = RESOLVED_HOST_IP.set(hip);
@@ -65,11 +65,14 @@ fn resolve_ips(args: &[String]) {
         return;
     }
 
-    // Fall back to defaults
-    let hip = host_ip.unwrap_or(DEFAULT_HOST_IP);
-    let _ = RESOLVED_RADAR_IP.set(DEFAULT_RADAR_IP);
+    // Fall back to defaults — ensure we can reach the radar's subnet
+    let rip = DEFAULT_RADAR_IP;
+    let hip = host_ip.unwrap_or_else(|| {
+        protocol::ensure_subnet_reachable(rip, DEFAULT_HOST_IP)
+    });
+    let _ = RESOLVED_RADAR_IP.set(rip);
     let _ = RESOLVED_HOST_IP.set(hip);
-    println!("Discovery failed. Falling back to radar={}, host={hip}", DEFAULT_RADAR_IP);
+    println!("Discovery failed. Falling back to radar={rip}, host={hip}");
 }
 
 fn main() {

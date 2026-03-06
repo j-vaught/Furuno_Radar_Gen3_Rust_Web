@@ -900,3 +900,78 @@ pub fn detect_host_ip(radar_ip: Ipv4Addr) -> Option<Ipv4Addr> {
     }
     None
 }
+
+/// Ensure the host can reach the radar's subnet. If no interface is on the
+/// same /16 as the radar, automatically add a secondary IP alias to a physical
+/// ethernet interface (eth0, end0, enp*, etc.).
+///
+/// Returns the host IP to use for communicating with the radar.
+/// Falls back to DEFAULT_HOST_IP (172.31.1.100) if auto-configuration fails.
+pub fn ensure_subnet_reachable(radar_ip: Ipv4Addr, fallback_host: Ipv4Addr) -> Ipv4Addr {
+    // First check if we already have an interface on the radar's subnet
+    if let Some(hip) = detect_host_ip(radar_ip) {
+        return hip;
+    }
+
+    // No interface on the radar's subnet — try to add one
+    // Pick a host IP on the radar's /16: use the first two octets from radar, last two from fallback
+    let r = radar_ip.octets();
+    let f = fallback_host.octets();
+    let alias_ip = Ipv4Addr::new(r[0], r[1], f[2], f[3]);
+
+    // Find a physical ethernet interface to attach to
+    let interfaces = detect_interfaces();
+    let eth_iface = interfaces.iter()
+        .find(|i| i.name.starts_with("eth") || i.name.starts_with("end") || i.name.starts_with("enp"))
+        .or_else(|| interfaces.first());
+
+    let iface_name = match eth_iface {
+        Some(i) => i.name.clone(),
+        None => {
+            eprintln!("No network interface found to add alias");
+            return fallback_host;
+        }
+    };
+
+    // Check if this alias already exists (avoid duplicates)
+    let check = std::process::Command::new("ip")
+        .args(["-4", "-o", "addr", "show", "dev", &iface_name])
+        .output();
+    if let Ok(out) = check {
+        let text = String::from_utf8_lossy(&out.stdout);
+        if text.contains(&alias_ip.to_string()) {
+            println!("Alias {alias_ip} already exists on {iface_name}");
+            return alias_ip;
+        }
+    }
+
+    println!("No interface on radar subnet — adding {alias_ip}/16 to {iface_name}...");
+
+    let result = std::process::Command::new("sudo")
+        .args(["ip", "addr", "add", &format!("{alias_ip}/16"), "dev", &iface_name])
+        .output();
+
+    match result {
+        Ok(out) if out.status.success() => {
+            println!("Added {alias_ip}/16 to {iface_name}");
+            alias_ip
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            // "RTNETLINK answers: File exists" means it's already there
+            if stderr.contains("File exists") {
+                println!("Alias {alias_ip}/16 already on {iface_name}");
+                alias_ip
+            } else {
+                eprintln!("Failed to add alias: {stderr}");
+                eprintln!("Try running: sudo ip addr add {alias_ip}/16 dev {iface_name}");
+                fallback_host
+            }
+        }
+        Err(e) => {
+            eprintln!("Could not run sudo: {e}");
+            eprintln!("Try running: sudo ip addr add {alias_ip}/16 dev {iface_name}");
+            fallback_host
+        }
+    }
+}
