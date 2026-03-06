@@ -5,13 +5,12 @@ Add additional information encoding into CSVs.
 Add Doppler support for CSV; i.e., some way to decode them?
 Make it run faster, smoother. Verify that pattern loader still works.
 Make the system status page more comprehensive.
-Make the library more split up I guess - like I think it would be nice to have multiple files instead of just a single file to do everything. We can have a ton of smaller files that are easier to edit under their own libraries or whatnot. [DONE - split into echo.rs, modes.rs, testing.rs, calibrate.rs]
 
 Make the start recording button more prominent on the front page.
 Add a detailed document detailing all the commands, how it all works with LaTeX diagrams and such, etc., etc.
 
 auto-connect to radar regardless of IP address set, and no static IP.
-Build out more comprehensive and formal test suite.
+Build out more comprehensive and formal test suite. [DONE - 27 integration tests in tests.rs, all pass]
 
 Also need to rename reverse or do something with it since it was only used during the Rust building process, but I need it for writing the doc I used to develop the Rust-based library.
 
