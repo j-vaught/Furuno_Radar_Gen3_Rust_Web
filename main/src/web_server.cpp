@@ -61,6 +61,10 @@ struct LastPulseSetting {
 
 constexpr int REPEAT = 10; // Default repeat count for each step in the pattern
 extern std::atomic<bool> patternActive;
+extern std::atomic<uint64_t> completedRotationCount;
+extern std::atomic<uint64_t> sweepSnapshotsProduced;
+extern std::atomic<uint64_t> sweepSnapshotsConsumed;
+extern std::atomic<uint64_t> sweepQueueHighWatermark;
 static std::map<int, LastPulseSetting> g_lastPulseByRadar;
 
 extern void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepeats = -1);
@@ -478,6 +482,10 @@ static std::string BuildSystemMetricsJson() {
     oss << "\"storage_path\":\"" << storagePath << "\",";
     oss << "\"network_rx_mbps\":" << rxMbps << ",";
     oss << "\"network_tx_mbps\":" << txMbps << ",";
+    oss << "\"completed_rotations\":" << completedRotationCount.load(std::memory_order_acquire) << ",";
+    oss << "\"snapshots_produced\":" << sweepSnapshotsProduced.load(std::memory_order_acquire) << ",";
+    oss << "\"snapshots_consumed\":" << sweepSnapshotsConsumed.load(std::memory_order_acquire) << ",";
+    oss << "\"snapshot_queue_high_watermark\":" << sweepQueueHighWatermark.load(std::memory_order_acquire) << ",";
     if (tempOpt.has_value()) {
         oss << "\"temperature_c\":" << *tempOpt;
     } else {

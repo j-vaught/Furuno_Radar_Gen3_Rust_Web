@@ -70,6 +70,9 @@ struct RadarEchoData {
     Furuno::UINT8  echo[1024];
 };
 std::atomic<uint64_t> completedRotationCount{0};
+std::atomic<uint64_t> sweepSnapshotsProduced{0};
+std::atomic<uint64_t> sweepSnapshotsConsumed{0};
+std::atomic<uint64_t> sweepQueueHighWatermark{0};
 
 struct CallbackAccumulator {
     std::vector<RadarEchoData> currentSweep;
@@ -297,6 +300,13 @@ static void __stdcall RadarEchoCallback(
         {
             std::lock_guard<std::mutex> lock(sweepQueueMutex);
             sweepQueue.push(std::move(job));
+            sweepSnapshotsProduced.fetch_add(1, std::memory_order_release);
+            const auto depth = static_cast<uint64_t>(sweepQueue.size());
+            auto prevMax = sweepQueueHighWatermark.load(std::memory_order_acquire);
+            while (depth > prevMax &&
+                   !sweepQueueHighWatermark.compare_exchange_weak(
+                       prevMax, depth, std::memory_order_release, std::memory_order_acquire)) {
+            }
         }
         sweepQueueCV.notify_one();
         completedRotationCount.fetch_add(1, std::memory_order_release);
@@ -558,6 +568,7 @@ void SweepWriterThread() {
             job = std::move(sweepQueue.front());
             sweepQueue.pop();
         }
+        sweepSnapshotsConsumed.fetch_add(1, std::memory_order_release);
 
         // CSV is independent — write first
         WriteEchoCSV(job.data, job.csvFilename);
