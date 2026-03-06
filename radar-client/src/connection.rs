@@ -280,6 +280,17 @@ impl RadarConnection {
         expected_prefix: &str,
         timeout: Duration,
     ) -> Result<bool, RadarError> {
+        let (found, _) = self.send_and_read_ack(cmd, expected_prefix, timeout)?;
+        Ok(found)
+    }
+
+    /// Send a command and wait for matching $N response. Returns (found, ack_line).
+    pub fn send_and_read_ack(
+        &mut self,
+        cmd: &str,
+        expected_prefix: &str,
+        timeout: Duration,
+    ) -> Result<(bool, String), RadarError> {
         let ctrl = self.ctrl.as_mut()
             .ok_or(RadarError::ConnectionFailed("no control stream".into()))?;
 
@@ -296,12 +307,17 @@ impl RadarConnection {
                 Ok(n) if n > 0 => {
                     let text = String::from_utf8_lossy(&buf[..n]);
                     all_responses.push_str(&text);
-                    for line in all_responses.lines() {
-                        if line.starts_with(expected_prefix) {
-                            println!("    ACK: {line}");
-                            ctrl.set_nonblocking(true)?;
-                            return Ok(true);
-                        }
+                    // Scan for the expected prefix anywhere in the buffer,
+                    // then extract the full line containing it.
+                    if let Some(pos) = all_responses.find(expected_prefix) {
+                        let from = pos;
+                        let to = all_responses[from..].find('\n')
+                            .map(|i| from + i)
+                            .unwrap_or(all_responses.len());
+                        let line = all_responses[from..to].trim().to_string();
+                        println!("    ACK: {line}");
+                        ctrl.set_nonblocking(true)?;
+                        return Ok((true, line));
                     }
                 }
                 _ => {}
@@ -312,7 +328,7 @@ impl RadarConnection {
             all_responses.trim().replace('\n', " | ")
         );
         ctrl.set_nonblocking(true)?;
-        Ok(false)
+        Ok((false, String::new()))
     }
 
     pub fn read_responses(&mut self, timeout: Duration) -> Vec<RadarResponse> {
