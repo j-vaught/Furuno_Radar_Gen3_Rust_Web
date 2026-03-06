@@ -552,108 +552,93 @@ fn elapsed_str(start: std::time::Instant) -> String {
 }
 
 // --- Echo Packet Decoder ---
+// Based on Furuno NXT protocol as documented in the mayara project.
+// Packet structure:
+//   [0..16]  - metadata header
+//   [16..]   - sweep_count sub-spokes, each with 4-byte header (angle LE u16 + heading LE u16)
+//              followed by encoding-3 compressed echo data, padded to 4-byte alignment.
 
-/// Decode a raw UDP echo packet into multiple spokes.
-/// Body is split into sub-spokes by separators: <az_lo> <az_hi> 00 00
-/// where the azimuth increments by ~12 ticks per sub-spoke.
-/// Each sub-spoke's data uses: FE xx / FD xx = value xx (escape pairs), other bytes = raw value.
-fn decode_echo_packet(pkt: &[u8], header_az: u16, out: &mut Vec<Spoke>) {
-    if pkt.len() < 22 { return; }
-    let body = &pkt[18..];
+struct EchoMetadata {
+    sweep_count: u32,
+    sweep_len: u32,
+    encoding: u8,
+}
 
-    // Find section boundaries by scanning for <xx> <yy> 00 00 patterns
-    // where xx,yy form an azimuth value (0..8191, LE).
-    // The azimuth in separators increments from the header azimuth.
-    let mut boundaries: Vec<(usize, u16)> = Vec::new(); // (offset_after_separator, azimuth)
+fn parse_echo_metadata(data: &[u8]) -> EchoMetadata {
+    let sweep_count = (data[9] >> 1) as u32;
+    let sweep_len = (((data[11] & 0x07) as u32) << 8) | data[10] as u32;
+    let encoding = (data[11] & 0x18) >> 3;
+    EchoMetadata { sweep_count, sweep_len, encoding }
+}
 
-    let mut i = 3; // skip body prefix 00 00 00
-    while i + 3 < body.len() {
-        if body[i + 2] == 0x00 && body[i + 3] == 0x00 {
-            let az_candidate = u16::from_le_bytes([body[i], body[i + 1]]);
-            // Valid azimuth: 0..8191, and the high byte must be <= 0x1F
-            if body[i + 1] <= 0x1F {
-                // Verify: after 00 00, next byte should look like section start
-                // (FE, FD, or a data byte >= 0x38 which is common for echo headers)
-                let after = i + 4;
-                if after < body.len() {
-                    let next = body[after];
-                    if next == 0xFE || next == 0xFD || next >= 0x38 || next == 0x00 {
-                        boundaries.push((after, az_candidate));
-                        i = after;
-                        continue;
-                    }
+/// Decode encoding 3: RLE with copy-from-previous-spoke support.
+/// Returns (decoded spoke data, bytes consumed from input).
+fn decode_sweep_encoding_3(sweep: &[u8], prev_spoke: &[u8], sweep_len: usize) -> (Vec<u8>, usize) {
+    let mut spoke = Vec::with_capacity(sweep_len);
+    let mut used = 0;
+    let mut strength: u8 = 0;
+
+    while spoke.len() < sweep_len && used < sweep.len() {
+        let b = sweep[used];
+        if b & 0x03 == 0 {
+            // Raw amplitude value (multiples of 4: 0x00, 0x04, ..., 0xFC)
+            strength = b;
+            spoke.push(strength);
+        } else {
+            let mut repeat = (b >> 2) as usize;
+            if repeat == 0 { repeat = 64; }
+            if b & 0x01 == 0 {
+                // Copy from previous spoke
+                for _ in 0..repeat {
+                    let i = spoke.len();
+                    strength = if prev_spoke.len() > i { prev_spoke[i] } else { 0 };
+                    spoke.push(strength);
+                    if spoke.len() >= sweep_len { break; }
+                }
+            } else {
+                // Repeat previous strength
+                for _ in 0..repeat {
+                    spoke.push(strength);
+                    if spoke.len() >= sweep_len { break; }
                 }
             }
         }
-        i += 1;
+        used += 1;
     }
 
-    // Build section ranges: first section is body[3..first_boundary_start-4],
-    // subsequent sections are between boundaries.
-    // Each boundary offset points to the byte AFTER the 00 00 (section start).
-    let mut sections: Vec<(&[u8], u16)> = Vec::new(); // (data, azimuth)
+    // Pad consumed bytes to 4-byte alignment
+    used = (used + 3) & !3;
+    (spoke, used)
+}
 
-    // First section: from body[3] (skip 00 00 00 prefix) to the first separator
-    if boundaries.is_empty() {
-        // No separators found — single section
-        let data = &body[3..];
-        sections.push((data, header_az));
-    } else {
-        // First section ends 4 bytes before the first boundary (separator is 4 bytes: az_lo az_hi 00 00)
-        let first_end = boundaries[0].0 - 4;
-        if first_end > 3 {
-            sections.push((&body[3..first_end], header_az));
-        }
+/// Decode a raw UDP echo packet into multiple spokes.
+/// Uses the 16-byte metadata header and encoding-3 sub-spoke format.
+fn decode_echo_packet(pkt: &[u8], prev_spoke: &mut Vec<u8>, out: &mut Vec<Spoke>) {
+    if pkt.len() < 20 { return; }
 
-        // Middle sections: between boundaries
-        for w in 0..boundaries.len() {
-            let sec_start = boundaries[w].0;
-            let sec_end = if w + 1 < boundaries.len() {
-                boundaries[w + 1].0 - 4
-            } else {
-                body.len()
-            };
-            if sec_start < sec_end {
-                sections.push((&body[sec_start..sec_end], boundaries[w].1));
-            }
-        }
-    }
+    let meta = parse_echo_metadata(pkt);
+    if meta.encoding != 3 { return; } // Only encoding 3 supported for now
 
-    for (section, az) in &sections {
-        // Skip 00 00 prefix at start of each section (except first which already skipped)
-        let data = if section.len() > 2 && section[0] == 0x00 && section[1] == 0x00 {
-            &section[2..]
-        } else {
-            *section
-        };
+    let mut sweep = &pkt[16..];
 
-        // Decode: FE xx / FD xx = echo value xx (escape pair).
-        // Raw bytes divisible by 4 (0x00..0xFC step 4) are echo amplitudes.
-        // Other raw bytes are control/metadata — skip them.
-        let mut bins: Vec<u8> = Vec::new();
-        let mut j = 0;
-        while j < data.len() {
-            if (data[j] == 0xFE || data[j] == 0xFD) && j + 1 < data.len() {
-                bins.push(data[j + 1]);
-                j += 2;
-            } else if data[j] % 4 == 0 {
-                bins.push(data[j]);
-                j += 1;
-            } else {
-                // Control byte — skip
-                j += 1;
-            }
-        }
+    for _ in 0..meta.sweep_count {
+        if sweep.len() < 4 { break; }
 
-        if bins.is_empty() { continue; }
+        // 4-byte sub-spoke header: angle (LE u16) + heading (LE u16)
+        let angle = u16::from_le_bytes([sweep[0], sweep[1]]);
+        // heading = u16::from_le_bytes([sweep[2], sweep[3]]); // available if needed
+        sweep = &sweep[4..];
 
-        // Scale decoded bins to 868 via nearest-neighbor interpolation
-        let mut echo = vec![0u8; PPI_NUM_RANGE_BINS];
-        for bin in 0..PPI_NUM_RANGE_BINS {
-            let src = bin * bins.len() / PPI_NUM_RANGE_BINS;
-            echo[bin] = bins[src];
-        }
-        out.push(Spoke { angle_ticks: *az, echo });
+        let (spoke_data, used) = decode_sweep_encoding_3(sweep, prev_spoke, meta.sweep_len as usize);
+        if used > sweep.len() { break; }
+        sweep = &sweep[used..];
+
+        // Apply display conversion: wire value >> 2
+        let echo: Vec<u8> = spoke_data.iter().map(|&b| b >> 2).collect();
+
+        *prev_spoke = spoke_data;
+
+        out.push(Spoke { angle_ticks: angle, echo });
     }
 }
 
@@ -739,51 +724,85 @@ fn run_dump_raw(count: usize) {
                 let az_deg = az_raw as f64 / 8192.0 * 360.0;
                 println!("--- Packet #{pkt_num} | len={len} | az_raw={az_raw} ({az_deg:.1}) ---");
 
-                // Print header (first 18 bytes)
+                // Print header
                 print!("  HDR: ");
-                for i in 0..18.min(len) {
-                    print!("{:02X} ", buf[i]);
-                }
+                for i in 0..18.min(len) { print!("{:02X} ", buf[i]); }
                 println!();
 
-                // Print body in rows of 32
+                // Split body into sections and analyze each
                 let body = &buf[18..len];
-                println!("  BODY ({} bytes):", body.len());
-                for row in 0..(body.len() + 31) / 32 {
-                    let start = row * 32;
-                    let end = (start + 32).min(body.len());
-                    print!("    {:04X}: ", start);
-                    for i in start..end {
-                        print!("{:02X} ", body[i]);
+                let az_lo = buf[16];
+                let az_hi = buf[17];
+
+                // Find section boundaries using xx yy 00 00 pattern
+                let mut boundaries: Vec<usize> = Vec::new();
+                let mut i = 3;
+                while i + 3 < body.len() {
+                    if body[i + 2] == 0x00 && body[i + 3] == 0x00 && body[i + 1] <= 0x1F {
+                        let after = i + 4;
+                        if after < body.len() {
+                            let next = body[after];
+                            if next == 0xFE || next == 0xFD || next >= 0x38 || next == 0x00 {
+                                boundaries.push(after);
+                                i = after;
+                                continue;
+                            }
+                        }
                     }
-                    println!();
+                    i += 1;
                 }
 
-                // Analyze body structure
-                let mut fe_count = 0;
-                let mut fd_count = 0;
-                let mut i = 0;
-                while i < body.len() {
-                    if body[i] == 0xFE && i + 1 < body.len() {
-                        fe_count += 1;
-                        i += 2;
-                    } else if body[i] == 0xFD {
-                        fd_count += 1;
-                        i += 1;
-                    } else {
-                        i += 1;
-                    }
-                }
-                println!("  Stats: FE-pairs={fe_count}, FD-bytes={fd_count}, non-FE/FD={}", body.len() - fe_count * 2 - fd_count);
+                // Analyze first 3 sections
+                let section_starts: Vec<usize> = std::iter::once(3_usize)
+                    .chain(boundaries.iter().copied())
+                    .collect();
+                let section_ends: Vec<usize> = boundaries.iter().map(|b| b - 4)
+                    .chain(std::iter::once(body.len()))
+                    .collect();
 
-                // Show first section (before first FE pair) separately
-                let first_fe = body.iter().position(|&b| b == 0xFE).unwrap_or(body.len());
-                print!("  Pre-FE section ({first_fe} bytes): ");
-                for i in 0..first_fe.min(64) {
-                    print!("{:02X} ", body[i]);
+                println!("  {} sections found", section_starts.len());
+
+                for si in 0..section_starts.len().min(3) {
+                    let start = section_starts[si];
+                    let end = section_ends[si];
+                    if start >= end { continue; }
+                    let sec = &body[start..end];
+
+                    // Skip 00 00 prefix
+                    let data = if sec.len() > 2 && sec[0] == 0 && sec[1] == 0 {
+                        &sec[2..]
+                    } else { sec };
+
+                    // Test run-length hypothesis: byte%4==0 is amplitude,
+                    // byte%4!=0 is run-length count = (byte >> 2) + 1
+                    let mut total_bins = 0u32;
+                    let mut j = 0;
+                    let mut detail = String::new();
+                    while j < data.len() {
+                        let b = data[j];
+                        if (b == 0xFE || b == 0xFD) && j + 1 < data.len() {
+                            let count = (b >> 2) + 1;
+                            total_bins += count as u32;
+                            detail += &format!("{:02X}({})×{:02X} ", b, count, data[j+1]);
+                            j += 2;
+                        } else if b % 4 == 0 {
+                            total_bins += 1;
+                            j += 1;
+                        } else {
+                            let count = (b >> 2) + 1;
+                            total_bins += count as u32;
+                            detail += &format!("[{:02X}={}bins] ", b, count);
+                            j += 1;
+                        }
+                    }
+
+                    let sec_az = if si == 0 { az_raw } else {
+                        let bp = boundaries[si - 1];
+                        u16::from_le_bytes([body[bp - 4], body[bp - 3]])
+                    };
+                    println!("  Sec#{si} az={sec_az}: {total_bins} bins | {}", &detail[..detail.len().min(200)]);
                 }
-                if first_fe > 64 { print!("..."); }
-                println!("\n");
+                println!();
             }
             Err(e) => {
                 eprintln!("recv error: {e}");
@@ -888,6 +907,7 @@ fn run_render_live(out_path: &str) {
     let mut buf = [0u8; 2048];
     let mut ctrl_buf = [0u8; 4096];
     let mut spokes: Vec<Spoke> = Vec::new();
+    let mut prev_spoke_data: Vec<u8> = Vec::new();
     let mut prev_az: Option<u16> = None;
     let mut rotation_count = 0u32;
     let mut keepalive_timer = std::time::Instant::now();
@@ -913,14 +933,13 @@ fn run_render_live(out_path: &str) {
                 }
                 prev_az = Some(az);
 
-                // Only collect after first wrap (clean full rotation)
+                // Always decode to keep prev_spoke_data updated
                 if rotation_count >= 1 {
-                    let before = spokes.len();
-                    decode_echo_packet(&buf[..len], az, &mut spokes);
-                    let added = spokes.len() - before;
-                    if added == 0 || spokes.len() < 50 {
-                        eprintln!("  pkt az={az} len={len} body_len={} sections_added={added}", len - 18);
-                    }
+                    decode_echo_packet(&buf[..len], &mut prev_spoke_data, &mut spokes);
+                } else {
+                    // Pre-rotation: decode but discard spokes (keep prev_spoke state)
+                    let mut discard = Vec::new();
+                    decode_echo_packet(&buf[..len], &mut prev_spoke_data, &mut discard);
                 }
             }
             Err(_) => {
@@ -1016,10 +1035,10 @@ fn render_ppi(spokes: &[Spoke]) -> Vec<u8> {
             if bin >= num_bins { continue; }
 
             let amplitude = echo[bin];
-            if amplitude < 40 { continue; } // STC-like threshold: reject near-range noise
+            if amplitude == 0 { continue; }
 
-            // Map amplitude to green color (radar style)
-            let intensity = (amplitude as f64 / 252.0 * 255.0).min(255.0) as u8;
+            // Display values are 0-63 (wire values >> 2)
+            let intensity = (amplitude as u32 * 255 / 63).min(255) as u8;
             let idx = (y * size + x) * 4;
             // Garnet-to-white color scheme based on brand colors
             pixels[idx] = intensity;                                    // R
