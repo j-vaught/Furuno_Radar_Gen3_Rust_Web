@@ -22,6 +22,11 @@ log() {
     echo "$msg" >> "$LOG_FILE"
 }
 
+# Ensure TX is on (radar transmitting)
+log "Enabling TX..."
+curl -s "$WEB/toggle_echo?radarNo=0&mode=on" > /dev/null
+sleep 5
+
 # Start packet capture in background
 log "Starting tcpdump -> $PCAP_FILE"
 tcpdump -i eth0 -s 0 -B 8192 -w "$PCAP_FILE" \

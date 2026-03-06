@@ -1274,10 +1274,12 @@ static bool HandlePatternControl(const std::string &method,
             dopplerLog << "time_ms,radar_no,status,h_flg,heading,angle,sweep_len,range,scale";
             for (int i = 0; i < 256; i++) dopplerLog << ",bin" << i;
             dopplerLog << "\n";
-            dopplerLogging.store(true, std::memory_order_relaxed);
+            dopplerLog.flush();
+            dopplerLogging.store(true, std::memory_order_release);
+            std::cout << "[DOPPLER] Logging started, file is_open=" << dopplerLog.is_open() << std::endl;
             WriteHttpResponse(socket, "<h2>Doppler Logging Started</h2>");
         } else {
-            dopplerLogging.store(false, std::memory_order_relaxed);
+            dopplerLogging.store(false, std::memory_order_release);
             std::lock_guard<std::mutex> lock(dopplerLogMutex);
             if (dopplerLog.is_open()) dopplerLog.close();
             WriteHttpResponse(socket, "<h2>Doppler Logging Stopped</h2>");

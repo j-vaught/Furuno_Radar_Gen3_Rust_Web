@@ -282,7 +282,7 @@ static void __stdcall RadarEchoCallback(
     }
 
     // Doppler field logging
-    if (dopplerLogging.load(std::memory_order_relaxed)) {
+    if (dopplerLogging.load(std::memory_order_acquire)) {
         int hist[256] = {};
         for (int i = 0; i < sweep_len && i < 1024; i++) hist[echo[i]]++;
 
@@ -303,6 +303,7 @@ static void __stdcall RadarEchoCallback(
                        << scale;
             for (int i = 0; i < 256; i++) dopplerLog << "," << hist[i];
             dopplerLog << "\n";
+            dopplerLog.flush();
         }
     }
 }

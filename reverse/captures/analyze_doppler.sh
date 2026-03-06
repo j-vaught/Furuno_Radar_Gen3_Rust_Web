@@ -103,7 +103,8 @@ NR==1 { first_ms = $1 }
     window = int(($1 - first_ms) / 30000)
     for(i=10; i<=265; i++) {
         bin = i - 10
-        hist[window][bin] += $i
+        key = window SUBSEP bin
+        hist[key] += $i
     }
     windows[window] = 1
 }
@@ -111,17 +112,15 @@ END {
     for(w=0; w<=10; w++) {
         if(!(w in windows)) continue
         printf "Window %d:\n", w
-        # Sort by count descending - collect into array
-        delete sorted
         n = 0
         for(b=0; b<256; b++) {
-            if(hist[w][b] > 0) {
+            key = w SUBSEP b
+            if((key in hist) && hist[key] > 0) {
                 n++
-                sorted_val[n] = hist[w][b]
+                sorted_val[n] = hist[key]
                 sorted_bin[n] = b
             }
         }
-        # Simple top-10 by scanning
         for(rank=1; rank<=10 && rank<=n; rank++) {
             max_val = -1; max_idx = -1
             for(j=1; j<=n; j++) {

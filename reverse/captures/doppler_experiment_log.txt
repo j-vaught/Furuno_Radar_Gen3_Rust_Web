@@ -1,0 +1,35 @@
+[11:23:22.915] Starting tcpdump -> /home/user/Code_dev/RADAR_web/reverse/captures/20260306_112322_doppler_session.pcap
+[11:23:24.918] Starting Doppler callback logging
+[11:23:24.928] Current EchoColorType state:
+mode=0, sw=0, autoPicture=1
+[11:23:24.937] PHASE 1: Doppler OFF (baseline) - 30 seconds
+[11:23:54.948] PHASE 2: mode=1, sw=1 (Target Analyzer) - 30 seconds
+[11:24:24.961] PHASE 3: mode=2, sw=1 - 30 seconds
+[11:24:54.981] PHASE 4: mode=3, sw=1 (probe) - 15 seconds
+[11:25:09.993] PHASE 5: mode=1, sw=1, autoPicture=1 - 15 seconds
+[11:25:25.003] PHASE 6: Doppler OFF (restore) - 15 seconds
+[11:25:40.013] Stopping Doppler callback logging
+[11:25:40.025] Stopping tcpdump
+[11:25:40.087] Capture complete.
+[11:25:40.088]   PCAP: /home/user/Code_dev/RADAR_web/reverse/captures/20260306_112322_doppler_session.pcap
+[11:25:40.089]   Doppler CSV: runtime/output/doppler_log.csv
+[11:25:40.090]   Experiment log: /home/user/Code_dev/RADAR_web/reverse/captures/doppler_experiment_log.txt
+-rw-r--r-- 1 tcpdump tcpdump 57K Mar  6 11:25 /home/user/Code_dev/RADAR_web/reverse/captures/20260306_112322_doppler_session.pcap
+[11:29:55.857] Enabling TX...
+[11:30:00.874] Starting tcpdump -> /home/user/Code_dev/RADAR_web/reverse/captures/20260306_112955_doppler_session.pcap
+[11:30:02.878] Starting Doppler callback logging
+[11:30:02.892] Current EchoColorType state:
+mode=0, sw=0, autoPicture=0
+[11:30:02.909] PHASE 1: Doppler OFF (baseline) - 30 seconds
+[11:30:32.923] PHASE 2: mode=1, sw=1 (Target Analyzer) - 30 seconds
+[11:31:02.942] PHASE 3: mode=2, sw=1 - 30 seconds
+[11:31:32.962] PHASE 4: mode=3, sw=1 (probe) - 15 seconds
+[11:31:47.978] PHASE 5: mode=1, sw=1, autoPicture=1 - 15 seconds
+[11:32:02.994] PHASE 6: Doppler OFF (restore) - 15 seconds
+[11:32:18.009] Stopping Doppler callback logging
+[11:32:18.024] Stopping tcpdump
+[11:32:18.062] Capture complete.
+[11:32:18.063]   PCAP: /home/user/Code_dev/RADAR_web/reverse/captures/20260306_112955_doppler_session.pcap
+[11:32:18.064]   Doppler CSV: runtime/output/doppler_log.csv
+[11:32:18.065]   Experiment log: /home/user/Code_dev/RADAR_web/reverse/captures/doppler_experiment_log.txt
+-rw-r--r-- 1 tcpdump tcpdump 6.2M Mar  6 11:32 /home/user/Code_dev/RADAR_web/reverse/captures/20260306_112955_doppler_session.pcap
