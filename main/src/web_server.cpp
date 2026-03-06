@@ -1303,8 +1303,9 @@ static bool HandleRadarGetters(const std::string &path, boost::asio::ip::tcp::so
 
         if (cmd == "ALL" || cmd == "PULSE") {
             // RmcGetPulseWidth — gets pulse width & PRF
-            Furuno::INT16 pulse, range;
-            Furuno::INT32 picPW;
+            Furuno::INT16 pulse = -1;
+            Furuno::INT16 range = -1;
+            Furuno::INT32 picPW = -1;
             ret = Furuno::RmcGetPulseWidth(radar, &pulse, &range, &u16_1, &picPW);
             report << "<p>RmcGetPulseWidth returned " << ret
                 << " → pulse=" << pulse
@@ -1312,6 +1313,40 @@ static bool HandleRadarGetters(const std::string &path, boost::asio::ip::tcp::so
                 << ", unit=" << u16_1
                 << ", pictureNo=" << picPW << "</p>\n";
             if (ret != 0) {
+                // Some radar/SDK combinations require an explicit pulse-width request first.
+                Furuno::INT16 activeRange = 0;
+                Furuno::UINT16 activeUnit = 0;
+                Furuno::UINT16 activeUnitShort = 0;
+                const int rangeRet = Furuno::RmcGetRange_v2(radar, &activeRange, &activeUnit, &activeUnitShort);
+                report << "<p>RmcGetRange_v2 (for pulse request context) returned " << rangeRet
+                    << " → code=" << activeRange
+                    << ", unit=" << activeUnit
+                    << ", unitShort=" << activeUnitShort << "</p>\n";
+
+                int reqRet = -999;
+                int retryRet = ret;
+                Furuno::INT16 pulseRetry = -1;
+                Furuno::INT16 rangeRetry = -1;
+                Furuno::UINT16 unitRetry = 0;
+                Furuno::INT32 picRetry = -1;
+
+                if (rangeRet == 0) {
+                    reqRet = Furuno::RmcReqPulseWidth(
+                        radar,
+                        static_cast<Furuno::UINT16>(activeRange),
+                        static_cast<Furuno::UINT16>(activeUnit),
+                        0);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(120));
+                    retryRet = Furuno::RmcGetPulseWidth(radar, &pulseRetry, &rangeRetry, &unitRetry, &picRetry);
+                }
+
+                report << "<p>RmcReqPulseWidth returned " << reqRet << "</p>\n";
+                report << "<p>RmcGetPulseWidth retry returned " << retryRet
+                    << " → pulse=" << pulseRetry
+                    << ", range=" << rangeRetry
+                    << ", unit=" << unitRetry
+                    << ", pictureNo=" << picRetry << "</p>\n";
+
                 const auto it = g_lastPulseByRadar.find(radar);
                 if (it != g_lastPulseByRadar.end() && it->second.valid) {
                     report << "<p>Fallback (last set request) → pulse=" << it->second.pulse
