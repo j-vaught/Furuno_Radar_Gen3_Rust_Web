@@ -386,7 +386,7 @@ static std::string BuildSystemMetricsJson() {
     }
 
     // Storage usage
-    const std::vector<std::string> storageCandidates = {"frames", "data", "."};
+    const std::vector<std::string> storageCandidates = {"images/unprocessed", "images/echo_trail", "raw/csv", "."};
     double storagePercent = 0.0;
     std::string storagePath = ".";
     for (const auto& path : storageCandidates) {

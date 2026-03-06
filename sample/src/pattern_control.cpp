@@ -54,11 +54,10 @@ static std::string getUniqueDirName(const std::string& baseDir, const std::strin
     return candidate;
 }
 
-// Extracted helper to rename the two output folders.
+// Extracted helper to archive active output folders.
 static void renameOutputFolders(size_t patternSize,
                                 size_t threshold,
-                                const std::string& framesDir,
-                                const std::string& dataDir,
+                                const std::vector<std::string>& outputDirs,
                                 bool recreateDirs) {
     if (patternSize == 0) {
         return;
@@ -69,44 +68,29 @@ static void renameOutputFolders(size_t patternSize,
                                ? "_calibration"
                                : "_pattern";
 
-    // build unique new names
-    std::string newFrames = getUniqueDirName(framesDir, suffix);
-    std::string newData   = getUniqueDirName(dataDir,   suffix);
-
-    // perform the renames (if the originals exist)
-    if (fs::exists(framesDir)) {
-        fs::rename(framesDir, newFrames);
-        std::printf("[PatternControl] Renamed '%s' → '%s'\n",
-                    framesDir.c_str(), newFrames.c_str());
-    } else {
-        std::printf("[PatternControl] Frames directory '%s' does not exist.\n",
-                    framesDir.c_str());
-    }
-
-    if (fs::exists(dataDir)) {
-        fs::rename(dataDir, newData);
-        std::printf("[PatternControl] Renamed '%s' → '%s'\n",
-                    dataDir.c_str(), newData.c_str());
-    } else {
-        std::printf("[PatternControl] Data directory '%s' does not exist.\n",
-                    dataDir.c_str());
+    // perform the renames (if originals exist)
+    for (const auto& dir : outputDirs) {
+        const std::string archivedDir = getUniqueDirName(dir, suffix);
+        if (fs::exists(dir)) {
+            fs::rename(dir, archivedDir);
+            std::printf("[PatternControl] Renamed '%s' -> '%s'\n",
+                        dir.c_str(), archivedDir.c_str());
+        } else {
+            std::printf("[PatternControl] Output directory '%s' does not exist.\n",
+                        dir.c_str());
+        }
     }
 
     if (recreateDirs) {
         std::error_code ec;
-        if (!fs::exists(framesDir)) {
-            fs::create_directories(framesDir, ec);
-            if (ec) {
-                std::printf("[PatternControl] Failed to recreate '%s': %s\n",
-                            framesDir.c_str(), ec.message().c_str());
-            }
-        }
-        ec.clear();
-        if (!fs::exists(dataDir)) {
-            fs::create_directories(dataDir, ec);
-            if (ec) {
-                std::printf("[PatternControl] Failed to recreate '%s': %s\n",
-                            dataDir.c_str(), ec.message().c_str());
+        for (const auto& dir : outputDirs) {
+            ec.clear();
+            if (!fs::exists(dir)) {
+                fs::create_directories(dir, ec);
+                if (ec) {
+                    std::printf("[PatternControl] Failed to recreate '%s': %s\n",
+                                dir.c_str(), ec.message().c_str());
+                }
             }
         }
     }
@@ -165,8 +149,7 @@ void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepea
     constexpr size_t PATTERN_CALIBRATION_THRESHOLD = 2000; // decided based on 100 gains, 5 ranges (500 patterns)
     renameOutputFolders(pattern.size(),
                         PATTERN_CALIBRATION_THRESHOLD,
-                        /* framesDir */ "frames",
-                        /* dataDir   */ "data",
+                        /* outputDirs */ {"images/unprocessed", "images/echo_trail", "raw/csv"},
                         /* recreateDirs */ false);
 }
 
@@ -272,8 +255,7 @@ void FinalizeControlPattern(size_t patternSize,
     constexpr size_t PATTERN_CALIBRATION_THRESHOLD = 2000;
     renameOutputFolders(patternSize,
                         PATTERN_CALIBRATION_THRESHOLD,
-                        "frames",
-                        "data",
+                        {"images/unprocessed", "images/echo_trail", "raw/csv"},
                         recreateDirs);
 
     patternActive = false;
