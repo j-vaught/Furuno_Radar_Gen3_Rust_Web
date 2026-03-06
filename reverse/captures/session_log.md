@@ -26,3 +26,22 @@ Default filter: `host 172.31.3.226 or net 239.255.0.0/16`
   - 4 broadcast (10010) - rare
   - 2 ARP (1 request + 1 reply)
 - **Notes:** Pure passive capture, no user interaction. Echo sizes 576-732 bytes (variable per sweep line).
+
+## Session 2: Steady-State Extended (5min passive)
+- **File:** `20260306_031913_steady_state_5min.pcap`
+- **Duration:** 300s (5 minutes)
+- **Size:** 16M (16,670,095 bytes)
+- **Total packets:** 25,861
+- **Drops:** 0
+- **Filter:** `host 172.31.3.226 or net 239.255.0.0/16`
+- **Radar TX:** ON
+- **Start:** 2026-03-06T03:19:13
+- **Flow breakdown:**
+  - 24,206 echo packets (10024) - ~80.7/sec
+  - 622 TCP control (10100 radar->host)
+  - 621 TCP ACKs (host->radar)
+  - 391 broadcast (10034) - ~1.3/sec
+  - 19 broadcast (10010) - ~1 every 16s
+  - 2 ARP
+- **Packets/sec:** avg 86.2, min 6, max 93
+- **Notes:** Long capture for timing analysis. 10010 broadcast appears ~every 15s. TCP control at ~2/sec. Zero drops over 5 minutes confirms 8MB buffer sufficient.
