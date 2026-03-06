@@ -2,7 +2,7 @@
 mod protocol;
 mod connection;
 
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -99,7 +99,7 @@ fn run_tx_off() {
 }
 
 fn run_full() {
-    println!("=== Full Test: Handshake + TX ON + Echo Listen ===\n");
+    println!("=== Full: Connect + TX ON + Collect 1 Rotation + CSV + PNG ===\n");
 
     let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
     if let Err(e) = conn.connect_full() {
@@ -114,43 +114,42 @@ fn run_full() {
 
     conn.set_nonblocking(true).unwrap();
 
-    // Listen for echo data while keeping control alive
-    println!("\n=== Listening for echo packets ===");
     let echo_socket = create_echo_socket(HOST_IP);
 
     let mut buf = [0u8; 2048];
-    let mut echo_count = 0u64;
+    let mut spokes: Vec<Spoke> = Vec::new();
+    let mut prev_spoke_data: Vec<u8> = Vec::new();
+    let mut prev_az: Option<u16> = None;
+    let mut rotation_count = 0u32;
     let start = std::time::Instant::now();
+
+    println!("Collecting echo data (2 full rotations)...");
 
     loop {
         match echo_socket.recv_from(&mut buf) {
-            Ok((len, src)) => {
-                echo_count += 1;
-                if echo_count <= 10 || echo_count % 500 == 0 {
-                    let hdr = parse_echo_header(&buf[..len]);
-                    println!(
-                        "[{}] echo #{echo_count}: {len}B from {src} | seq={} az={:.1} cfg=0x{:04X}",
-                        elapsed_str(start),
-                        hdr.sequence,
-                        hdr.azimuth_deg,
-                        hdr.config,
-                    );
+            Ok((len, _)) => {
+                if len < 20 { continue; }
+                let az = u16::from_le_bytes([buf[16], buf[17]]);
+
+                if let Some(prev) = prev_az {
+                    if az < prev.saturating_sub(1000) {
+                        rotation_count += 1;
+                        println!("  Rotation {} complete ({} spokes)", rotation_count, spokes.len());
+                        if rotation_count >= 2 { break; }
+                    }
                 }
-                if echo_count == 10 {
-                    println!("  ... (showing every 500th packet) ...\n");
+                prev_az = Some(az);
+
+                if rotation_count >= 1 {
+                    decode_echo_packet(&buf[..len], &mut prev_spoke_data, &mut spokes);
+                } else {
+                    let mut discard = Vec::new();
+                    decode_echo_packet(&buf[..len], &mut prev_spoke_data, &mut discard);
                 }
             }
             Err(_) => {
-                if echo_count == 0 && start.elapsed() > Duration::from_secs(30) {
-                    eprintln!("No echo packets after 30s. Radar may need more init.");
-                    break;
-                }
-                if echo_count > 0 && start.elapsed() > Duration::from_secs(30) {
-                    let rate = echo_count as f64 / start.elapsed().as_secs_f64();
-                    println!(
-                        "\nDone: {echo_count} echo packets in {:.1}s ({rate:.1}/sec)",
-                        start.elapsed().as_secs_f64()
-                    );
+                if start.elapsed() > Duration::from_secs(30) {
+                    eprintln!("Timeout after 30s");
                     break;
                 }
             }
@@ -160,9 +159,27 @@ fn run_full() {
         let _ = conn.send_keepalive();
     }
 
-    // TX OFF before exit
+    // TX OFF
     conn.set_nonblocking(false).unwrap();
     let _ = conn.tx_off();
+
+    if spokes.is_empty() {
+        eprintln!("No spokes collected");
+        return;
+    }
+
+    let timestamp = timestamp_str();
+    let csv_path = format!("radar_{timestamp}.csv");
+    let png_path = format!("radar_{timestamp}.png");
+
+    println!("\nCollected {} spokes in {:.1}s", spokes.len(), start.elapsed().as_secs_f64());
+
+    write_echo_csv(&csv_path, &spokes);
+    println!("Saved CSV: {csv_path}");
+
+    let pixels = render_ppi(&spokes);
+    write_png(&png_path, &pixels, PPI_SIZE, PPI_SIZE);
+    println!("Saved PNG: {png_path}");
 }
 
 fn run_echo_listen() {
@@ -252,6 +269,77 @@ fn run_command_test() {
     }
 
     println!("\n=== Command test complete ===");
+}
+
+// --- CSV Export ---
+
+fn write_echo_csv(path: &str, spokes: &[Spoke]) {
+    let mut f = std::io::BufWriter::new(
+        std::fs::File::create(path).expect("Failed to create CSV file"),
+    );
+
+    // Header: spoke_index, angle_ticks, angle_deg, heading_ticks, num_bins, bin_0, bin_1, ...
+    let max_bins = spokes.iter().map(|s| s.echo.len()).max().unwrap_or(0);
+    write!(f, "spoke_index,angle_ticks,angle_deg,heading_ticks,num_bins").unwrap();
+    for i in 0..max_bins {
+        write!(f, ",bin_{i}").unwrap();
+    }
+    writeln!(f).unwrap();
+
+    for (idx, spoke) in spokes.iter().enumerate() {
+        let angle_deg = spoke.angle_ticks as f64 / 8192.0 * 360.0;
+        write!(
+            f,
+            "{},{},{:.2},{},{}",
+            idx, spoke.angle_ticks, angle_deg, spoke.heading_ticks, spoke.echo.len()
+        )
+        .unwrap();
+        for &b in &spoke.echo {
+            write!(f, ",{b}").unwrap();
+        }
+        // Pad short spokes with zeros
+        for _ in spoke.echo.len()..max_bins {
+            write!(f, ",0").unwrap();
+        }
+        writeln!(f).unwrap();
+    }
+}
+
+fn timestamp_str() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let secs = now.as_secs();
+    // Simple UTC timestamp: YYYYMMDD_HHMMSS
+    let s = secs % 60;
+    let m = (secs / 60) % 60;
+    let h = (secs / 3600) % 24;
+    let days = secs / 86400;
+    // Days since epoch to date (simplified)
+    let mut y = 1970u32;
+    let mut remaining = days;
+    loop {
+        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if remaining < days_in_year { break; }
+        remaining -= days_in_year;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days: [u64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut mo = 0;
+    for (i, &md) in month_days.iter().enumerate() {
+        if remaining < md {
+            mo = i + 1;
+            break;
+        }
+        remaining -= md;
+    }
+    let d = remaining + 1;
+    format!("{y}{mo:02}{d:02}_{h:02}{m:02}{s:02}")
 }
 
 // --- Helper structs ---
@@ -935,9 +1023,15 @@ fn run_render_live(out_path: &str) {
     }
 
     println!("Collected {} raw spokes, rendering PPI...", spokes.len());
+
+    // Save CSV alongside PNG
+    let csv_path = out_path.replace(".png", ".csv");
+    write_echo_csv(&csv_path, &spokes);
+    println!("Saved CSV: {csv_path}");
+
     let pixels = render_ppi(&spokes);
     write_png(out_path, &pixels, PPI_SIZE, PPI_SIZE);
-    println!("Saved: {out_path}");
+    println!("Saved PNG: {out_path}");
 }
 
 fn render_ppi(spokes: &[Spoke]) -> Vec<u8> {
