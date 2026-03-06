@@ -54,6 +54,25 @@
 
 ---
 
+## Phase 0.5: Raw UDP Smoke Test (0.5 hours)
+
+**Purpose:** Before any disassembly or protocol decoding, answer the single most important architectural question: does the radar broadcast echo data freely, or does it require a handshake first?
+
+### 0.5.1 — Write a Minimal UDP Listener (30 min)
+- Write a simple Rust program (or Python script) that:
+  - Opens a UDP socket on the radar's echo port (identified from Phase 0.2 or from `NcSetNetworkBasePortNo` defaults)
+  - Binds to `0.0.0.0` on that port
+  - Loops forever, printing raw hex of every packet received
+- Run it with the radar powered on and transmitting (use the existing Furuno app to put the radar in transmit mode)
+- Observe:
+  - **Bytes flowing?** The radar broadcasts openly. Phase 4 (echo receive) is straightforward — you can decode echoes before fully understanding the init handshake. Phase 3 becomes lower priority.
+  - **Nothing received?** The radar requires registration/subscription before it sends echo data. Phase 3 (init handshake) is now **critical path** and must be completed before Phase 4.
+- Output: `reverse/raw_udp_test_results.md` — document what was received (or not), packet sizes, frequency, and the critical path determination
+
+**Why this matters:** This 30-minute test reshapes the entire project schedule. If the radar broadcasts openly, you can parallelize Phases 1-3 freely and start getting echo data almost immediately. If it requires a handshake, Phase 3 becomes a hard blocker and should be prioritized above Phases 1-2.
+
+---
+
 ## Phase 1: Decode the Command Protocol (6-8 hours)
 
 ### 1.1 — Disassemble `NcSendRadarCommand` (2-3 hrs)
@@ -286,6 +305,7 @@ Using the same serialization pattern, add:
 | Phase | Description | Est. Hours |
 |-------|-------------|-----------|
 | 0 | Capture & decode setup | 4-6 |
+| 0.5 | Raw UDP smoke test | 0.5 |
 | 1 | Decode command protocol | 6-8 |
 | 2 | Decode echo protocol | 6-8 |
 | 3 | Decode init handshake | 4-6 |
@@ -295,7 +315,7 @@ Using the same serialization pattern, add:
 | 7 | ARPA target receive | 3-4 |
 | 8 | Rewrite app layer | 6-8 |
 | 9 | Integration testing | 3-4 |
-| **Total** | | **46-64 hrs** |
+| **Total** | | **46.5-64.5 hrs** |
 
 ---
 
