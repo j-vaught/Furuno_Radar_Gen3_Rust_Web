@@ -5,6 +5,8 @@ radar-client/target/
 collected_data/
 calibration_output/
 test_output/
+radar-client/validate_*/
+radar-client/recordings/
 
 # Data artifacts
 *.csv
