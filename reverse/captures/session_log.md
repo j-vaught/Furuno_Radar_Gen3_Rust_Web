@@ -62,3 +62,22 @@ Default filter: `host 172.31.3.226 or net 239.255.0.0/16`
   - 03:26:58 - `set_range rangeIndex=0` (0.125 NM, return to default)
   - 03:27:13 - Capture stop
 - **Notes:** Range changes should show as TCP command packets from host->radar near the logged timestamps. Echo packet sizes may change with range setting.
+
+## Session 4: Gain Changes (active)
+- **File:** `20260306_034641_gain_changes.pcap`
+- **Duration:** ~70s
+- **Size:** 3.5M (3,705,680 bytes)
+- **Total packets:** 6,117
+- **Drops:** 0
+- **Filter:** `host 172.31.3.226 or net 239.255.0.0/16`
+- **Radar TX:** ON
+- **Command timestamps:**
+  - 03:46:41 - Capture start (baseline)
+  - 03:46:51 - `set_gain status=0 manualValue=0` (manual min)
+  - 03:47:01 - `set_gain status=0 manualValue=50`
+  - 03:47:11 - `set_gain status=0 manualValue=100`
+  - 03:47:21 - `set_gain status=0 manualValue=200`
+  - 03:47:31 - `set_gain status=0 manualValue=255` (manual max)
+  - 03:47:41 - `set_gain status=1` (auto gain)
+  - 03:47:51 - Capture stop
+- **Notes:** Gain changes are host->radar commands on TCP 10100. Echo intensity should change but packet sizes may stay similar since gain affects echo values, not packet structure.
