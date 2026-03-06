@@ -22,8 +22,8 @@ namespace Furuno {
 #include <lasterror.h>
 }
 
-// If you want to refer to lastSweepAngle, declare it extern
-extern Furuno::INT16 lastSweepAngle;
+// Published by main.cpp when a full sweep/rotation is finalized.
+extern std::atomic<uint64_t> completedRotationCount;
 
 struct RangeGainStep {
     uint16_t range;
@@ -126,19 +126,18 @@ void RunRangeGainPattern(const std::vector<RangeGainStep>& pattern, int numRepea
                 lastGain = step.gain;
             }
 
-            int sweeps = 0;
-            int prevAngle = lastSweepAngle;
+            const uint64_t startRotation = completedRotationCount.load(std::memory_order_acquire);
+            const uint64_t targetRotation = startRotation + static_cast<uint64_t>(step.repeat);
+            int lastPrinted = 0;
 
-            while (sweeps < step.repeat && patternActive) {
+            while (patternActive && completedRotationCount.load(std::memory_order_acquire) < targetRotation) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                int currAngle = lastSweepAngle;
-
-                // Detect wrap-around: previous angle near max, current near 0
-                if ((prevAngle > 6000) && (currAngle < 1000)) {
-                    ++sweeps;
-                    std::printf("Sweep complete (%d/%d)\n", sweeps, step.repeat);
+                const uint64_t now = completedRotationCount.load(std::memory_order_acquire);
+                const int done = static_cast<int>(now > startRotation ? now - startRotation : 0);
+                if (done > lastPrinted) {
+                    lastPrinted = done;
+                    std::printf("Sweep complete (%d/%d)\n", done, step.repeat);
                 }
-                prevAngle = currAngle;
             }
         }
     }
@@ -229,16 +228,17 @@ PatternRunResult ExecuteControlPattern(const std::vector<ControlStep>& pattern,
                 lastInterp = step.interpolation;
             }
 
-            int sweeps = 0;
-            int prevAngle = lastSweepAngle;
-            while (sweeps < step.repeat && patternActive) {
+            const uint64_t startRotation = completedRotationCount.load(std::memory_order_acquire);
+            const uint64_t targetRotation = startRotation + static_cast<uint64_t>(step.repeat);
+            int lastPrinted = 0;
+            while (patternActive && completedRotationCount.load(std::memory_order_acquire) < targetRotation) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                int currAngle = lastSweepAngle;
-                if ((prevAngle > 5000) && (currAngle < 3000)) {
-                    ++sweeps;
-                    std::printf("Sweep complete (%d/%d)\n", sweeps, step.repeat);
+                const uint64_t now = completedRotationCount.load(std::memory_order_acquire);
+                const int done = static_cast<int>(now > startRotation ? now - startRotation : 0);
+                if (done > lastPrinted) {
+                    lastPrinted = done;
+                    std::printf("Sweep complete (%d/%d)\n", done, step.repeat);
                 }
-                prevAngle = currAngle;
             }
         }
     }

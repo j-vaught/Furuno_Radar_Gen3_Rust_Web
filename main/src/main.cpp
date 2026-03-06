@@ -71,6 +71,7 @@ struct RadarEchoData {
 };
 std::vector<RadarEchoData> radarEchoBuffer;
 Furuno::INT16 lastSweepAngle = -1;
+std::atomic<uint64_t> completedRotationCount{0};
 
 // ───────────────────────────────────────────────────────────────
 // Async Sweep Writing (CSV + PNG) Threading
@@ -267,6 +268,7 @@ static void __stdcall RadarEchoCallback(
         }
         
         sweepQueueCV.notify_one();
+        completedRotationCount.fetch_add(1, std::memory_order_release);
 
         radarEchoBuffer.clear();
         lastSweepAngle = -1;
