@@ -634,7 +634,7 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         if (ip_ec) {
             ip = "Unavailable";
         }
-        std::string newest = FindNewestPNGFile("frames");
+        std::string newest = FindNewestPNGFile("images/unprocessed");
 
         std::ostringstream oss;
         oss << "{\"ip\": \"" << ip << "\", "
@@ -647,12 +647,12 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         return true;
     }
     if (path.rfind("/newest_png", 0) == 0) {
-        std::string newest = FindNewestPNGFile("frames");
+        std::string newest = FindNewestPNGFile("images/unprocessed");
         if (newest.empty()) {
             WriteHttpResponse(socket, "No PNG found.\r\n", "text/plain");
             return true;
         }
-        std::ifstream ifs("frames/" + newest, std::ios::binary);
+        std::ifstream ifs("images/unprocessed/" + newest, std::ios::binary);
         if (!ifs) {
             WriteHttpResponse(socket, "Cannot open the PNG.\r\n", "text/plain");
             return true;
@@ -669,7 +669,7 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         return true;
     }
     if (path.rfind("/newest_detection", 0) == 0) {
-        std::string det_path = "detections/latest.png";
+        std::string det_path = "images/yolo_detect/latest.png";
         std::ifstream ifs(det_path, std::ios::binary);
         if (!ifs) {
             WriteHttpResponse(socket, "No detection image yet.\r\n", "text/plain");
@@ -688,12 +688,12 @@ static bool HandleUtilities(const std::string &path, boost::asio::ip::tcp::socke
         return true;
     }
     if (path.rfind("/newest_trail", 0) == 0) {
-        std::string newest = FindNewestPNGFile("trail_rgb");
+        std::string newest = FindNewestPNGFile("images/echo_trail");
         if (newest.empty()) {
             WriteHttpResponse(socket, "No trail image yet.\r\n", "text/plain");
             return true;
         }
-        std::ifstream ifs("trail_rgb/" + newest, std::ios::binary);
+        std::ifstream ifs("images/echo_trail/" + newest, std::ios::binary);
         if (!ifs) {
             WriteHttpResponse(socket, "Cannot open trail PNG.\r\n", "text/plain");
             return true;

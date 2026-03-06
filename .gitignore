@@ -12,7 +12,9 @@ main
 *.zip
 *.zst
 
-# Generated frame/data directories
+# Runtime output directories
+sample/raw/
+sample/images/
 sample/data/
 sample/data_*/
 sample/frames/

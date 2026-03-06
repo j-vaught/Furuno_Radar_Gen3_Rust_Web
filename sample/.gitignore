@@ -27,3 +27,7 @@ __pycache__/
 *.pt
 *.pth
 *.out
+
+# Runtime output directories
+raw/
+images/

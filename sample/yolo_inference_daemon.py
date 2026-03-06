@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Live YOLO inference daemon for radar trail images.
 
-Watches trail_rgb/ for new PNGs, runs YOLO detection, draws bounding boxes,
-and writes annotated images to detections/ for the web UI to serve.
+Watches images/echo_trail/ for new PNGs, runs YOLO detection, draws bounding boxes,
+and writes annotated images to images/yolo_detect/ for the web UI to serve.
 
 Usage:
     python3 yolo_inference_daemon.py [--model weights/yolo26_best.onnx] [--conf 0.25]
@@ -76,8 +76,8 @@ def find_newest(directory: Path) -> Path | None:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="weights/yolo26_best.onnx")
-    parser.add_argument("--trail-dir", default="trail_rgb")
-    parser.add_argument("--output-dir", default="detections")
+    parser.add_argument("--trail-dir", default="images/echo_trail")
+    parser.add_argument("--output-dir", default="images/yolo_detect")
     parser.add_argument("--conf", type=float, default=0.25)
     parser.add_argument("--poll-interval", type=float, default=0.3,
                         help="Seconds between checks for new frames")
@@ -85,7 +85,9 @@ def main():
 
     trail_dir = Path(args.trail_dir)
     out_dir = Path(args.output_dir)
+    labels_dir = out_dir / "labels"
     out_dir.mkdir(parents=True, exist_ok=True)
+    labels_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading model: {args.model}")
     session = build_session(args.model)
@@ -122,6 +124,16 @@ def main():
 
             # Also save per-frame copy for review
             annotated.save(out_dir / newest.name)
+
+            # Write YOLO-format detection labels (class x_center y_center w h conf)
+            label_path = labels_dir / newest.with_suffix(".txt").name
+            with open(label_path, "w") as lf:
+                for x1, y1, x2, y2, conf, cls in detections:
+                    xc = (x1 + x2) / 2.0 / img.width
+                    yc = (y1 + y2) / 2.0 / img.height
+                    w = (x2 - x1) / float(img.width)
+                    h = (y2 - y1) / float(img.height)
+                    lf.write(f"{cls} {xc:.6f} {yc:.6f} {w:.6f} {h:.6f} {conf:.4f}\n")
 
             t3 = time.perf_counter()
             n = len(detections)
