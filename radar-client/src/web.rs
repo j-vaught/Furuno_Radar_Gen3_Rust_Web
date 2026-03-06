@@ -153,15 +153,17 @@ fn echo_listener(state: Arc<AppState>) {
                                 *png = png_bytes;
                             }
 
-                            // Save CSV if recording
+                            // Save CSV + PNG if recording
                             if state.recording.load(Ordering::Relaxed) {
                                 if let Ok(dir) = state.record_dir.read() {
                                     if !dir.is_empty() {
                                         let ts = timestamp_compact();
-                                        let csv_path = format!("{dir}/rotation_{ts}.csv");
-                                        let png_path = format!("{dir}/rotation_{ts}.png");
-                                        write_echo_csv(&csv_path, &spokes);
-                                        render::write_png(&png_path, &pixels, PPI_SIZE, PPI_SIZE);
+                                        let csv_dir = format!("{dir}/csv");
+                                        let png_dir = format!("{dir}/png");
+                                        let _ = std::fs::create_dir_all(&csv_dir);
+                                        let _ = std::fs::create_dir_all(&png_dir);
+                                        write_echo_csv(&format!("{csv_dir}/rotation_{ts}.csv"), &spokes);
+                                        render::write_png(&format!("{png_dir}/rotation_{ts}.png"), &pixels, PPI_SIZE, PPI_SIZE);
                                     }
                                 }
                             }
