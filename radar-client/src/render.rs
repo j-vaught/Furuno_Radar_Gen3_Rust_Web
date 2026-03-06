@@ -9,8 +9,8 @@ pub fn render_ppi(spokes: &[Spoke]) -> Vec<u8> {
     let center = size as f64 / 2.0;
     let max_r = center - 2.0;
 
+    // Black background, full alpha
     let mut pixels = vec![0u8; size * size * 4];
-
     for y in 0..size {
         for x in 0..size {
             let idx = (y * size + x) * 4;
@@ -18,53 +18,42 @@ pub fn render_ppi(spokes: &[Spoke]) -> Vec<u8> {
         }
     }
 
-    let mut sorted: Vec<(f64, &[u8])> = spokes.iter()
-        .map(|s| (s.angle_ticks as f64 / PPI_ANGLE_TICKS * std::f64::consts::TAU, s.echo.as_slice()))
-        .collect();
-    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    // Draw each spoke as a radial line from center outward.
+    // Each spoke covers a thin angular wedge — we draw 1-pixel-wide radial lines,
+    // which naturally leaves gaps at the periphery (spiky edges).
+    for spoke in spokes {
+        let angle_rad = spoke.angle_ticks as f64 / PPI_ANGLE_TICKS * std::f64::consts::TAU;
+        // Convert from compass bearing (0=north, CW) to math angle (0=east, CCW)
+        let math_angle = std::f64::consts::FRAC_PI_2 - angle_rad;
+        let cos_a = math_angle.cos();
+        let sin_a = math_angle.sin();
 
-    for y in 0..size {
-        for x in 0..size {
-            let dx = x as f64 - center;
-            let dy = -(y as f64 - center);
-            let r = (dx * dx + dy * dy).sqrt();
-            if r < 1.0 || r > max_r { continue; }
+        let num_bins = spoke.echo.len().min(PPI_NUM_RANGE_BINS);
+        if num_bins == 0 { continue; }
 
-            let mut angle = dy.atan2(dx);
-            angle = std::f64::consts::FRAC_PI_2 - angle;
-            if angle < 0.0 { angle += std::f64::consts::TAU; }
+        // Walk along the radial line, one pixel step at a time
+        let steps = max_r as usize;
+        for step in 0..steps {
+            let r = step as f64 + 1.0;
+            let px = (center + r * cos_a) as usize;
+            let py = (center - r * sin_a) as usize;
+            if px >= size || py >= size { continue; }
 
-            let spoke_idx = match sorted.binary_search_by(|s| s.0.partial_cmp(&angle).unwrap()) {
-                Ok(i) => i,
-                Err(i) => {
-                    if i == 0 { sorted.len() - 1 }
-                    else if i >= sorted.len() { 0 }
-                    else {
-                        let d1 = (sorted[i - 1].0 - angle).abs();
-                        let d2 = (sorted[i].0 - angle).abs();
-                        if d1 < d2 { i - 1 } else { i }
-                    }
-                }
-            };
-
-            let echo = sorted[spoke_idx].1;
-            let num_bins = echo.len().min(PPI_NUM_RANGE_BINS);
-            if num_bins == 0 { continue; }
-
-            let bin = ((r / max_r) * num_bins as f64) as usize;
+            let bin = (r / max_r * num_bins as f64) as usize;
             if bin >= num_bins { continue; }
 
-            let amplitude = echo[bin];
+            let amplitude = spoke.echo[bin];
             if amplitude == 0 { continue; }
 
             let intensity = (amplitude as u32 * 255 / 63).min(255) as u8;
-            let idx = (y * size + x) * 4;
+            let idx = (py * size + px) * 4;
             pixels[idx] = intensity;
             pixels[idx + 1] = (intensity as u32 * 180 / 255) as u8;
             pixels[idx + 2] = (intensity as u32 * 20 / 255) as u8;
         }
     }
 
+    // Range rings and crosshairs (dark gray)
     let c = center as usize;
     for i in 0..size {
         let idx = (c * size + i) * 4;

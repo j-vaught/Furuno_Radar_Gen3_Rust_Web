@@ -121,7 +121,6 @@ fn echo_listener(state: Arc<AppState>) {
     let mut prev_spoke_data: Vec<u8> = Vec::new();
     let mut prev_az: Option<u16> = None;
     let mut last_keepalive = Instant::now();
-    let mut last_render = Instant::now();
 
     loop {
         // Send keepalive every 5s regardless of TX state
@@ -167,7 +166,6 @@ fn echo_listener(state: Arc<AppState>) {
                                 }
                             }
 
-                            last_render = Instant::now();
                         }
                         spokes.clear();
                     }
@@ -175,16 +173,6 @@ fn echo_listener(state: Arc<AppState>) {
                 prev_az = Some(az);
 
                 decode_echo_packet(&buf[..len], &mut prev_spoke_data, &mut spokes);
-
-                // Also render periodically if we have enough spokes (for partial updates)
-                if last_render.elapsed() > Duration::from_millis(500) && spokes.len() > 100 {
-                    let pixels = render::render_ppi(&spokes);
-                    let png_bytes = render::encode_png_bytes(&pixels, PPI_SIZE, PPI_SIZE);
-                    if let Ok(mut png) = state.latest_png.write() {
-                        *png = png_bytes;
-                    }
-                    last_render = Instant::now();
-                }
             }
             Err(_) => {}
         }
