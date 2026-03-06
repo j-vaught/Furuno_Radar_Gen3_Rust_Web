@@ -41,8 +41,9 @@ fn main() {
             run_dump_raw(count);
         }
         "test-commands" => run_test_commands(),
+        "calibrate" => run_calibrate(&args[2..]),
         _ => {
-            eprintln!("Usage: radar-client <handshake|tx-on|tx-off|echo|full|command|render-csv|render-live|test-commands>");
+            eprintln!("Usage: radar-client <handshake|tx-on|tx-off|echo|full|command|render-csv|render-live|test-commands|calibrate>");
             std::process::exit(1);
         }
     }
@@ -1477,4 +1478,173 @@ fn write_png(path: &str, pixels: &[u8], width: usize, height: usize) {
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().expect("write PNG header");
     writer.write_image_data(pixels).expect("write PNG data");
+}
+
+// --- Calibration Pattern Runner ---
+
+fn run_calibrate(args: &[String]) {
+    // Usage: calibrate [--ranges 0,6,10] [--gains 0-255] [--pulses 0,5] [--repeats 2]
+    let mut ranges: Vec<u16> = vec![0, 6, 10];
+    let mut gain_start: u16 = 0;
+    let mut gain_end: u16 = 255;
+    let mut pulses: Vec<u16> = vec![0];
+    let mut rez_boosts: Vec<u16> = vec![0];
+    let mut rot_speeds: Vec<u16> = vec![0];
+    let mut interpolations: Vec<u16> = vec![5]; // OFF by default
+    let mut repeat_count: u16 = 2;
+    let mut output_dir = String::from("calibration_output");
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--ranges" => {
+                i += 1;
+                ranges = args[i].split(',').filter_map(|s| s.parse().ok()).collect();
+            }
+            "--gains" => {
+                i += 1;
+                let parts: Vec<&str> = args[i].split('-').collect();
+                if parts.len() == 2 {
+                    gain_start = parts[0].parse().unwrap_or(0);
+                    gain_end = parts[1].parse().unwrap_or(255);
+                }
+            }
+            "--pulses" => {
+                i += 1;
+                pulses = args[i].split(',').filter_map(|s| s.parse().ok()).collect();
+            }
+            "--rez" => {
+                i += 1;
+                rez_boosts = args[i].split(',').filter_map(|s| s.parse().ok()).collect();
+            }
+            "--rot" => {
+                i += 1;
+                rot_speeds = args[i].split(',').filter_map(|s| s.parse().ok()).collect();
+            }
+            "--interp" => {
+                i += 1;
+                interpolations = args[i].split(',').filter_map(|s| s.parse().ok()).collect();
+            }
+            "--repeats" => {
+                i += 1;
+                repeat_count = args[i].parse().unwrap_or(2);
+            }
+            "--output" => {
+                i += 1;
+                output_dir = args[i].clone();
+            }
+            _ => {
+                eprintln!("Unknown calibrate arg: {}", args[i]);
+            }
+        }
+        i += 1;
+    }
+
+    let pattern = protocol::generate_pattern(
+        &ranges, &pulses, &rez_boosts, &rot_speeds, &interpolations,
+        gain_start, gain_end, repeat_count,
+    );
+
+    println!("=== Calibration Pattern ===");
+    println!("  Steps: {}", pattern.len());
+    println!("  Ranges: {:?}", ranges);
+    println!("  Gains: {}-{}", gain_start, gain_end);
+    println!("  Pulses: {:?}", pulses);
+    println!("  RezBoost: {:?}", rez_boosts);
+    println!("  Rotation: {:?}", rot_speeds);
+    println!("  Interpolation: {:?}", interpolations);
+    println!("  Repeats/step: {}", repeat_count);
+    println!("  Output: {}", output_dir);
+    println!();
+
+    // Boot up
+    let auth_ok = do_auth();
+    if !auth_ok { eprintln!("Auth failed"); std::process::exit(1); }
+
+    let mut ctrl = do_connect_control();
+    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
+    send_command(&mut ctrl, "$R96,,,,,,,\n");
+    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
+
+    let init_cmds = include_str!("init_commands.txt");
+    for line in init_cmds.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        ctrl.write_all(line.as_bytes()).expect("write failed");
+        ctrl.write_all(b"\r\n").expect("write failed");
+    }
+    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
+
+    // TX ON
+    send_command(&mut ctrl, &protocol::cmd_tx_state(2));
+    send_command(&mut ctrl, &protocol::cmd_near_stc(0));
+    send_command(&mut ctrl, &protocol::cmd_middle_stc(0));
+    send_command(&mut ctrl, &protocol::cmd_far_stc(0));
+    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
+    ctrl.set_nonblocking(true).unwrap();
+
+    // Setup echo socket
+    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).expect("socket");
+    sock.set_reuse_address(true).unwrap();
+    unsafe {
+        let optval: i32 = 1;
+        libc::setsockopt(sock.as_raw_fd(), libc::SOL_SOCKET, libc::SO_REUSEPORT,
+            &optval as *const _ as *const libc::c_void, std::mem::size_of::<i32>() as u32);
+    }
+    let bind_result = sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into());
+    if bind_result.is_err() {
+        sock.bind(&SocketAddr::from((MULTICAST_ECHO, PORT_ECHO)).into()).expect("bind");
+    }
+    let echo_socket: UdpSocket = sock.into();
+    echo_socket.join_multicast_v4(&MULTICAST_ECHO, &HOST_IP).expect("join multicast");
+    echo_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+
+    let mut prev_spoke_data: Vec<u8> = Vec::new();
+
+    let _ = std::fs::create_dir_all(&output_dir);
+
+    let mut prev_step: Option<&protocol::ControlStep> = None;
+    let total_steps = pattern.len();
+
+    for (step_idx, step) in pattern.iter().enumerate() {
+        println!("[{}/{}] range={} gain={} pulse={} rez={} rot={} interp={}",
+            step_idx + 1, total_steps,
+            step.range, step.gain, step.pulse_length,
+            step.rez_boost, step.rotation_speed, step.interpolation);
+
+        // Send only changed commands
+        let cmds = step.commands_vs(prev_step);
+        for cmd in &cmds {
+            send_and_wait_ack(&mut ctrl, cmd, "$N");
+        }
+
+        // Wait for setting change, then collect rotations
+        if !cmds.is_empty() {
+            std::thread::sleep(Duration::from_millis(300));
+            // Drain a rotation to let settings settle
+            let _ = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+        }
+
+        // Collect the requested number of rotations
+        for rot in 0..step.repeat {
+            let (spokes, stats) = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+            println!("  rot {}/{}: {}", rot + 1, step.repeat, stats);
+
+            // Save PPI image
+            if !spokes.is_empty() {
+                let png_path = format!("{}/step{:05}_r{}_g{}_p{}_rot{}.png",
+                    output_dir, step_idx, step.range, step.gain, step.pulse_length, rot);
+                let pixels = render_ppi(&spokes);
+                write_png(&png_path, &pixels, PPI_SIZE, PPI_SIZE);
+            }
+        }
+
+        prev_step = Some(step);
+    }
+
+    // TX OFF
+    ctrl.set_nonblocking(false).unwrap();
+    ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+    let _ = ctrl.write_all(protocol::cmd_tx_state(1).as_bytes());
+    println!("\nCalibration complete. {} steps executed. TX OFF.", total_steps);
 }

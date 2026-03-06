@@ -556,3 +556,86 @@ pub fn parse_response(line: &str) -> Option<(&str, Vec<&str>)> {
     if parts.is_empty() { return None; }
     Some((parts[0], parts[1..].to_vec()))
 }
+
+// --- Calibration Pattern ---
+
+/// A single step in a calibration pattern sequence.
+/// Each step defines a complete radar configuration and how many
+/// full antenna rotations to hold at that configuration.
+#[derive(Clone)]
+pub struct ControlStep {
+    pub range: u16,
+    pub gain: u16,
+    pub pulse_length: u16,     // 0=S1, 1=S2, 2=M1, 3=M2, 4=M3, 5=L
+    pub rez_boost: u16,        // 0=off, 1=low, 2=med, 3=high
+    pub rotation_speed: u16,   // 0=LO, 1=HI, 2=AUTO
+    pub interpolation: u16,    // 0=2048, 1=4096, 2=8192, 3=1024, 4=720, 5=OFF
+    pub repeat: u16,           // number of rotations at this setting
+}
+
+impl ControlStep {
+    /// Generate the set of $S commands needed to apply this step.
+    /// Only emits commands for parameters that differ from `prev`.
+    pub fn commands_vs(&self, prev: Option<&ControlStep>) -> Vec<String> {
+        let mut cmds = Vec::new();
+        let changed = |getter: fn(&ControlStep) -> u16| -> bool {
+            match prev {
+                Some(p) => getter(self) != getter(p),
+                None => true,
+            }
+        };
+
+        if changed(|s| s.range) {
+            cmds.push(cmd_range(self.range));
+        }
+        if changed(|s| s.gain) {
+            cmds.push(cmd_gain(false, self.gain));
+        }
+        if changed(|s| s.pulse_length) {
+            cmds.push(cmd_pulse_width(self.pulse_length, self.range));
+        }
+        if changed(|s| s.rez_boost) {
+            cmds.push(cmd_rezboost(self.rez_boost));
+        }
+        if changed(|s| s.rotation_speed) {
+            cmds.push(cmd_antenna_revolution(self.rotation_speed, self.rotation_speed == 1));
+        }
+        cmds
+    }
+}
+
+/// Generate a calibration pattern that sweeps through all combinations.
+pub fn generate_pattern(
+    ranges: &[u16],
+    pulse_lengths: &[u16],
+    rez_boosts: &[u16],
+    rotation_speeds: &[u16],
+    interpolations: &[u16],
+    gain_start: u16,
+    gain_end: u16,
+    repeat_count: u16,
+) -> Vec<ControlStep> {
+    let mut pattern = Vec::new();
+    for &range in ranges {
+        for &pulse in pulse_lengths {
+            for &rez in rez_boosts {
+                for &rot in rotation_speeds {
+                    for &interp in interpolations {
+                        for gain in gain_start..=gain_end {
+                            pattern.push(ControlStep {
+                                range,
+                                gain,
+                                pulse_length: pulse,
+                                rez_boost: rez,
+                                rotation_speed: rot,
+                                interpolation: interp,
+                                repeat: repeat_count,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pattern
+}
