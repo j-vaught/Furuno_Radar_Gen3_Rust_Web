@@ -6,7 +6,7 @@
 #
 # Uses only tcpdump (no tshark/wireshark needed)
 
-set -euo pipefail
+set -uo pipefail
 
 PCAP="${1:?Usage: $0 <pcap_file>}"
 
