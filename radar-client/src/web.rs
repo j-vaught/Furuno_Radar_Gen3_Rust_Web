@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex, RwLock};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 use std::thread;
@@ -27,6 +27,10 @@ pub struct AppState {
     connected: AtomicBool,
     recording: AtomicBool,
     record_dir: RwLock<String>,
+    rotation_count: AtomicU64,
+    pattern_stop: AtomicBool,
+    pattern_running: AtomicBool,
+    pattern_status: RwLock<String>,
     host_ip: Ipv4Addr,
 }
 
@@ -56,6 +60,10 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         connected: AtomicBool::new(connected),
         recording: AtomicBool::new(false),
         record_dir: RwLock::new(String::new()),
+        rotation_count: AtomicU64::new(0),
+        pattern_stop: AtomicBool::new(false),
+        pattern_running: AtomicBool::new(false),
+        pattern_status: RwLock::new(String::new()),
         host_ip,
     });
 
@@ -95,12 +103,13 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         .route("/newest_png", get(handle_newest_png))
         .route("/newest_trail", get(handle_newest_png))
         .route("/newest_detection", get(handle_newest_png))
-        // Pattern stubs
-        .route("/run_pattern", get(handle_pattern_stub))
-        .route("/stop_pattern", get(handle_pattern_stub))
-        .route("/run_pattern_queue", get(handle_pattern_stub))
-        .route("/begin_calibration", get(handle_pattern_stub))
-        .route("/run_ramp_pattern", get(handle_pattern_stub))
+        // Pattern execution
+        .route("/run_pattern", get(handle_run_pattern))
+        .route("/stop_pattern", get(handle_stop_pattern))
+        .route("/run_pattern_queue", axum::routing::post(handle_run_pattern_queue))
+        .route("/pattern_status", get(handle_pattern_status))
+        .route("/begin_calibration", get(handle_run_pattern))
+        .route("/run_ramp_pattern", get(handle_run_pattern))
         // Static files
         .fallback_service(ServeDir::new(web_dir))
         .with_state(state);
@@ -169,6 +178,7 @@ fn echo_listener(state: Arc<AppState>) {
                             }
 
                         }
+                        state.rotation_count.fetch_add(1, Ordering::Relaxed);
                         spokes.clear();
                     }
                 }
@@ -775,8 +785,293 @@ async fn handle_stub() -> String {
     "OK".into()
 }
 
-async fn handle_pattern_stub() -> String {
-    "Pattern queue not yet implemented in Rust backend. Use CLI calibrate mode.".into()
+// --- Pattern execution ---
+
+#[derive(Deserialize)]
+struct PatternParams {
+    steps: String,
+    repeat: Option<i32>,
+}
+
+#[derive(Deserialize)]
+struct PatternQueuePayload {
+    payload: String,
+}
+
+fn parse_pattern_steps(steps_str: &str) -> Result<Vec<protocol::ControlStep>, String> {
+    let mut steps = Vec::new();
+    for (i, part) in steps_str.split(';').enumerate() {
+        let part = part.trim();
+        if part.is_empty() { continue; }
+        let fields: Vec<&str> = part.split(',').collect();
+        if fields.len() < 7 {
+            return Err(format!("Step {} has {} fields, need 7 (range,gain,pulse,rezboost,speed,interp,repeat)", i + 1, fields.len()));
+        }
+        let parse = |idx: usize, name: &str| -> Result<u16, String> {
+            fields[idx].trim().parse::<u16>().map_err(|_| format!("Step {}: invalid {}: '{}'", i + 1, name, fields[idx].trim()))
+        };
+        steps.push(protocol::ControlStep {
+            range: parse(0, "range")?,
+            gain: parse(1, "gain")?,
+            pulse_length: parse(2, "pulse")?,
+            rez_boost: parse(3, "rezboost")?,
+            rotation_speed: parse(4, "speed")?,
+            interpolation: parse(5, "interp")?,
+            repeat: parse(6, "repeat")?,
+        });
+    }
+    if steps.is_empty() {
+        return Err("No valid steps found".into());
+    }
+    Ok(steps)
+}
+
+fn execute_pattern(state: Arc<AppState>, steps: Vec<protocol::ControlStep>, loop_count: i32) {
+    state.pattern_running.store(true, Ordering::Relaxed);
+    state.pattern_stop.store(false, Ordering::Relaxed);
+
+    let total_steps = steps.len();
+    let loop_label = if loop_count < 0 { "infinite".to_string() } else { loop_count.to_string() };
+
+    let mut iteration = 0u32;
+    loop {
+        iteration += 1;
+        if loop_count >= 0 && iteration > loop_count as u32 {
+            break;
+        }
+
+        let iter_label = if loop_count < 0 {
+            format!("loop {iteration} (infinite)")
+        } else {
+            format!("loop {iteration}/{loop_label}")
+        };
+
+        let mut prev_step: Option<&protocol::ControlStep> = None;
+
+        for (step_idx, step) in steps.iter().enumerate() {
+            if state.pattern_stop.load(Ordering::Relaxed) {
+                if let Ok(mut status) = state.pattern_status.write() {
+                    *status = "Stopped by user".into();
+                }
+                state.pattern_running.store(false, Ordering::Relaxed);
+                return;
+            }
+
+            if let Ok(mut status) = state.pattern_status.write() {
+                *status = format!("{iter_label} | step {}/{total_steps} | range={} gain={} pulse={} rez={} speed={} interp={} | waiting {} rotations",
+                    step_idx + 1, step.range, step.gain, step.pulse_length,
+                    step.rez_boost, step.rotation_speed, step.interpolation, step.repeat);
+            }
+
+            // Send commands for changed parameters
+            let cmds = step.commands_vs(prev_step);
+            if !cmds.is_empty() {
+                if let Ok(mut conn) = state.conn.lock() {
+                    for cmd in &cmds {
+                        let _ = conn.send_and_read_ack(cmd, "$N", Duration::from_secs(3));
+                    }
+                }
+                // Brief settle time after config change
+                thread::sleep(Duration::from_millis(300));
+            }
+
+            // Wait for the specified number of rotations
+            let start_rot = state.rotation_count.load(Ordering::Relaxed);
+            let target_rot = start_rot + step.repeat as u64;
+
+            loop {
+                if state.pattern_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let current = state.rotation_count.load(Ordering::Relaxed);
+                if current >= target_rot {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+
+            prev_step = Some(step);
+        }
+    }
+
+    if let Ok(mut status) = state.pattern_status.write() {
+        *status = format!("Complete ({total_steps} steps x {loop_label} loops)");
+    }
+    state.pattern_running.store(false, Ordering::Relaxed);
+}
+
+async fn handle_run_pattern(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<PatternParams>,
+) -> String {
+    if !state.connected.load(Ordering::Relaxed) {
+        return "Not connected to radar".into();
+    }
+    if state.pattern_running.load(Ordering::Relaxed) {
+        return "Pattern already running. Stop it first.".into();
+    }
+
+    let steps = match parse_pattern_steps(&params.steps) {
+        Ok(s) => s,
+        Err(e) => return format!("Invalid pattern: {e}"),
+    };
+
+    let repeat = params.repeat.unwrap_or(1);
+    let num_steps = steps.len();
+    let loop_label = if repeat < 0 { "infinite".to_string() } else { repeat.to_string() };
+
+    let st = state.clone();
+    thread::spawn(move || execute_pattern(st, steps, repeat));
+
+    format!("Pattern started: {num_steps} steps, repeat={loop_label}")
+}
+
+async fn handle_stop_pattern(
+    State(state): State<Arc<AppState>>,
+) -> String {
+    if !state.pattern_running.load(Ordering::Relaxed) {
+        return "No pattern running".into();
+    }
+    state.pattern_stop.store(true, Ordering::Relaxed);
+    "Stop signal sent".into()
+}
+
+async fn handle_run_pattern_queue(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Form(form): axum::extract::Form<PatternQueuePayload>,
+) -> String {
+    if !state.connected.load(Ordering::Relaxed) {
+        return "Not connected to radar".into();
+    }
+    if state.pattern_running.load(Ordering::Relaxed) {
+        return "Pattern already running. Stop it first.".into();
+    }
+
+    // Parse payload: "repeat1:base64(steps1),repeat2:base64(steps2),..."
+    let mut queue: Vec<(i32, Vec<protocol::ControlStep>)> = Vec::new();
+
+    for (i, item) in form.payload.split(',').enumerate() {
+        let parts: Vec<&str> = item.splitn(2, ':').collect();
+        if parts.len() != 2 {
+            return format!("Queue item {} invalid format (expected repeat:base64)", i + 1);
+        }
+        let repeat: i32 = match parts[0].parse() {
+            Ok(r) => r,
+            Err(_) => return format!("Queue item {}: invalid repeat count '{}'", i + 1, parts[0]),
+        };
+        let decoded = match base64_decode(parts[1]) {
+            Some(s) => s,
+            None => return format!("Queue item {}: invalid base64", i + 1),
+        };
+        let steps = match parse_pattern_steps(&decoded) {
+            Ok(s) => s,
+            Err(e) => return format!("Queue item {}: {e}", i + 1),
+        };
+        queue.push((repeat, steps));
+    }
+
+    if queue.is_empty() {
+        return "Empty queue".into();
+    }
+
+    let num_items = queue.len();
+    let st = state.clone();
+    thread::spawn(move || {
+        st.pattern_running.store(true, Ordering::Relaxed);
+        st.pattern_stop.store(false, Ordering::Relaxed);
+
+        for (qi, (repeat, steps)) in queue.iter().enumerate() {
+            if st.pattern_stop.load(Ordering::Relaxed) {
+                break;
+            }
+            if let Ok(mut status) = st.pattern_status.write() {
+                *status = format!("Queue {}/{num_items}: starting ({} steps, repeat={})", qi + 1, steps.len(), repeat);
+            }
+            // Reuse execute_pattern logic inline since we need to check stop between queue items
+            let total_steps = steps.len();
+            let mut iteration = 0u32;
+            'outer: loop {
+                iteration += 1;
+                if *repeat >= 0 && iteration > *repeat as u32 {
+                    break;
+                }
+                let mut prev_step: Option<&protocol::ControlStep> = None;
+                for (step_idx, step) in steps.iter().enumerate() {
+                    if st.pattern_stop.load(Ordering::Relaxed) {
+                        break 'outer;
+                    }
+                    if let Ok(mut status) = st.pattern_status.write() {
+                        *status = format!("Queue {}/{num_items} | loop {iteration} | step {}/{total_steps} | r={} g={} p={} rez={} spd={} interp={} | {} rots",
+                            qi + 1, step_idx + 1, step.range, step.gain, step.pulse_length,
+                            step.rez_boost, step.rotation_speed, step.interpolation, step.repeat);
+                    }
+                    let cmds = step.commands_vs(prev_step);
+                    if !cmds.is_empty() {
+                        if let Ok(mut conn) = st.conn.lock() {
+                            for cmd in &cmds {
+                                let _ = conn.send_and_read_ack(cmd, "$N", Duration::from_secs(3));
+                            }
+                        }
+                        thread::sleep(Duration::from_millis(300));
+                    }
+                    let start_rot = st.rotation_count.load(Ordering::Relaxed);
+                    let target_rot = start_rot + step.repeat as u64;
+                    loop {
+                        if st.pattern_stop.load(Ordering::Relaxed) { break; }
+                        if st.rotation_count.load(Ordering::Relaxed) >= target_rot { break; }
+                        thread::sleep(Duration::from_millis(50));
+                    }
+                    prev_step = Some(step);
+                }
+            }
+        }
+
+        if let Ok(mut status) = st.pattern_status.write() {
+            if st.pattern_stop.load(Ordering::Relaxed) {
+                *status = "Queue stopped by user".into();
+            } else {
+                *status = format!("Queue complete ({num_items} patterns)");
+            }
+        }
+        st.pattern_running.store(false, Ordering::Relaxed);
+    });
+
+    format!("Queue started: {num_items} patterns")
+}
+
+async fn handle_pattern_status(
+    State(state): State<Arc<AppState>>,
+) -> String {
+    let running = state.pattern_running.load(Ordering::Relaxed);
+    let status = state.pattern_status.read().map(|s| s.clone()).unwrap_or_default();
+    if running {
+        format!("running|{status}")
+    } else if status.is_empty() {
+        "idle|No pattern has been run".into()
+    } else {
+        format!("idle|{status}")
+    }
+}
+
+fn base64_decode(input: &str) -> Option<String> {
+    // Simple base64 decode (standard alphabet + padding)
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let input = input.trim();
+    let mut buf: Vec<u8> = Vec::with_capacity(input.len() * 3 / 4);
+    let mut accum: u32 = 0;
+    let mut bits: u32 = 0;
+    for &b in input.as_bytes() {
+        if b == b'=' { break; }
+        let val = TABLE.iter().position(|&c| c == b)? as u32;
+        accum = (accum << 6) | val;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            buf.push((accum >> bits) as u8);
+            accum &= (1 << bits) - 1;
+        }
+    }
+    String::from_utf8(buf).ok()
 }
 
 // --- System metrics reader ---
