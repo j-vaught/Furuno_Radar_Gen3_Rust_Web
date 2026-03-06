@@ -1,20 +1,19 @@
 #[allow(dead_code)]
 mod protocol;
+mod connection;
 
-use std::io::{BufRead, Read, Write};
-use std::net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
-use std::os::unix::io::AsRawFd;
+use std::io::BufRead;
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
 use protocol::{Spoke, decode_echo_packet, parse_echo_metadata};
+use connection::{RadarConnection, create_echo_socket};
 
 const RADAR_IP: Ipv4Addr = Ipv4Addr::new(172, 31, 3, 226);
 const HOST_IP: Ipv4Addr = Ipv4Addr::new(172, 31, 1, 100);
 
-const PORT_DISCOVERY: u16 = protocol::FURUNO_BEACON_PORT;
-const PORT_CONTROL: u16 = protocol::FURUNO_CONTROL_PORT;
-const PORT_ECHO: u16 = protocol::FURUNO_DATA_PORT;
 const MULTICAST_ECHO: Ipv4Addr = protocol::FURUNO_MULTICAST;
+const PORT_ECHO: u16 = protocol::FURUNO_DATA_PORT;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -51,182 +50,79 @@ fn main() {
 }
 
 fn run_handshake() {
-    println!("=== Phase 1: Authentication (TCP {RADAR_IP}:{PORT_DISCOVERY}) ===");
-    let auth_ok = do_auth();
-    if !auth_ok {
-        eprintln!("Auth failed, aborting");
+    println!("=== Handshake: Auth + Control + Init ===\n");
+
+    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    if let Err(e) = conn.connect_full() {
+        eprintln!("Handshake failed: {e}");
         std::process::exit(1);
     }
-    println!();
 
-    println!("=== Phase 2: Control Channel (TCP {RADAR_IP}:{PORT_CONTROL}) ===");
-    let mut ctrl = do_connect_control();
-
-    // Read initial messages from radar
-    println!("Reading initial radar messages...");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
-
-    // Send firmware version query
-    println!("\nSending firmware query: $R96,,,,,,,");
-    send_command(&mut ctrl, "$R96,,,,,,,\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
-
-    // Send a subset of init register reads (the important ones)
-    println!("\nSending init register reads...");
-    let init_cmds = [
-        "$R61,0,0,0\r\n",
-        "$R62,0,0,0,0\r\n",
-        "$R66\r\n",
-        "$R69,0,0,0,0,0,0\r\n",
-        "$R6D,0,0,0,0,0,0\r\n",
-        "$R6E,0,0,0,0,0,0,0\r\n",
-        "$R83,0,0\r\n",
-        "$R85,0\r\n",
-        "$R86,0\r\n",
-        "$R87,0\r\n",
-        "$REE,0,0\r\n",
-    ];
-    for cmd in &init_cmds {
-        ctrl.write_all(cmd.as_bytes()).expect("write failed");
+    if let Some(fw) = &conn.firmware {
+        println!("\nFirmware: {fw}");
     }
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
-
     println!("\n=== Handshake complete! Control channel is open. ===");
 }
 
 fn run_tx_on() {
-    println!("=== TX ON ===");
-    let auth_ok = do_auth();
-    if !auth_ok {
-        eprintln!("Auth failed");
+    println!("=== TX ON ===\n");
+
+    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    if let Err(e) = conn.connect_full() {
+        eprintln!("Init failed: {e}");
         std::process::exit(1);
     }
 
-    let mut ctrl = do_connect_control();
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
+    if let Err(e) = conn.tx_on() {
+        eprintln!("TX ON failed: {e}");
+        std::process::exit(1);
+    }
 
-    // Send firmware query (required part of init)
-    send_command(&mut ctrl, "$R96,,,,,,,\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
-
-    // TX ON = $S69,2,0,0,0,0,0 (state 2 = transmit)
-    println!("Sending TX ON: $S69,2,0,0,0,0,0");
-    send_command(&mut ctrl, "$S69,2,0,0,0,0,0\r\n");
-    send_command(&mut ctrl, "$S85,0\r\n");
-    send_command(&mut ctrl, "$S86,0\r\n");
-    send_command(&mut ctrl, "$S87,0\r\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
-
-    println!("TX ON sent. Echoes should start flowing on multicast 239.255.0.2:10024");
+    println!("Echoes should start flowing on multicast 239.255.0.2:10024");
 }
 
 fn run_tx_off() {
-    println!("=== TX OFF (Standby) ===");
-    let auth_ok = do_auth();
-    if !auth_ok {
-        eprintln!("Auth failed");
+    println!("=== TX OFF (Standby) ===\n");
+
+    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    if let Err(e) = conn.connect_full() {
+        eprintln!("Init failed: {e}");
         std::process::exit(1);
     }
 
-    let mut ctrl = do_connect_control();
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
+    if let Err(e) = conn.tx_off() {
+        eprintln!("TX OFF failed: {e}");
+        std::process::exit(1);
+    }
 
-    send_command(&mut ctrl, "$R96,,,,,,,\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
-
-    // TX OFF = $S69,1,0,0,0,0,0 (state 1 = standby)
-    println!("Sending TX OFF: $S69,1,0,0,0,0,0");
-    send_command(&mut ctrl, "$S69,1,0,0,0,0,0\r\n");
-    send_command(&mut ctrl, "$S85,0\r\n");
-    send_command(&mut ctrl, "$S86,0\r\n");
-    send_command(&mut ctrl, "$S87,0\r\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
-
-    println!("TX OFF sent. Echoes should stop.");
+    println!("Echoes should stop.");
 }
 
 fn run_full() {
     println!("=== Full Test: Handshake + TX ON + Echo Listen ===\n");
 
-    // Phase 1: Auth
-    let auth_ok = do_auth();
-    if !auth_ok {
-        eprintln!("Auth failed");
+    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    if let Err(e) = conn.connect_full() {
+        eprintln!("Init failed: {e}");
         std::process::exit(1);
     }
-    println!();
 
-    // Phase 2: Control channel
-    let mut ctrl = do_connect_control();
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
-
-    // Firmware query
-    send_command(&mut ctrl, "$R96,,,,,,,\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
-
-    // Send all init register reads (the full set the C++ app sends)
-    println!("Sending full init register reads...");
-    let init_cmds = include_str!("init_commands.txt");
-    for line in init_cmds.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        ctrl.write_all(line.as_bytes()).expect("write failed");
-        ctrl.write_all(b"\r\n").expect("write failed");
+    if let Err(e) = conn.tx_on() {
+        eprintln!("TX ON failed: {e}");
+        std::process::exit(1);
     }
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
-    println!("Init complete.\n");
 
-    // TX ON
-    println!("Sending TX ON...");
-    send_command(&mut ctrl, "$S69,2,0,0,0,0,0\r\n");
-    send_command(&mut ctrl, "$S85,0\r\n");
-    send_command(&mut ctrl, "$S86,0\r\n");
-    send_command(&mut ctrl, "$S87,0\r\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
-    println!("TX ON sent.\n");
+    conn.set_nonblocking(true).unwrap();
 
-    // Set the control socket to non-blocking for the keepalive loop
-    ctrl.set_nonblocking(true).unwrap();
-
-    // Phase 3: Listen for echo data while keeping control alive
-    println!("=== Listening for echo packets ===");
-    let sock = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::DGRAM,
-        Some(socket2::Protocol::UDP),
-    )
-    .expect("socket");
-    sock.set_reuse_address(true).unwrap();
-    unsafe {
-        let optval: i32 = 1;
-        libc::setsockopt(
-            sock.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_REUSEPORT,
-            &optval as *const _ as *const libc::c_void,
-            std::mem::size_of::<i32>() as u32,
-        );
-    }
-    sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into())
-        .expect("bind");
-    let echo_socket: UdpSocket = sock.into();
-    echo_socket
-        .join_multicast_v4(&MULTICAST_ECHO, &HOST_IP)
-        .expect("join multicast");
-    echo_socket
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .unwrap();
+    // Listen for echo data while keeping control alive
+    println!("\n=== Listening for echo packets ===");
+    let echo_socket = create_echo_socket(HOST_IP);
 
     let mut buf = [0u8; 2048];
-    let mut ctrl_buf = [0u8; 4096];
     let mut echo_count = 0u64;
-    let mut keepalive_timer = std::time::Instant::now();
     let start = std::time::Instant::now();
 
     loop {
-        // Try to receive echo
         match echo_socket.recv_from(&mut buf) {
             Ok((len, src)) => {
                 echo_count += 1;
@@ -245,7 +141,6 @@ fn run_full() {
                 }
             }
             Err(_) => {
-                // Timeout - check if we should send keepalive or exit
                 if echo_count == 0 && start.elapsed() > Duration::from_secs(30) {
                     eprintln!("No echo packets after 30s. Radar may need more init.");
                     break;
@@ -261,61 +156,20 @@ fn run_full() {
             }
         }
 
-        // Drain control channel messages
-        match ctrl.read(&mut ctrl_buf) {
-            Ok(n) if n > 0 => {
-                // Silently consume control messages
-            }
-            _ => {}
-        }
-
-        // Send keepalive every 5 seconds
-        if keepalive_timer.elapsed() > Duration::from_secs(5) {
-            let _ = ctrl.write_all(protocol::KEEPALIVE);
-            keepalive_timer = std::time::Instant::now();
-        }
+        conn.drain_control();
+        let _ = conn.send_keepalive();
     }
 
     // TX OFF before exit
-    ctrl.set_nonblocking(false).unwrap();
-    ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
-    let _ = ctrl.write_all(b"$S69,1,0,0,0,0,0\r\n");
-    println!("TX OFF sent. Done.");
+    conn.set_nonblocking(false).unwrap();
+    let _ = conn.tx_off();
 }
 
 fn run_echo_listen() {
     println!("=== Echo Listener (UDP multicast {MULTICAST_ECHO}:{PORT_ECHO}) ===");
 
-    // Use socket2 for SO_REUSEADDR/SO_REUSEPORT before bind
-    let sock = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::DGRAM,
-        Some(socket2::Protocol::UDP),
-    )
-    .expect("Failed to create socket");
-    sock.set_reuse_address(true).unwrap();
-    // SO_REUSEPORT
-    unsafe {
-        let optval: i32 = 1;
-        libc::setsockopt(
-            sock.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_REUSEPORT,
-            &optval as *const _ as *const libc::c_void,
-            std::mem::size_of::<i32>() as u32,
-        );
-    }
-    sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into())
-        .expect("Failed to bind echo socket");
-
-    let socket: UdpSocket = sock.into();
-
-    // Join multicast group
-    socket
-        .join_multicast_v4(&MULTICAST_ECHO, &HOST_IP)
-        .expect("Failed to join multicast group");
-
-    socket
+    let echo_socket = create_echo_socket(HOST_IP);
+    echo_socket
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
 
@@ -326,7 +180,7 @@ fn run_echo_listen() {
     let start = std::time::Instant::now();
 
     loop {
-        match socket.recv_from(&mut buf) {
+        match echo_socket.recv_from(&mut buf) {
             Ok((len, src)) => {
                 count += 1;
                 if count <= 10 || count % 100 == 0 {
@@ -363,18 +217,13 @@ fn run_echo_listen() {
 }
 
 fn run_command_test() {
-    println!("=== Command Test ===");
-    let auth_ok = do_auth();
-    if !auth_ok {
-        eprintln!("Auth failed");
+    println!("=== Command Test ===\n");
+
+    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    if let Err(e) = conn.connect_full() {
+        eprintln!("Init failed: {e}");
         std::process::exit(1);
     }
-
-    let mut ctrl = do_connect_control();
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
-
-    send_command(&mut ctrl, "$R96,,,,,,,\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
 
     let commands = [
         ("Range=6 (2NM)", "$S62,6,0,0,0\r\n"),
@@ -389,132 +238,23 @@ fn run_command_test() {
 
     for (desc, cmd) in &commands {
         println!("\nSending: {desc} -> {}", cmd.trim());
-        send_command(&mut ctrl, cmd);
-        read_and_print_messages(&mut ctrl, Duration::from_secs(2));
+        conn.send_command(cmd).expect("send failed");
+        let responses = conn.read_responses(Duration::from_secs(2));
+        for resp in &responses {
+            match resp {
+                connection::RadarResponse::RegisterValue { id, values } => {
+                    println!("  <- $N{id},{}", values.join(","));
+                }
+                connection::RadarResponse::Keepalive => println!("  <- [keepalive]"),
+                _ => {}
+            }
+        }
     }
 
     println!("\n=== Command test complete ===");
 }
 
-// --- Low-level functions ---
-
-fn do_auth() -> bool {
-    let addr = SocketAddr::from((RADAR_IP, PORT_DISCOVERY));
-    print!("Connecting to {addr}... ");
-
-    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
-        Ok(s) => {
-            println!("connected");
-            s
-        }
-        Err(e) => {
-            eprintln!("FAILED: {e}");
-            return false;
-        }
-    };
-
-    stream
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .unwrap();
-
-    print!("Sending auth payload ({} bytes)... ", protocol::AUTH_PAYLOAD.len());
-    stream.write_all(protocol::AUTH_PAYLOAD).expect("write failed");
-    println!("sent");
-
-    // Read response (expect 12 bytes: 09 01 00 0C 01 00 00 00 00 64 00 00)
-    let mut resp = [0u8; 64];
-    match stream.read(&mut resp) {
-        Ok(n) => {
-            print!("Response ({n} bytes): ");
-            for b in &resp[..n] {
-                print!("{b:02X} ");
-            }
-            println!();
-
-            if n >= 10 && resp[0] == 0x09 && resp[1] == 0x01 && resp[9] == 0x64 {
-                println!("Auth SUCCESS (status=0x64=100)");
-                true
-            } else {
-                eprintln!("Auth FAILED: unexpected response");
-                false
-            }
-        }
-        Err(e) => {
-            eprintln!("No response: {e}");
-            false
-        }
-    }
-}
-
-fn do_connect_control() -> TcpStream {
-    let addr = SocketAddr::from((RADAR_IP, PORT_CONTROL));
-    print!("Connecting to {addr}... ");
-
-    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).expect("connect failed");
-    println!("connected");
-
-    stream
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .unwrap();
-    stream.set_nodelay(true).unwrap();
-
-    stream
-}
-
-fn send_command(stream: &mut TcpStream, cmd: &str) {
-    stream.write_all(cmd.as_bytes()).expect("write failed");
-}
-
-fn read_and_print_messages(stream: &mut TcpStream, timeout: Duration) {
-    stream.set_read_timeout(Some(timeout)).unwrap();
-    let mut buf = [0u8; 4096];
-
-    loop {
-        match stream.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => {
-                let data = &buf[..n];
-                // Check if it's the binary keepalive (00 00 00 08 00 00 00 00)
-                if n == 8 && data == protocol::KEEPALIVE {
-                    println!("  <- [keepalive]");
-                    continue;
-                }
-
-                // Try to parse as ASCII messages
-                let text = String::from_utf8_lossy(data);
-                let mut handled = false;
-                for line in text.split('\n') {
-                    let line = line.trim_end_matches('\r');
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if line.starts_with('$') {
-                        println!("  <- {line}");
-                        handled = true;
-                    }
-                }
-
-                if !handled {
-                    // Binary or unknown data
-                    print!("  <- [bin:{n}] ");
-                    for b in data.iter().take(32.min(n)) {
-                        print!("{b:02X} ");
-                    }
-                    if n > 32 {
-                        print!("...");
-                    }
-                    println!();
-                }
-
-                // Shorter timeout for subsequent reads
-                stream
-                    .set_read_timeout(Some(Duration::from_millis(200)))
-                    .unwrap();
-            }
-            Err(_) => break,
-        }
-    }
-}
+// --- Helper structs ---
 
 struct EchoHeader {
     sequence: u16,
@@ -555,9 +295,7 @@ fn elapsed_str(start: std::time::Instant) -> String {
     format!("{secs:6.1}s")
 }
 
-// Echo decoding is now in protocol.rs (supports all 4 encoding types)
-
-// --- Command Test Harness ---
+// --- Echo Stats ---
 
 struct EchoStats {
     num_spokes: usize,
@@ -578,19 +316,16 @@ impl std::fmt::Display for EchoStats {
     }
 }
 
-/// Collect echo data for one full rotation and compute statistics.
 fn collect_rotation_stats(
     echo_socket: &UdpSocket,
-    ctrl: &mut TcpStream,
+    conn: &mut RadarConnection,
     prev_spoke_data: &mut Vec<u8>,
 ) -> (Vec<Spoke>, EchoStats) {
     let mut buf = [0u8; 2048];
-    let mut ctrl_buf = [0u8; 4096];
     let mut spokes: Vec<Spoke> = Vec::new();
     let mut prev_az: Option<u16> = None;
     let mut rotation_count = 0u32;
     let start = std::time::Instant::now();
-    let mut keepalive_timer = std::time::Instant::now();
     let mut last_sweep_len: u32 = 0;
     let mut last_encoding: u8 = 0;
     let mut last_sweep_count: u32 = 0;
@@ -601,7 +336,6 @@ fn collect_rotation_stats(
                 if len < 20 { continue; }
                 let az = u16::from_le_bytes([buf[16], buf[17]]);
 
-                // Parse metadata for stats
                 let meta = parse_echo_metadata(&buf[..len]);
                 last_sweep_len = meta.sweep_len;
                 last_encoding = meta.encoding;
@@ -629,14 +363,10 @@ fn collect_rotation_stats(
                 }
             }
         }
-        let _ = ctrl.read(&mut ctrl_buf);
-        if keepalive_timer.elapsed() > Duration::from_secs(5) {
-            let _ = ctrl.write_all(protocol::KEEPALIVE);
-            keepalive_timer = std::time::Instant::now();
-        }
+        conn.drain_control();
+        let _ = conn.send_keepalive();
     }
 
-    // Compute stats
     let num_spokes = spokes.len();
     let mut total_amp: u64 = 0;
     let mut total_bins: u64 = 0;
@@ -672,91 +402,25 @@ fn collect_rotation_stats(
     (spokes, stats)
 }
 
-/// Send a command and wait for the $N acknowledgment on the control channel.
-fn send_and_wait_ack(ctrl: &mut TcpStream, cmd: &str, expected_prefix: &str) -> bool {
-    ctrl.set_nonblocking(false).unwrap();
-    ctrl.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-    ctrl.write_all(cmd.as_bytes()).expect("write failed");
-
-    let mut buf = [0u8; 4096];
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut all_responses = String::new();
-
-    while std::time::Instant::now() < deadline {
-        match ctrl.read(&mut buf) {
-            Ok(n) if n > 0 => {
-                let text = String::from_utf8_lossy(&buf[..n]);
-                all_responses.push_str(&text);
-                for line in all_responses.lines() {
-                    if line.starts_with(expected_prefix) {
-                        println!("    ACK: {line}");
-                        ctrl.set_nonblocking(true).unwrap();
-                        return true;
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    eprintln!("    No ACK for {expected_prefix} (got: {})", all_responses.trim().replace('\n', " | "));
-    ctrl.set_nonblocking(true).unwrap();
-    false
-}
-
 fn run_test_commands() {
     println!("=== Command Verification Test ===\n");
 
-    // Boot up
-    let auth_ok = do_auth();
-    if !auth_ok { eprintln!("Auth failed"); std::process::exit(1); }
-    println!();
-
-    let mut ctrl = do_connect_control();
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
-    send_command(&mut ctrl, "$R96,,,,,,,\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
-
-    let init_cmds = include_str!("init_commands.txt");
-    for line in init_cmds.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
-        ctrl.write_all(line.as_bytes()).expect("write failed");
-        ctrl.write_all(b"\r\n").expect("write failed");
+    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    if let Err(e) = conn.connect_full() {
+        eprintln!("Init failed: {e}");
+        std::process::exit(1);
     }
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
 
-    // TX ON
-    println!("Sending TX ON...");
-    send_command(&mut ctrl, "$S69,2,0,0,0,0,0\r\n");
-    send_command(&mut ctrl, "$S85,0\r\n");
-    send_command(&mut ctrl, "$S86,0\r\n");
-    send_command(&mut ctrl, "$S87,0\r\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
-    ctrl.set_nonblocking(true).unwrap();
+    if let Err(e) = conn.tx_on() {
+        eprintln!("TX ON failed: {e}");
+        std::process::exit(1);
+    }
+    conn.set_nonblocking(true).unwrap();
 
-    // Setup echo socket
-    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).expect("socket");
-    sock.set_reuse_address(true).unwrap();
-    unsafe {
-        let optval: i32 = 1;
-        libc::setsockopt(sock.as_raw_fd(), libc::SOL_SOCKET, libc::SO_REUSEPORT,
-            &optval as *const _ as *const libc::c_void, std::mem::size_of::<i32>() as u32);
-    }
-    let bind_result = sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into());
-    if bind_result.is_err() {
-        sock.bind(&SocketAddr::from((MULTICAST_ECHO, PORT_ECHO)).into()).expect("bind");
-    }
-    let echo_socket: UdpSocket = sock.into();
-    echo_socket.join_multicast_v4(&MULTICAST_ECHO, &HOST_IP).expect("join multicast");
-    echo_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    let echo_socket = create_echo_socket(HOST_IP);
 
     let mut prev_spoke_data: Vec<u8> = Vec::new();
 
-    // ============================================================
-    // Test sequence: each test = (description, command, ack_prefix, expected_behavior)
-    // ============================================================
-
-    // Each test pair: setup -> capture BEFORE -> apply command -> capture AFTER -> restore
     struct DynTestPair {
         name: &'static str,
         setup_cmd: String,
@@ -919,7 +583,6 @@ fn run_test_commands() {
             restore_ack: "$N84,",
             label: "ant_height",
         },
-        // --- New features from protocol.rs ---
         DynTestPair {
             name: "Bird mode: off -> high",
             setup_cmd: protocol::cmd_bird_mode(0),
@@ -968,18 +631,15 @@ fn run_test_commands() {
         println!("TEST {}/{}: {}", i + 1, tests.len(), test.name);
         println!("{}", "=".repeat(70));
 
-        // --- SETUP: explicitly set the "before" state ---
         if !test.setup_cmd.is_empty() {
             println!("  SETUP: {}", test.setup_cmd.trim());
-            send_and_wait_ack(&mut ctrl, &test.setup_cmd, test.setup_ack);
+            let _ = conn.send_and_wait_ack(&test.setup_cmd, test.setup_ack, Duration::from_secs(5));
             std::thread::sleep(Duration::from_millis(500));
-            // Drain one rotation for setup to settle
-            let _ = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+            let _ = collect_rotation_stats(&echo_socket, &mut conn, &mut prev_spoke_data);
         }
 
-        // --- BEFORE: capture with current settings ---
         println!("  [BEFORE] Collecting echo data...");
-        let (before_spokes, before_stats) = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+        let (before_spokes, before_stats) = collect_rotation_stats(&echo_socket, &mut conn, &mut prev_spoke_data);
         println!("  [BEFORE] {before_stats}");
 
         if !before_spokes.is_empty() {
@@ -989,16 +649,14 @@ fn run_test_commands() {
             println!("  [BEFORE] {png_path}");
         }
 
-        // --- APPLY command ---
         println!("  CMD: {}", test.apply_cmd.trim());
-        let ack_ok = send_and_wait_ack(&mut ctrl, &test.apply_cmd, test.apply_ack);
+        let ack_ok = conn.send_and_wait_ack(&test.apply_cmd, test.apply_ack, Duration::from_secs(5))
+            .unwrap_or(false);
 
-        // Wait for settings to take effect
         std::thread::sleep(Duration::from_millis(500));
 
-        // --- AFTER: capture with new settings ---
         println!("  [AFTER]  Collecting echo data...");
-        let (after_spokes, after_stats) = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+        let (after_spokes, after_stats) = collect_rotation_stats(&echo_socket, &mut conn, &mut prev_spoke_data);
         println!("  [AFTER]  {after_stats}");
 
         if !after_spokes.is_empty() {
@@ -1015,20 +673,15 @@ fn run_test_commands() {
             after_stats: format!("{after_stats}"),
         });
 
-        // --- RESTORE to defaults ---
         println!("  RESTORE: {}", test.restore_cmd.trim());
-        send_and_wait_ack(&mut ctrl, &test.restore_cmd, test.restore_ack);
+        let _ = conn.send_and_wait_ack(&test.restore_cmd, test.restore_ack, Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(500));
-        // Drain one rotation to let restored settings settle
-        {
-            let _ = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
-        }
+        let _ = collect_rotation_stats(&echo_socket, &mut conn, &mut prev_spoke_data);
     }
 
     // TX OFF
-    ctrl.set_nonblocking(false).unwrap();
-    ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
-    let _ = ctrl.write_all(b"$S69,1,0,0,0,0,0\r\n");
+    conn.set_nonblocking(false).unwrap();
+    let _ = conn.tx_off();
 
     // Print summary table
     println!("\n\n{}", "=".repeat(120));
@@ -1041,7 +694,7 @@ fn run_test_commands() {
         println!("    AFTER:  {}", r.after_stats);
     }
     println!("\n{}", "-".repeat(120));
-    println!("TX OFF sent. Done.");
+    println!("Done.");
 }
 
 // --- PPI Rendering ---
@@ -1053,47 +706,26 @@ const PPI_ANGLE_TICKS: f64 = 8192.0;
 fn run_dump_raw(count: usize) {
     println!("=== Raw Packet Dump ({count} packets) ===\n");
 
-    let auth_ok = do_auth();
-    if !auth_ok { eprintln!("Auth failed"); std::process::exit(1); }
-
-    let mut ctrl = do_connect_control();
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
-    send_command(&mut ctrl, "$R96,,,,,,,\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
-
-    let init_cmds = include_str!("init_commands.txt");
-    for line in init_cmds.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
-        ctrl.write_all(line.as_bytes()).expect("write failed");
-        ctrl.write_all(b"\r\n").expect("write failed");
+    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    if let Err(e) = conn.connect_full() {
+        eprintln!("Init failed: {e}");
+        std::process::exit(1);
     }
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
 
-    send_command(&mut ctrl, "$S69,2,0,0,0,0,0\r\n");
-    send_command(&mut ctrl, "$S85,0\r\n");
-    send_command(&mut ctrl, "$S86,0\r\n");
-    send_command(&mut ctrl, "$S87,0\r\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
-    ctrl.set_nonblocking(true).unwrap();
-
-    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).expect("socket");
-    sock.set_reuse_address(true).unwrap();
-    unsafe {
-        let optval: i32 = 1;
-        libc::setsockopt(sock.as_raw_fd(), libc::SOL_SOCKET, libc::SO_REUSEPORT, &optval as *const _ as *const libc::c_void, std::mem::size_of::<i32>() as u32);
+    if let Err(e) = conn.tx_on() {
+        eprintln!("TX ON failed: {e}");
+        std::process::exit(1);
     }
-    sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into()).expect("bind");
-    let echo_socket: UdpSocket = sock.into();
-    echo_socket.join_multicast_v4(&MULTICAST_ECHO, &HOST_IP).expect("join multicast");
+    conn.set_nonblocking(true).unwrap();
+
+    let echo_socket = create_echo_socket(HOST_IP);
     echo_socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
 
     let mut buf = [0u8; 2048];
-    let mut ctrl_buf = [0u8; 4096];
 
     // Wait for first rotation wrap to get diverse azimuths
     let mut prev_az_dump: Option<u16> = None;
-    let mut rotation_seen = false;
+    let rotation_seen;
     loop {
         match echo_socket.recv_from(&mut buf) {
             Ok((len, _)) if len >= 18 => {
@@ -1108,7 +740,7 @@ fn run_dump_raw(count: usize) {
             }
             _ => {}
         }
-        let _ = ctrl.read(&mut ctrl_buf);
+        conn.drain_control();
     }
     if rotation_seen {
         println!("First rotation seen, now capturing diverse azimuths...\n");
@@ -1121,17 +753,12 @@ fn run_dump_raw(count: usize) {
                 let az_deg = az_raw as f64 / 8192.0 * 360.0;
                 println!("--- Packet #{pkt_num} | len={len} | az_raw={az_raw} ({az_deg:.1}) ---");
 
-                // Print header
                 print!("  HDR: ");
                 for i in 0..18.min(len) { print!("{:02X} ", buf[i]); }
                 println!();
 
-                // Split body into sections and analyze each
                 let body = &buf[18..len];
-                let az_lo = buf[16];
-                let az_hi = buf[17];
 
-                // Find section boundaries using xx yy 00 00 pattern
                 let mut boundaries: Vec<usize> = Vec::new();
                 let mut i = 3;
                 while i + 3 < body.len() {
@@ -1149,7 +776,6 @@ fn run_dump_raw(count: usize) {
                     i += 1;
                 }
 
-                // Analyze first 3 sections
                 let section_starts: Vec<usize> = std::iter::once(3_usize)
                     .chain(boundaries.iter().copied())
                     .collect();
@@ -1165,30 +791,27 @@ fn run_dump_raw(count: usize) {
                     if start >= end { continue; }
                     let sec = &body[start..end];
 
-                    // Skip 00 00 prefix
                     let data = if sec.len() > 2 && sec[0] == 0 && sec[1] == 0 {
                         &sec[2..]
                     } else { sec };
 
-                    // Test run-length hypothesis: byte%4==0 is amplitude,
-                    // byte%4!=0 is run-length count = (byte >> 2) + 1
                     let mut total_bins = 0u32;
                     let mut j = 0;
                     let mut detail = String::new();
                     while j < data.len() {
                         let b = data[j];
                         if (b == 0xFE || b == 0xFD) && j + 1 < data.len() {
-                            let count = (b >> 2) + 1;
-                            total_bins += count as u32;
-                            detail += &format!("{:02X}({})×{:02X} ", b, count, data[j+1]);
+                            let count_val = (b >> 2) + 1;
+                            total_bins += count_val as u32;
+                            detail += &format!("{:02X}({})x{:02X} ", b, count_val, data[j+1]);
                             j += 2;
                         } else if b % 4 == 0 {
                             total_bins += 1;
                             j += 1;
                         } else {
-                            let count = (b >> 2) + 1;
-                            total_bins += count as u32;
-                            detail += &format!("[{:02X}={}bins] ", b, count);
+                            let count_val = (b >> 2) + 1;
+                            total_bins += count_val as u32;
+                            detail += &format!("[{:02X}={}bins] ", b, count_val);
                             j += 1;
                         }
                     }
@@ -1206,14 +829,12 @@ fn run_dump_raw(count: usize) {
                 break;
             }
         }
-        let _ = ctrl.read(&mut ctrl_buf);
+        conn.drain_control();
     }
 
     // TX OFF
-    ctrl.set_nonblocking(false).unwrap();
-    ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
-    let _ = ctrl.write_all(b"$S69,1,0,0,0,0,0\r\n");
-    println!("TX OFF sent. Done.");
+    conn.set_nonblocking(false).unwrap();
+    let _ = conn.tx_off();
 }
 
 fn run_render_csv(csv_path: &str, out_path: &str) {
@@ -1225,7 +846,7 @@ fn run_render_csv(csv_path: &str, out_path: &str) {
 
     for (i, line) in reader.lines().enumerate() {
         let line = line.expect("read line");
-        if i == 0 { continue; } // skip header
+        if i == 0 { continue; }
         let fields: Vec<&str> = line.split(',').collect();
         if fields.len() < 6 { continue; }
         let angle: u16 = fields[4].parse().unwrap_or(0);
@@ -1244,70 +865,26 @@ fn run_render_csv(csv_path: &str, out_path: &str) {
 fn run_render_live(out_path: &str) {
     println!("=== Live PPI Capture ===\n");
 
-    let auth_ok = do_auth();
-    if !auth_ok {
-        eprintln!("Auth failed");
+    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    if let Err(e) = conn.connect_full() {
+        eprintln!("Init failed: {e}");
         std::process::exit(1);
     }
 
-    let mut ctrl = do_connect_control();
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
-
-    send_command(&mut ctrl, "$R96,,,,,,,\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
-
-    let init_cmds = include_str!("init_commands.txt");
-    for line in init_cmds.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
-        ctrl.write_all(line.as_bytes()).expect("write failed");
-        ctrl.write_all(b"\r\n").expect("write failed");
+    if let Err(e) = conn.tx_on() {
+        eprintln!("TX ON failed: {e}");
+        std::process::exit(1);
     }
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
+    conn.set_nonblocking(true).unwrap();
 
-    println!("Sending TX ON...");
-    send_command(&mut ctrl, "$S69,2,0,0,0,0,0\r\n");
-    send_command(&mut ctrl, "$S85,0\r\n");
-    send_command(&mut ctrl, "$S86,0\r\n");
-    send_command(&mut ctrl, "$S87,0\r\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
-
-    ctrl.set_nonblocking(true).unwrap();
-
-    // Join multicast for echo data
-    let sock = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::DGRAM,
-        Some(socket2::Protocol::UDP),
-    ).expect("socket");
-    sock.set_reuse_address(true).unwrap();
-    unsafe {
-        let optval: i32 = 1;
-        libc::setsockopt(
-            sock.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_REUSEPORT,
-            &optval as *const _ as *const libc::c_void,
-            std::mem::size_of::<i32>() as u32,
-        );
-    }
-    // Try binding to INADDR_ANY first; fall back to multicast address if C++ app holds the port
-    let bind_result = sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into());
-    if bind_result.is_err() {
-        sock.bind(&SocketAddr::from((MULTICAST_ECHO, PORT_ECHO)).into()).expect("bind multicast addr");
-    }
-    let echo_socket: UdpSocket = sock.into();
-    echo_socket.join_multicast_v4(&MULTICAST_ECHO, &HOST_IP).expect("join multicast");
-    echo_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    let echo_socket = create_echo_socket(HOST_IP);
 
     // Collect one full rotation of echo data
     let mut buf = [0u8; 2048];
-    let mut ctrl_buf = [0u8; 4096];
     let mut spokes: Vec<Spoke> = Vec::new();
     let mut prev_spoke_data: Vec<u8> = Vec::new();
     let mut prev_az: Option<u16> = None;
     let mut rotation_count = 0u32;
-    let mut keepalive_timer = std::time::Instant::now();
     let start = std::time::Instant::now();
 
     println!("Collecting echo data for 2 full rotations...");
@@ -1318,7 +895,6 @@ fn run_render_live(out_path: &str) {
                 if len < 20 { continue; }
                 let az = u16::from_le_bytes([buf[16], buf[17]]);
 
-                // Detect rotation wrap
                 if let Some(prev) = prev_az {
                     if az < prev.saturating_sub(1000) {
                         rotation_count += 1;
@@ -1330,11 +906,9 @@ fn run_render_live(out_path: &str) {
                 }
                 prev_az = Some(az);
 
-                // Always decode to keep prev_spoke_data updated
                 if rotation_count >= 1 {
                     decode_echo_packet(&buf[..len], &mut prev_spoke_data, &mut spokes);
                 } else {
-                    // Pre-rotation: decode but discard spokes (keep prev_spoke state)
                     let mut discard = Vec::new();
                     decode_echo_packet(&buf[..len], &mut prev_spoke_data, &mut discard);
                 }
@@ -1347,20 +921,13 @@ fn run_render_live(out_path: &str) {
             }
         }
 
-        // Drain control channel
-        let _ = ctrl.read(&mut ctrl_buf);
-
-        // Keepalive
-        if keepalive_timer.elapsed() > Duration::from_secs(5) {
-            let _ = ctrl.write_all(protocol::KEEPALIVE);
-            keepalive_timer = std::time::Instant::now();
-        }
+        conn.drain_control();
+        let _ = conn.send_keepalive();
     }
 
     // TX OFF
-    ctrl.set_nonblocking(false).unwrap();
-    ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
-    let _ = ctrl.write_all(b"$S69,1,0,0,0,0,0\r\n");
+    conn.set_nonblocking(false).unwrap();
+    let _ = conn.tx_off();
 
     if spokes.is_empty() {
         eprintln!("No spokes collected");
@@ -1371,7 +938,6 @@ fn run_render_live(out_path: &str) {
     let pixels = render_ppi(&spokes);
     write_png(out_path, &pixels, PPI_SIZE, PPI_SIZE);
     println!("Saved: {out_path}");
-    println!("TX OFF sent. Done.");
 }
 
 fn render_ppi(spokes: &[Spoke]) -> Vec<u8> {
@@ -1379,38 +945,31 @@ fn render_ppi(spokes: &[Spoke]) -> Vec<u8> {
     let center = size as f64 / 2.0;
     let max_r = center - 2.0;
 
-    // RGBA image: black background
     let mut pixels = vec![0u8; size * size * 4];
 
-    // Set alpha to 255 for all pixels (opaque black background)
     for y in 0..size {
         for x in 0..size {
             let idx = (y * size + x) * 4;
-            pixels[idx + 3] = 255; // alpha
+            pixels[idx + 3] = 255;
         }
     }
 
-    // Sort spokes by angle
     let mut sorted: Vec<(f64, &[u8])> = spokes.iter()
         .map(|s| (s.angle_ticks as f64 / PPI_ANGLE_TICKS * std::f64::consts::TAU, s.echo.as_slice()))
         .collect();
     sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-    // For each pixel, find the nearest spoke and range bin
     for y in 0..size {
         for x in 0..size {
             let dx = x as f64 - center;
-            let dy = -(y as f64 - center); // Y-up for proper orientation (north=up)
+            let dy = -(y as f64 - center);
             let r = (dx * dx + dy * dy).sqrt();
             if r < 1.0 || r > max_r { continue; }
 
-            // Angle: 0=north, clockwise
             let mut angle = dy.atan2(dx);
-            // Convert from math angle (east=0, CCW) to radar angle (north=0, CW)
             angle = std::f64::consts::FRAC_PI_2 - angle;
             if angle < 0.0 { angle += std::f64::consts::TAU; }
 
-            // Find nearest spoke
             let spoke_idx = match sorted.binary_search_by(|s| s.0.partial_cmp(&angle).unwrap()) {
                 Ok(i) => i,
                 Err(i) => {
@@ -1434,26 +993,22 @@ fn render_ppi(spokes: &[Spoke]) -> Vec<u8> {
             let amplitude = echo[bin];
             if amplitude == 0 { continue; }
 
-            // Display values are 0-63 (wire values >> 2)
             let intensity = (amplitude as u32 * 255 / 63).min(255) as u8;
             let idx = (y * size + x) * 4;
-            // Garnet-to-white color scheme based on brand colors
-            pixels[idx] = intensity;                                    // R
-            pixels[idx + 1] = (intensity as u32 * 180 / 255) as u8;   // G (warm tint)
-            pixels[idx + 2] = (intensity as u32 * 20 / 255) as u8;    // B
+            pixels[idx] = intensity;
+            pixels[idx + 1] = (intensity as u32 * 180 / 255) as u8;
+            pixels[idx + 2] = (intensity as u32 * 20 / 255) as u8;
         }
     }
 
-    // Draw crosshairs
     let c = center as usize;
     for i in 0..size {
         let idx = (c * size + i) * 4;
-        pixels[idx] = 54; pixels[idx + 1] = 54; pixels[idx + 2] = 54; // 90% black
+        pixels[idx] = 54; pixels[idx + 1] = 54; pixels[idx + 2] = 54;
         let idx = (i * size + c) * 4;
         pixels[idx] = 54; pixels[idx + 1] = 54; pixels[idx + 2] = 54;
     }
 
-    // Draw range rings
     for ring in 1..=4 {
         let ring_r = max_r * ring as f64 / 4.0;
         let steps = (ring_r * std::f64::consts::TAU) as usize;
@@ -1484,14 +1039,13 @@ fn write_png(path: &str, pixels: &[u8], width: usize, height: usize) {
 // --- Calibration Pattern Runner ---
 
 fn run_calibrate(args: &[String]) {
-    // Usage: calibrate [--ranges 0,6,10] [--gains 0-255] [--pulses 0,5] [--repeats 2]
     let mut ranges: Vec<u16> = vec![0, 6, 10];
     let mut gain_start: u16 = 0;
     let mut gain_end: u16 = 255;
     let mut pulses: Vec<u16> = vec![0];
     let mut rez_boosts: Vec<u16> = vec![0];
     let mut rot_speeds: Vec<u16> = vec![0];
-    let mut interpolations: Vec<u16> = vec![5]; // OFF by default
+    let mut interpolations: Vec<u16> = vec![5];
     let mut repeat_count: u16 = 2;
     let mut output_dir = String::from("calibration_output");
 
@@ -1558,47 +1112,22 @@ fn run_calibrate(args: &[String]) {
     println!("  Output: {}", output_dir);
     println!();
 
-    // Boot up
-    let auth_ok = do_auth();
-    if !auth_ok { eprintln!("Auth failed"); std::process::exit(1); }
-
-    let mut ctrl = do_connect_control();
-    read_and_print_messages(&mut ctrl, Duration::from_secs(2));
-    send_command(&mut ctrl, "$R96,,,,,,,\n");
-    read_and_print_messages(&mut ctrl, Duration::from_secs(1));
-
-    let init_cmds = include_str!("init_commands.txt");
-    for line in init_cmds.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
-        ctrl.write_all(line.as_bytes()).expect("write failed");
-        ctrl.write_all(b"\r\n").expect("write failed");
+    let mut conn = RadarConnection::new(RADAR_IP, HOST_IP);
+    if let Err(e) = conn.connect_full() {
+        eprintln!("Init failed: {e}");
+        std::process::exit(1);
     }
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
 
     // TX ON
-    send_command(&mut ctrl, &protocol::cmd_tx_state(2));
-    send_command(&mut ctrl, &protocol::cmd_near_stc(0));
-    send_command(&mut ctrl, &protocol::cmd_middle_stc(0));
-    send_command(&mut ctrl, &protocol::cmd_far_stc(0));
-    read_and_print_messages(&mut ctrl, Duration::from_secs(3));
-    ctrl.set_nonblocking(true).unwrap();
+    conn.send_command(&protocol::cmd_tx_state(2)).unwrap();
+    conn.send_command(&protocol::cmd_near_stc(0)).unwrap();
+    conn.send_command(&protocol::cmd_middle_stc(0)).unwrap();
+    conn.send_command(&protocol::cmd_far_stc(0)).unwrap();
+    let _ = conn.read_responses(Duration::from_secs(3));
+    conn.set_nonblocking(true).unwrap();
+    conn.state = connection::ConnectionState::Transmitting;
 
-    // Setup echo socket
-    let sock = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::DGRAM, Some(socket2::Protocol::UDP)).expect("socket");
-    sock.set_reuse_address(true).unwrap();
-    unsafe {
-        let optval: i32 = 1;
-        libc::setsockopt(sock.as_raw_fd(), libc::SOL_SOCKET, libc::SO_REUSEPORT,
-            &optval as *const _ as *const libc::c_void, std::mem::size_of::<i32>() as u32);
-    }
-    let bind_result = sock.bind(&SocketAddr::from((Ipv4Addr::UNSPECIFIED, PORT_ECHO)).into());
-    if bind_result.is_err() {
-        sock.bind(&SocketAddr::from((MULTICAST_ECHO, PORT_ECHO)).into()).expect("bind");
-    }
-    let echo_socket: UdpSocket = sock.into();
-    echo_socket.join_multicast_v4(&MULTICAST_ECHO, &HOST_IP).expect("join multicast");
-    echo_socket.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+    let echo_socket = create_echo_socket(HOST_IP);
 
     let mut prev_spoke_data: Vec<u8> = Vec::new();
 
@@ -1613,25 +1142,20 @@ fn run_calibrate(args: &[String]) {
             step.range, step.gain, step.pulse_length,
             step.rez_boost, step.rotation_speed, step.interpolation);
 
-        // Send only changed commands
         let cmds = step.commands_vs(prev_step);
         for cmd in &cmds {
-            send_and_wait_ack(&mut ctrl, cmd, "$N");
+            let _ = conn.send_and_wait_ack(cmd, "$N", Duration::from_secs(5));
         }
 
-        // Wait for setting change, then collect rotations
         if !cmds.is_empty() {
             std::thread::sleep(Duration::from_millis(300));
-            // Drain a rotation to let settings settle
-            let _ = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+            let _ = collect_rotation_stats(&echo_socket, &mut conn, &mut prev_spoke_data);
         }
 
-        // Collect the requested number of rotations
         for rot in 0..step.repeat {
-            let (spokes, stats) = collect_rotation_stats(&echo_socket, &mut ctrl, &mut prev_spoke_data);
+            let (spokes, stats) = collect_rotation_stats(&echo_socket, &mut conn, &mut prev_spoke_data);
             println!("  rot {}/{}: {}", rot + 1, step.repeat, stats);
 
-            // Save PPI image
             if !spokes.is_empty() {
                 let png_path = format!("{}/step{:05}_r{}_g{}_p{}_rot{}.png",
                     output_dir, step_idx, step.range, step.gain, step.pulse_length, rot);
@@ -1644,10 +1168,9 @@ fn run_calibrate(args: &[String]) {
     }
 
     // TX OFF
-    ctrl.set_nonblocking(false).unwrap();
-    ctrl.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
-    let _ = ctrl.write_all(protocol::cmd_tx_state(1).as_bytes());
-    println!("\nCalibration complete. {} steps executed. TX OFF.", total_steps);
+    conn.set_nonblocking(false).unwrap();
+    let _ = conn.tx_off();
+    println!("\nCalibration complete. {} steps executed.", total_steps);
 }
 
 // --- Auto-Discovery ---
@@ -1662,15 +1185,12 @@ fn run_discover() {
 
     let dest = SocketAddr::from((protocol::FURUNO_BEACON_BROADCAST, protocol::FURUNO_BEACON_PORT));
 
-    // Send beacon announce
     println!("Sending beacon announce...");
     sock.send_to(&protocol::BEACON_ANNOUNCE, dest).expect("send announce");
 
-    // Send beacon request
     println!("Sending beacon request...");
     sock.send_to(&protocol::BEACON_REQUEST, dest).expect("send request");
 
-    // Listen for responses
     let mut buf = [0u8; 512];
     let start = std::time::Instant::now();
 
@@ -1690,7 +1210,6 @@ fn run_discover() {
                 if let Some(info) = protocol::parse_beacon_report(&buf[..len], src.ip().to_string().parse().unwrap_or(Ipv4Addr::UNSPECIFIED)) {
                     println!("  Radar found: {}", info);
 
-                    // Request model info
                     sock.send_to(&protocol::BEACON_REQUEST_MODEL, src).expect("send model request");
                 }
             }

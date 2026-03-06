@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket};
 use std::os::unix::io::AsRawFd;
