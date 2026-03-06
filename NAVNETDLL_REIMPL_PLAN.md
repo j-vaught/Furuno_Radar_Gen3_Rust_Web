@@ -1,380 +1,283 @@
-# NAVNETDLL Rust Reimplementation Plan
+# Furuno Radar — Rust Client Reimplementation Plan
 
-## Scope
+## Approach
 
-Replace `furuno/lib/libNAVNETDLL.so` (Furuno proprietary, aarch64 ELF, ~1.3MB, not stripped) with a from-scratch Rust `.so` that is ABI-compatible with the existing C++ codebase.
+**Goal:** Replace the proprietary `libNAVNETDLL.so` with a clean, standalone Rust library that speaks the radar's UDP protocol directly. Compile for any architecture, full control over echo data processing, no proprietary dependencies.
 
-**Key facts:**
-- **6,102 defined functions** in the binary (all GLOBAL visibility)
-- 3 public headers: `nndll.h` (1223 lines), `fectype.h` (42 lines), `lasterror.h` (59 lines)
-- Binary is **not stripped** — all symbol names intact for disassembly
-- Only imports ~164 libc functions (socket ops, string ops, file I/O, pthreads)
-- Contains a userspace **ITRON RTOS shim** (`acre_tsk`, `acre_sem`, `acre_flg`, `acre_mbf`)
-- Contains **Blowfish encryption** (`bfInitialize`, `bfEncrypt`, `bfDecrypt`, `bfDecode`)
+**Key insight:** The Furuno library is just software between our app and a radar unit on Ethernet. The radar sees UDP packets, not C function calls. We reverse engineer the wire protocol, then build a clean Rust client around it — not a pixel-perfect clone of Furuno's 6,102-function API.
 
-**Radar API surface breakdown:**
-| Module | Prefix | Count | Description |
-|--------|--------|-------|-------------|
-| Radar Commands (Set) | `RmcSet*` | 148 | Send commands to radar hardware |
-| Radar Commands (Get) | `RmcGet*` | 139 | Read radar state |
-| Radar Commands (Req) | `RmcReq*` | ~10 | Request specific data from radar |
-| Radar Module Core | `Rm*` | 67 | Echo pipeline, callbacks, guard zones, heading |
-| ARPA Target Tracking | `Rma*` | 13 | Automatic Radar Plotting Aid |
-| NAVNET Common | `Nc*` | ~200 | Network stack, NMEA, TCP/IP, servers |
-| Internal Support | misc | ~5,500+ | ITRON shim, crypto, protocol, I/O, math |
+**Validation strategy:** The existing C++ app + real Furuno .so stays intact as our reference oracle. We capture known-good traffic, then validate our Rust client produces byte-identical packets and correctly decodes the same echo data.
 
-**Important: the iceberg problem.** Our codebase directly calls ~40 functions, but each of those calls triggers a deep chain of internal functions. For example, `RmcSetRange()` likely calls into command serialization, the ITRON message queue, the network send path, and possibly Blowfish encryption — touching potentially hundreds of internal functions. The 40 "used" functions are the tip; the actual software surface being exercised is far larger.
+**What we already know (from Phase 0.1 symbol analysis):**
+- 6,102 defined functions, but the wire protocol is the only thing that matters
+- Every command follows: `RmcSet* → rmSubSet* → rmMakeCom* → NcSendRadarCommand → UDP socket`
+- 160 IRAD command IDs (0-159) define the command space
+- Internal architecture (ITRON shim, Blowfish, state tables) is Furuno overhead we skip entirely
+- Echo packets arrive via UDP, decoded by `DecodeImoEchoFormat`
+- All symbols intact (not stripped) — targeted disassembly is straightforward
 
-**Strategy: Comprehensive radar coverage, phased by testability.**
-1. Reverse engineer the full protocol and internal architecture (not just the 40 we call today)
-2. Implement ALL 148 `RmcSet*` + 139 `RmcGet*` + 67 `Rm*` + 13 `Rma*` functions = **367 radar functions**
-3. Prioritize functions that affect radar output/image (echo, gain, range, STC, pulse, clutter, ARPA)
-4. Use live radar testing to validate which functions actually change radar behavior
-5. Implement `Nc*` networking layer as needed to support the radar functions
+**Estimated total: 40-60 hours**
 
 ---
 
-## API Tiers (by impact on radar output/image)
+## Phase 0: Capture & Decode Setup (4-6 hours)
 
-### Tier 1 — Core Echo & Display (implement first, test first)
-These directly affect what you see on screen.
+### 0.1 — Packet Capture Rig (1-2 hrs)
+- Set up `tcpdump` on the radar network interface
+- Write a capture script that labels sessions (init, transmit, range-change, etc.)
+- Capture a full lifecycle with the real Furuno app:
+  - Boot → init → connect → transmit ON
+  - Range changes (multiple values)
+  - Gain changes (manual + auto)
+  - Pulse width, STC, antenna revolution changes
+  - Echo data flowing at each setting
+  - ARPA target acquisition (if available)
+  - Transmit OFF → disconnect
+- Capture the same lifecycle 2-3 times for reproducibility
+- Output: `reverse/captures/*.pcap`, `reverse/captures/session_log.md`
 
-**Echo pipeline (Rm*):**
-- `RmInitialModule`, `RmEndModule`
-- `RmSetEchoCallbackFunc`, `RmSetTileEchoCallbackFunc`, `RmSetCycleCallbackFunc`
-- `RmSetEchoInterpolationFunc`, `RmSetInterpolationSweepNum`, `RmSetEchoSweepTotal`
-- `RmSetLowLevelEcho`, `RmGetSweeps`
-- `RmSetTxEchoFormat`, `RmGetTxEchoFormat`, `RmTransmitEcho`
-- `RmInitializeImoEcho`, `RmEndImoEcho`, `DecodeImoEchoFormat`
-- `RmSetRadarEchoProcessMode`
+### 0.2 — Identify Protocol Basics from Pcaps (1-2 hrs)
+- Open pcaps in Wireshark, identify:
+  - Which ports are used (base port from `NcSetNetworkBasePortNo`)
+  - UDP vs TCP (likely UDP for commands + echo, TCP for some control)
+  - Broadcast vs unicast vs multicast
+  - Packet sizes and frequency (echo packets should be high-frequency)
+  - Any obvious framing (magic bytes, length headers)
+- Separate traffic into categories: command, echo, heartbeat/alive, NMEA, other
+- Output: `reverse/protocol_notes.md`
 
-**Image-affecting commands (RmcSet/Get*):**
-- Range: `RmcSet/GetRange`, `RmcSet/GetRange_v2`, `RmcSet/GetRangeSelect`
-- Gain: `RmcSet/GetGAIN`, `RmcSet/GetCustomGAIN`
-- Clutter: `RmcSet/GetACSEA`, `RmcSet/GetCustomACSEA`, `RmcSet/GetACRAIN`, `RmcSet/GetCustomACRAIN`
-- STC: `RmcSet/GetNearSTC`, `RmcSet/GetMiddleSTC`, `RmcSet/GetFarSTC`, `RmcSet/GetStcRange`
-- Pulse: `RmcSet/GetPulseWidth`, `RmcSet/GetPulseRange`, `RmcReqPulseWidth`
-- TX: `RmcSet/GetTxStby` (transmit/standby)
-- Display: `RmcSet/GetDispMode`, `RmcSet/GetEchoColorType`, `RmcSet/GetVideoLevel`
-- Resolution: `RmcSet/GetBearingResolutionSelect`, `RmcSet/GetHighSensitivityMode`
-- Echo processing: `RmcSet/Get2ndEchoReject`, `RmcSet/GetNextEcho`, `RmcSet/GetEchoClear`
-- Antenna: `RmcSet/GetAntennaRevolution`, `RmcSet/GetAntennaType`, `RmcSet/GetAntennaSwitch`
-
-### Tier 2 — Radar Configuration & Targeting
-These affect radar behavior but not directly the echo image.
-
-**ARPA target tracking (Rma*):**
-- `RmaInitialArpaModule`, `RmaSetArpaCallbackFunc`, `RmaDeleteArpaInfo`
-- `RmaGetArpaInfo`, `RmaGetNextArpaInfo`, `RmaGetNextArpaInfoAll`
-- `RmaGetTargetInfo`, `RmaGetNextTargetInfo`
-- `RmaGetTargetCpaTcpa`, `RmaGetTargetCpaTcpaAll`, `RmaGetTargetProximity`
-- `RmaGetJudgeInfo`, `RmaGetAnalyseInfo`
-
-**ARPA commands (RmcSet/Get*):**
-- All `RmcSet/GetArpa*` functions (~48 Set + ~45 Get)
-- Target select, acquire, cancel, lost filter, CPA/TCPA, vectors, presets
-
-**Guard zone (Rm*):**
-- `RmSetGzTargetZone`, `RmSetGzDetectLevel`, `RmSetGzDetectSize`
-- `RmSetGzJudgeType`, `RmSetGzJudgeCount`, `RmSetGzSizeTbl`
-- `RmSetGzAlarmCallbackFunc`, `RmResetGzResult`, `RmResetGuardZoneStatus`
-- All corresponding `RmGet*` guard zone functions
-
-**Navigation & heading:**
-- `RmcSet/GetHeading`, `RmcSet/GetHeadingAdjust`, `RmcSet/GetHeadingSource`
-- `RmSet/GetHeadingData`, `RmSet/GetHeadingDataDegree`, `RmSet/GetHeadingStatus`
-- `RmcSet/GetBlindSector`, `RmcSet/GetRadarPosition`
-- `RmcSet/GetDrift`, `RmcSet/GetSpeedSelect`
-
-### Tier 3 — System, Alarms, Maintenance
-Less common but needed for a complete system.
-
-- Alarms: `RmcSet/GetAlarmStatus`, `RmcSet/GetAlarmAck`, `RmcSet/GetAisAlarm`, etc.
-- Tune/calibration: `RmcSet/GetTune`, `RmcSet/GetTuneAdjust`, `RmcSet/GetTuneIndicator`
-- Hardware: `RmcSet/GetMagnetron`, `RmcSet/GetMagnetronInd`, `RmcSet/GetPM`, `RmcSet/GetPmAdjust`
-- System: `RmcSet/GetVersionNo`, `RmcSet/GetConnect`, `RmcSet/GetOnTime`, `RmcSet/GetTxTime`
-- Custom pictures: `RmcSet/GetCustomPicture`, `RmcSet/GetCustomPictureAll`, `RmcSet/GetPictureDefault`
-- Trails: `RmcSet/GetTrailMode`, `RmcSet/GetTrailProcess`, `RmcSetTrailClear`
-- IMO: `RmcSet/GetImoEchoSwitch`, `RmcSet/GetOperatorFitness`
-- Misc: `RmcSet/GetMemory`, `RmcSet/GetCustomMemory`, `RmcSet/GetNN3Command`
-
-### Tier 4 — Networking Layer (Nc*)
-The plumbing that all of the above depends on. Must be reimplemented but is protocol-level, not radar-feature-level.
-
-- Init: `fec_entry_function`, `InitialITRON`, `NcInitialNavnetCommon`, `NcBasicInitializationForModules`
-- Network config: `NcSet/GetNetworkIpAddress`, `NcSet/GetNetworkSubnetMask`, `NcSet/GetNetworkDefaultGateway`
-- Radar server: `NcInitialRadarServer`, `NcInitialRadarClient`, `NcConnectRadarServer`
-- Echo transport: `NcSetRadarEchoCallbackFunc`, `NcSetRadarTileEchoCallbackFunc`, `NcSendRadarEchoData`
-- Commands: `NcSendRadarCommand`, `NcSendRadarCommandEx`, `NcReadRadarData`
-- NMEA: `NcInitialNmea183Server`, `NcPutNmeaData`, `NcNetworkWriteNMEA0183`, etc.
-- Host management: `NcGetSensorHostCount`, `NcHostNameToIpAddr`, `NcGetAliveFlag`, etc.
-- Error: `LeClearLastAPIError`, `LeClearLastBackgroundError`, `LeGetLastError`
-- ITRON shim: `acre_tsk`, `acre_sem`, `acre_flg`, `acre_mbf`, `c_di`, `c_ei`, `c_enq`, `c_deq`
+### 0.3 — Correlate Pcaps with Source Code (1-2 hrs)
+- Read through `main.cpp` init sequence alongside the pcap timeline
+- Match each `NcSetNetworkIpAddress`, `NcInitialNavnetCommon`, `RmInitialModule` call to packets
+- Identify the init handshake: what packets are exchanged before echoes start flowing?
+- Output: annotated timeline in `reverse/protocol_notes.md`
 
 ---
 
-## Phases & Tasks
+## Phase 1: Decode the Command Protocol (6-8 hours)
 
-### Phase 0: Tooling & Reconnaissance (5-7 hours)
-
-#### 0.1 — Full Symbol Dump & Classification (2-3 hrs)
-- Run `nm -D`, `readelf -s`, `objdump -T` on the .so
-- Categorize all 6,102 functions by module prefix
-- Map every `RmcSet*`/`RmcGet*` to its corresponding `IRAD_*` command ID from `nndll.h`
-- Identify internal call chains: which internal functions support each public API
-- Build a spreadsheet/markdown mapping: symbol -> tier -> header declaration -> IRAD_* ID
-- Output: `reverse/symbols.md`
-
-#### 0.2 — Disassembly Setup (1-2 hrs)
-- Install Ghidra or radare2 (r2) on the Pi or a dev machine
-- Load the .so into the disassembler, let auto-analysis run
-- Verify symbol names resolve correctly (binary is not stripped)
-- Bookmark Tier 1 functions and their internal call targets
-- Output: disassembler project file saved to repo
-
-#### 0.3 — Packet Capture Baseline (1 hr)
-- Set up `tcpdump` or Wireshark on the network interface to the radar
-- Run the existing C++ app, capture a full init -> transmit -> echo cycle
-- Save pcaps to `reverse/captures/`
-- Note the base port number, UDP vs TCP, broadcast addresses
-- Output: `reverse/captures/baseline.pcap`, `reverse/protocol_notes.md`
-
-#### 0.4 — Live Radar API Audit (1-2 hrs)
-- Write a C++ test harness that calls every `RmcSet*` and `RmcGet*` with safe parameters
-- Log which calls succeed (return `RM_OK`) vs fail vs have no effect
-- Record which commands visibly change radar output (observe echo data changes)
-- This tells us which of the 367 radar functions are actually supported by YOUR specific radar hardware
-- Output: `reverse/api_audit_results.md`
-
----
-
-### Phase 1: Understand the Init Sequence (4-6 hours)
-
-#### 1.1 — Disassemble `fec_entry_function` + `InitialITRON` (2-3 hrs)
-- These are the entry points — understand what they set up
-- Map out global state: mutexes, thread pools, network sockets
-- Document the ITRON RTOS emulation layer (`acre_tsk`, `acre_sem`, etc.)
-- Trace what threads are spawned, what event loops are created
-- **Key question:** how many background threads, and what does each one do?
-- Output: `reverse/init_sequence.md`
-
-#### 1.2 — Disassemble `NcInitialNavnetCommon` + Network Init Chain (2-3 hrs)
-- Understand how the library configures its network stack
-- What sockets does it open? What ports? UDP broadcast?
-- Trace the flow: IP set -> common init -> NMEA server init -> radar server/client init -> ready
-- How does the Blowfish encryption layer fit in? Is it used for all packets or just licensing?
-- Cross-reference with pcap from 0.3
-- Output: `reverse/network_init.md`
-
----
-
-### Phase 2: Understand the Radar Echo Pipeline (6-8 hours)
-
-#### 2.1 — Disassemble `RmInitialModule` and the Full Echo Receive Chain (2-3 hrs)
-- How does the library register and invoke echo callbacks?
-- What threads are spawned? What's the receive loop?
-- Trace the FULL internal call chain from UDP packet arrival to user callback
-- Map every intermediate function: packet reassembly, decompression, format conversion
-- **This is the iceberg** — expect 50+ internal functions in this path
-- Output: `reverse/echo_pipeline.md`
-
-#### 2.2 — Decode the Echo Packet Format (2-3 hrs)
-- Use pcap + disassembly of `DecodeImoEchoFormat` to map byte layout
-- Document: header fields, sweep angle, heading, echo data array, lengths
-- Match against the `RadarSweepMetadata` struct from `nndll.h`
-- Understand the difference between IMO echo format and standard format
-- Document `RmSetTxEchoFormat` options (echoType, encType, txType)
-- Output: `reverse/echo_format.md`
-
-#### 2.3 — Disassemble the Tile Echo Path (1-2 hrs)
-- `RmSetTileEchoCallbackFunc` — how do tile echoes differ from sweep echoes?
-- Document the tile coordinate system (xPos, yPos, tileSize, sweepCenter)
-- Output: append to `reverse/echo_format.md`
-
-#### 2.4 — Understand Echo Interpolation Internals (1 hr)
-- `RmSetEchoInterpolationFunc`, `RmSetInterpolationSweepNum`, `RmSetEchoSweepTotal`
-- How does the library generate interpolated sweeps between real ones?
-- This directly affects image quality — need to understand the algorithm
-- Output: append to `reverse/echo_pipeline.md`
-
----
-
-### Phase 3: Understand Radar Command Protocol (6-8 hours)
-
-#### 3.1 — Disassemble the Command Send Path (2-3 hrs)
-- Pick 3-4 `RmcSet*` functions of varying complexity (e.g., `RmcSetRange`, `RmcSetGAIN`, `RmcSetArpaDispMode`)
-- Trace: function call -> command buffer build -> `NcSendRadarCommand` -> socket send
-- Document the command packet format: how IRAD_* command IDs map to wire bytes, payload layout
-- **Key question:** is there a single uniform command format, or do different commands have different wire formats?
-- Cross-reference with pcap
+### 1.1 — Disassemble `NcSendRadarCommand` (2-3 hrs)
+- This is THE function — every `RmcSet*` ends up here
+- Load .so in Ghidra/radare2, find this function
+- Determine: how is the command buffer structured before it hits the socket?
+- What header does it add? (length, source ID, destination, command type?)
+- Does it go through encryption (Blowfish) or is it plaintext?
+- Cross-reference the bytes against a pcap of a known command (e.g., range change)
 - Output: `reverse/command_format.md`
 
-#### 3.2 — Disassemble the Command Receive + State Storage Path (2-3 hrs)
-- How does the library store received radar state?
-- Is it a shared memory table indexed by IRAD_* command IDs?
-- Trace from UDP receive -> state update -> `RmcGet*` read
-- How does the command callback (`RmSetCommandCallbackFunc`) get invoked?
+### 1.2 — Disassemble 3-4 `rmMakeCom*` Functions (2-3 hrs)
+- Pick commands we actually send: `rmMakeComRange`, `rmMakeComGAIN`, `rmMakeComTxStby`
+- For each: what bytes go into the command buffer?
+- Map: IRAD_* command ID → byte position, parameter encoding (endianness, scaling)
+- Verify against pcap: do the bytes match?
 - Output: append to `reverse/command_format.md`
 
-#### 3.3 — Map ALL RmcSet/Get Functions to Wire Format (2 hrs)
-- Now that we understand the pattern, systematically document all 148 `RmcSet*` commands
-- For each: IRAD_* ID, payload byte layout, parameter encoding
-- Most will follow the same pattern — flag the ones that don't
-- Output: `reverse/command_table.md` (the "Rosetta Stone" for the whole project)
+### 1.3 — Generalize the Command Format (1-2 hrs)
+- With 3-4 decoded commands, identify the common pattern:
+  - Fixed header? Variable payload?
+  - Is the IRAD ID a single byte at a fixed offset?
+  - Are parameters always UINT16 big-endian? Or mixed?
+- Disassemble 2-3 more diverse commands to confirm the pattern holds
+- Output: `reverse/command_table.md` — the Rosetta Stone
 
 ---
 
-### Phase 4: Scaffold the Rust Crate (4-6 hours)
+## Phase 2: Decode the Echo Protocol (6-8 hours)
 
-#### 4.1 — Create the Rust Project Structure (2-3 hrs)
-- `cargo init --lib` in `rust/navnet-rs/`
-- Set `crate-type = ["cdylib"]` for .so output
-- Define `extern "C"` + `#[no_mangle]` stubs for ALL 367 radar functions + Nc* + Le* + init
-- Define Rust equivalents of `fectype.h` types, `ARPA`, `ARPA_TARGET`, `ARPA_JUDGE`, `ARPA_ANALYSE_DATA`, `RadarSweepMetadata` structs
-- Use `cbindgen` or manual FFI to ensure ABI compatibility
-- Verify it compiles to a .so with matching symbol names
-- Output: compilable skeleton crate with every export stubbed
+### 2.1 — Isolate Echo Packets in Pcap (1 hr)
+- Echo packets should be high-frequency, larger than commands, on a specific port
+- Filter and isolate them in Wireshark
+- Look for repeating structure: does every packet start with the same magic/header?
+- Note packet sizes at different range settings (longer range = more echo samples?)
+- Output: sample echo packets annotated
 
-#### 4.2 — Build System Integration (1-2 hrs)
-- Modify `scripts/build.sh` to optionally link against the Rust .so
-- Set up cross-compilation if developing on non-aarch64
-- Add a `Makefile` or `just` recipe: `build-rust` -> `cargo build --release` -> copy .so
-- Verify the C++ app loads the Rust .so without crashing (all stubs return OK codes)
-- Output: working build pipeline
+### 2.2 — Disassemble `DecodeImoEchoFormat` (2-3 hrs)
+- This is the main echo decoder
+- Map the byte layout: where is angle, heading, range, scale, sweep length, echo data?
+- Cross-reference with the `RadarSweepMetadata` struct from `nndll.h`:
+  ```c
+  INT16 angle; UINT16 heading; INT16 headingFlag;
+  INT16 radarNo; INT16 range; INT16 scale;
+  INT16 sweepLength; INT16 status;
+  ```
+- Verify against pcap echo packets
+- Output: `reverse/echo_format.md`
 
-#### 4.3 — Logging & Diagnostics Layer (1 hr)
-- Add `tracing` or `env_logger` to the Rust crate
-- Every stubbed function logs when called and with what parameters
-- This becomes a powerful diagnostic: run the real app against the stub .so to see the exact call sequence
-- Output: instrumented stub .so
+### 2.3 — Understand Echo Data Encoding (1-2 hrs)
+- After the header, what is the echo data?
+- Raw intensity values? Compressed? Run-length encoded?
+- How many bits per sample? How many samples per sweep?
+- Does this change with range or pulse width settings?
+- Output: append to `reverse/echo_format.md`
 
----
-
-### Phase 5: Implement Networking Layer (8-10 hours)
-
-#### 5.1 — Implement ITRON Shim (2-3 hrs)
-- Userspace ITRON: `acre_tsk` (create task/thread), `acre_sem` (semaphore), `acre_flg` (event flag), `acre_mbf` (mailbox/message buffer)
-- `c_di`/`c_ei` (disable/enable interrupts → mutex lock/unlock)
-- `c_enq`/`c_deq` (queue operations)
-- Map to Rust `std::thread`, `std::sync::Mutex`, `crossbeam` channels
-- Output: `rust/navnet-rs/src/itron.rs`
-
-#### 5.2 — Implement Core Network Stack (3-4 hrs)
-- `fec_entry_function` + `InitialITRON` — global state init
-- `NcSetNetworkIpAddress`, `NcSetNetworkSubnetMask`, `NcSetNetworkDefaultGateway`, `NcSetNetworkBasePortNo`
-- `NcInitialNavnetCommon` — open UDP sockets, bind ports, start receive threads
-- `NcMakeBroadcastAddress`
-- Host table management: `NcHostNameToIpAddr`, `NcGetTargetHostName`, `NcDeleteHostTableByIP`
-- Output: `rust/navnet-rs/src/network.rs`
-
-#### 5.3 — Implement Radar Server/Client Connection (2-3 hrs)
-- `NcInitialRadarServer`, `NcInitialRadarClient`, `NcConnectRadarServer`, `NcConnectRadarServerEx`
-- `NcUnconnectRadarServer`, `NcEndRadarClient`
-- `NcSendRadarCommand`, `NcSendRadarCommandEx`, `NcReadRadarData`
-- `NcSendRadarEchoData`, `NcSetRadarEchoCallbackFunc`, `NcSetRadarTileEchoCallbackFunc`
-- `NcSetRadarConnectionFunc`
-- Output: `rust/navnet-rs/src/network/radar.rs`
+### 2.4 — Understand Tile Echo Format (1-2 hrs)
+- Disassemble the tile echo callback path
+- How does tile format differ from sweep format?
+- Document the tile coordinate system
+- Output: append to `reverse/echo_format.md`
 
 ---
 
-### Phase 6: Implement Tier 1 — Core Echo & Display (8-10 hours)
+## Phase 3: Decode Init & Connection Handshake (4-6 hours)
 
-#### 6.1 — Implement Echo Receive + Callback Dispatch (3-4 hrs)
-- `RmInitialModule`, `RmEndModule`
-- `RmSetEchoCallbackFunc`, `RmSetTileEchoCallbackFunc`, `RmSetCycleCallbackFunc`
-- Receive UDP echo packets, decode header, invoke registered callbacks
-- `DecodeImoEchoFormat`, `RmInitializeImoEcho`, `RmEndImoEcho`
-- Output: `rust/navnet-rs/src/radar/echo.rs`
+### 3.1 — Disassemble `NcInitialNavnetCommon` (2-3 hrs)
+- What sockets are opened? What ports bound?
+- Is there a discovery/broadcast phase?
+- What's the host registration protocol (the FNET layer)?
+- Does the radar require a specific handshake before it starts sending echoes?
+- Cross-reference with init packets in pcap
+- Output: `reverse/init_handshake.md`
 
-#### 6.2 — Implement Echo Processing (2-3 hrs)
-- `RmSetEchoInterpolationFunc`, `RmSetInterpolationSweepNum`, `RmSetEchoSweepTotal`
-- `RmSetLowLevelEcho`, `RmSetRadarEchoProcessMode`
-- `RmGetSweeps`
-- `RmSetTxEchoFormat`, `RmGetTxEchoFormat`, `RmTransmitEcho`
-- Output: extend `echo.rs`
+### 3.2 — Disassemble `RmInitialModule` + `RmSetServerClientMode` (1-2 hrs)
+- What does "client mode" vs "server mode" mean on the wire?
+- What additional sockets/subscriptions does this set up?
+- Is there an echo subscription message sent to the radar?
+- Output: append to `reverse/init_handshake.md`
 
-#### 6.3 — Implement All Tier 1 RmcSet/Get Commands (2-3 hrs)
-- Range, Gain, Clutter (AcSea/AcRain), STC, Pulse, TxStby, Display mode
-- Echo color, video level, resolution boost, 2nd echo reject
-- Antenna revolution/type/switch
-- All the corresponding Get functions
-- These all follow the same pattern: serialize -> send command packet
-- Output: `rust/navnet-rs/src/radar/commands.rs`
-
-#### 6.4 — First Live Test: Echo + Commands (1 hr)
-- Swap in Rust .so, boot app, verify echo callbacks fire with correct data
-- Send range/gain/tx commands, verify radar responds
-- Output: test results documented
+### 3.3 — Decode the Keepalive / Alive Check (1 hr)
+- `NcGetAliveFlag`, `RmcSetAliveCheck` — what's the heartbeat protocol?
+- How often? What packet? Does the radar drop the connection without it?
+- Output: append to `reverse/init_handshake.md`
 
 ---
 
-### Phase 7: Implement Tier 2 — ARPA, Guard Zones, Navigation (6-8 hours)
+## Phase 4: Build Minimal Rust Client — Echo Receive (6-8 hours)
 
-#### 7.1 — Implement ARPA Module (3-4 hrs)
-- `RmaInitialArpaModule`, `RmaSetArpaCallbackFunc`
-- `RmaGetArpaInfo`, `RmaGetNextArpaInfo`, `RmaGetNextArpaInfoAll`
-- `RmaGetTargetInfo`, `RmaGetNextTargetInfo`, `RmaDeleteArpaInfo`
-- `RmaGetTargetCpaTcpa`, `RmaGetTargetCpaTcpaAll`, `RmaGetTargetProximity`
-- `RmaGetJudgeInfo`, `RmaGetAnalyseInfo`
-- All `RmcSet/GetArpa*` commands (~93 functions)
-- Output: `rust/navnet-rs/src/radar/arpa.rs`
+### 4.1 — Project Setup (1 hr)
+- `cargo init --lib radar-client` in project root
+- Add dependencies: `tokio`, `bytes`, `tracing`
+- Define core types: `SweepData`, `Range`, `Gain`, `RadarConfig`
+- Output: compilable empty crate
 
-#### 7.2 — Implement Guard Zones (1-2 hrs)
-- All `RmSetGz*` / `RmGetGz*` / `RmResetGz*` functions
-- `RmSetGzAlarmCallbackFunc`, `RmGetGuardZoneStatus`, `RmResetGuardZoneStatus`
-- Output: `rust/navnet-rs/src/radar/guard_zone.rs`
+### 4.2 — Implement Connection + Init Handshake (2-3 hrs)
+- Open UDP sockets on the correct ports
+- Send the init/registration packets we decoded in Phase 3
+- Send the echo subscription / "I am a client" message
+- Implement the keepalive heartbeat
+- Output: `radar-client/src/connection.rs`
 
-#### 7.3 — Implement Navigation & Heading Commands (1-2 hrs)
-- Heading, blind sector, radar position, drift, speed
-- All corresponding Set/Get pairs
+### 4.3 — Implement Echo Receive + Decode (2-3 hrs)
+- Receive echo UDP packets
+- Decode header (angle, heading, range, scale, sweep length)
+- Decode echo intensity data
+- Expose as a stream: `async fn subscribe_echoes() -> impl Stream<Item = Sweep>`
+- Output: `radar-client/src/echo.rs`
+
+### 4.4 — First Live Test: Echo Reception (1 hr)
+- Write a minimal binary that connects and prints sweep metadata
+- Compare angle/heading/range values against Furuno app output
+- **Validation:** run both apps simultaneously, diff the echo data
+- Output: test binary + results
+
+---
+
+## Phase 5: Build Rust Client — Command Sending (4-6 hours)
+
+### 5.1 — Implement Command Serialization (2-3 hrs)
+- Generic command builder: header + IRAD ID + payload
+- Implement the commands we actually use:
+  - `set_transmit(bool)` — IRAD_TXSTBY (9)
+  - `set_range(Range)` — IRAD_RANGE (2)
+  - `set_gain(Gain)` — IRAD_GAIN (3)
+  - `set_sea_clutter(SeaClutter)` — IRAD_ACSEA (4)
+  - `set_rain_clutter(RainClutter)` — IRAD_ACRAIN (5)
+  - `set_pulse_width(PulseWidth)` — IRAD_PULSEWIDTH (8)
+  - `set_stc(near, mid, far)` — IRAD_NEARSTC/MIDSTC/FARSTC (37-39)
+  - `set_antenna_speed(speed)` — IRAD_ANTREVOLUTION (41)
+  - `set_bearing_resolution(mode)` — IRAD_BEARINGRESOLUTIONSELECT (142)
+- Output: `radar-client/src/commands.rs`
+
+### 5.2 — Implement State Receive (1-2 hrs)
+- The radar sends state updates back (same format as commands, opposite direction)
+- Parse incoming state packets using the same IRAD ID mapping
+- Store current radar state in a shared struct
+- `fn get_range() -> Range`, `fn get_gain() -> Gain`, etc.
+- Output: `radar-client/src/state.rs`
+
+### 5.3 — Live Test: Command Round-Trip (1-2 hrs)
+- Send a range change from Rust, verify radar responds (echo data changes scale)
+- Send gain change, verify echo intensity changes
+- Toggle transmit on/off
+- **Validation:** capture pcap of Rust commands, diff against Furuno pcap byte-for-byte
+- Output: test results
+
+---
+
+## Phase 6: Expand Command Coverage (4-6 hours)
+
+### 6.1 — Implement All Image-Affecting Commands (2-3 hrs)
+Using the same serialization pattern, add:
+- Display mode, echo color, video level
+- 2nd echo reject, next echo, echo clear
+- Antenna type, switch, height
+- High sensitivity mode, observation mode
+- Tune, tune adjust
+- Custom gain/sea/rain per picture preset
 - Output: extend `commands.rs`
 
----
+### 6.2 — Implement ARPA Commands (1-2 hrs)
+- Target select, acquire, cancel
+- ARPA display mode, vector, CPA/TCPA
+- ARPA preset, all clear
+- Output: `radar-client/src/arpa.rs`
 
-### Phase 8: Implement Tier 3 — System, Alarms, Maintenance (4-6 hours)
-
-#### 8.1 — Alarms & Tune (2-3 hrs)
-- Alarm status/ack, AIS alarm, tune/adjust/indicator
-- Magnetron, PM adjust, hardware monitoring
-
-#### 8.2 — Trails, IMO, Custom Pictures, Misc (2-3 hrs)
-- Trail mode/process/clear
-- IMO echo switch, operator fitness
-- Custom picture/memory, NN3 command
-- Version, connect, on-time, tx-time
+### 6.3 — Implement Guard Zone Commands (1 hr)
+- Set/get guard zone parameters
+- Guard zone alarm detection
+- Output: `radar-client/src/guard_zone.rs`
 
 ---
 
-### Phase 9: Implement Nc* Extended APIs (4-6 hours)
+## Phase 7: Implement ARPA Target Receive (3-4 hours)
 
-#### 9.1 — NMEA 0183 (2-3 hrs)
-- `NcInitialNmea183Server`, `NcPutNmeaData`, `NcNetworkWriteNMEA0183`, `NcNetworkReadNMEA0183`
-- NMEA SP, NMEA SP WIFI, NMEA F (heading/heave/wind/roll-pitch)
-- NMEA 2000
+### 7.1 — Decode ARPA Packet Format (1-2 hrs)
+- Capture ARPA target data from pcap (need a target in radar view)
+- Disassemble `RmaGetArpaInfo` / `RmaGetTargetInfo` to understand the receive format
+- Cross-reference with `ARPA`, `ARPA_TARGET`, `ARPA_JUDGE` structs from `nndll.h`
+- Output: append to `reverse/protocol_notes.md`
 
-#### 9.2 — System, Database, Keyboard, Relay, TCP/IP (2-3 hrs)
-- `NcInitialSystemServer`, `NcConnectSystemServer`, `NcSendSystemCommand`
-- Database, settings, keyboard, relay, MC, CIF, GMM, log, MCU
+### 7.2 — Implement ARPA Target Stream (1-2 hrs)
+- Parse incoming ARPA packets
+- Expose as stream: `async fn subscribe_targets() -> impl Stream<Item = ArpaTarget>`
+- Output: extend `radar-client/src/arpa.rs`
 
 ---
 
-### Phase 10: Integration Testing & Validation (4-6 hours)
+## Phase 8: Rewrite Application Layer (6-8 hours)
 
-#### 10.1 — Full Lifecycle Test (2-3 hrs)
-- Boot with Rust .so, init, connect to radar, receive echoes, send commands
-- Compare behavior against original .so side by side
-- Validate every Tier 1 and Tier 2 function against live radar
+### 8.1 — Port main.cpp Init to Rust Client (1-2 hrs)
+- Replace the Furuno init sequence with `RadarConnection::connect()`
+- Replace echo callback with the Rust echo stream
+- Verify identical behavior
 
-#### 10.2 — Comprehensive Command Audit (1-2 hrs)
-- Run the API audit harness from Phase 0.4 against the Rust .so
-- Compare results to the original .so results
-- Every function that worked on the original must work identically on Rust
+### 8.2 — Port web_server.cpp Controls (2-3 hrs)
+- Replace all `Furuno::RmcSet*` / `Furuno::RmcGet*` calls with Rust client methods
+- The web server endpoints stay the same, just the backend calls change
 
-#### 10.3 — Stress & Edge Cases (1-2 hrs)
-- Radar disconnect/reconnect
-- Invalid parameters
-- Multiple rapid command changes (pattern_control.cpp sweep patterns)
-- Long-duration stability test
+### 8.3 — Port pattern_control.cpp (1-2 hrs)
+- Replace pattern sweep logic to use Rust client commands
+- Verify pattern cycling works identically
+
+### 8.4 — Remove Furuno Dependency (1 hr)
+- Remove `furuno/lib/libNAVNETDLL.so` from the link step
+- Update `scripts/build.sh`
+- Verify clean build with zero Furuno dependencies
+- Output: `libNAVNETDLL.so` is no longer needed
+
+---
+
+## Phase 9: Integration Testing & Hardening (3-4 hours)
+
+### 9.1 — Full A/B Comparison (1-2 hrs)
+- Run Furuno-backed app and Rust-backed app side by side
+- Compare echo data, command responses, state reads
+- Diff pcaps between the two
+
+### 9.2 — Edge Cases & Stability (1-2 hrs)
+- Radar power cycle during operation
+- Network disconnect/reconnect
+- Rapid command changes (pattern sweep)
+- Long-duration stability (hours)
 
 ---
 
@@ -382,55 +285,55 @@ The plumbing that all of the above depends on. Must be reimplemented but is prot
 
 | Phase | Description | Est. Hours |
 |-------|-------------|-----------|
-| 0 | Tooling & Recon + Live API Audit | 5-7 |
-| 1 | Init Sequence RE | 4-6 |
-| 2 | Echo Pipeline RE | 6-8 |
-| 3 | Command Protocol RE | 6-8 |
-| 4 | Rust Scaffold (ALL 367+ functions) | 4-6 |
-| 5 | Networking Layer Impl | 8-10 |
-| 6 | Tier 1: Core Echo & Display | 8-10 |
-| 7 | Tier 2: ARPA, Guard Zones, Nav | 6-8 |
-| 8 | Tier 3: System, Alarms, Maint | 4-6 |
-| 9 | Nc* Extended APIs | 4-6 |
-| 10 | Integration Testing | 4-6 |
-| **Total** | | **59-81 hrs** |
+| 0 | Capture & decode setup | 4-6 |
+| 1 | Decode command protocol | 6-8 |
+| 2 | Decode echo protocol | 6-8 |
+| 3 | Decode init handshake | 4-6 |
+| 4 | Rust client — echo receive | 6-8 |
+| 5 | Rust client — commands | 4-6 |
+| 6 | Expand command coverage | 4-6 |
+| 7 | ARPA target receive | 3-4 |
+| 8 | Rewrite app layer | 6-8 |
+| 9 | Integration testing | 3-4 |
+| **Total** | | **46-64 hrs** |
 
 ---
 
-## File Structure (planned)
+## Project Structure
 
 ```
 RADAR_web/
-  reverse/                        # Reverse engineering notes & artifacts
-    symbols.md                    # Full symbol classification (6,102 functions)
-    api_audit_results.md          # Live radar function test results
-    init_sequence.md              # Init flow documentation
-    network_init.md               # Network setup documentation
-    echo_pipeline.md              # Full echo receive chain (50+ internal funcs)
-    echo_format.md                # Echo packet format (sweep + tile)
-    command_format.md             # Command send/receive protocol
-    command_table.md              # ALL 148 RmcSet commands: IRAD ID, wire format, params
-    protocol_notes.md             # General protocol observations
-    captures/                     # Packet captures
-  rust/
-    navnet-rs/
-      Cargo.toml
-      src/
-        lib.rs                    # All extern "C" exports (367+ functions)
-        types.rs                  # fectype.h equivalents, ARPA, RadarSweepMetadata structs
-        init.rs                   # fec_entry_function, InitialITRON
-        itron.rs                  # ITRON RTOS shim (tasks, semaphores, flags, mailboxes)
-        error.rs                  # Le* error functions
-        network/
-          mod.rs                  # Nc* core network stack
-          radar.rs                # Radar server/client connection
-          nmea.rs                 # NMEA 0183/2000 servers
-          system.rs               # System/DB/Key/Relay/TCP servers
-        radar/
-          mod.rs
-          echo.rs                 # Echo receive, decode, interpolation, callbacks
-          commands.rs             # ALL RmcSet/Get commands (287 functions)
-          arpa.rs                 # ARPA module (Rma* + RmcSet/GetArpa*, 106 functions)
-          guard_zone.rs           # Guard zone (RmSetGz/GetGz*, ~20 functions)
-          discovery.rs            # Sensor host discovery, connection status
+  reverse/                        # RE artifacts (already started)
+    symbols.md                    # Symbol classification (done)
+    exports.tsv                   # Machine-readable symbols (done)
+    all_functions.tsv             # All 6,102 functions (done)
+    protocol_notes.md             # Protocol observations
+    command_format.md             # Command packet structure
+    command_table.md              # IRAD ID -> wire format mapping
+    echo_format.md                # Echo packet structure
+    init_handshake.md             # Init/connection sequence
+    captures/                     # Pcap files
+      session_log.md              # Capture session descriptions
+  radar-client/                   # The clean Rust library
+    Cargo.toml
+    src/
+      lib.rs                      # Public API
+      connection.rs               # UDP socket management, init, keepalive
+      echo.rs                     # Echo packet decode, sweep stream
+      commands.rs                 # Command serialization + state receive
+      arpa.rs                     # ARPA target tracking
+      guard_zone.rs               # Guard zone management
+      protocol/
+        mod.rs                    # Packet framing, header format
+        wire.rs                   # Low-level byte serialization
+      types.rs                    # Range, Gain, Sweep, ArpaTarget, etc.
+      error.rs                    # Error types
+  main/                           # Existing C++ app (rewritten in Phase 8)
+  furuno/                         # Kept as reference oracle until Phase 9
 ```
+
+---
+
+## What We Keep from the Old Plan
+
+Everything in `reverse/` carries forward — the symbol classification, IRAD command mapping, internal architecture notes, and function listings are directly useful for targeted disassembly in Phases 1-3. The key insight that `RmcSet → rmSubSet → rmMakeCom → NcSendRadarCommand` is the chain tells us exactly which functions to disassemble to extract the wire format.
