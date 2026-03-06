@@ -309,14 +309,26 @@ pub fn cmd_gain(auto: bool, value: u16) -> String {
     build_command("63", &[auto as i32, value as i32, 0, 80, 0])
 }
 
-/// Sea clutter (A/C SEA): mode 0=manual, 1=auto. value=0-255.
-pub fn cmd_sea_clutter(auto: bool, value: u16) -> String {
-    build_command("64", &[auto as i32, value as i32, 50, 0, 0, 0])
+/// Sea clutter (A/C SEA): status 0=manual, 1=auto. value=0-255.
+/// auto_value: auto threshold (used when status=1).
+/// sea_mode: 0=Advanced, 1=Coastal.
+pub fn cmd_sea_clutter(status: bool, value: u16) -> String {
+    cmd_sea_clutter_full(status, value, 50, 0)
 }
 
-/// Rain clutter (A/C RAIN): mode 0=manual, 1=auto. value=0-255.
-pub fn cmd_rain_clutter(auto: bool, value: u16) -> String {
-    build_command("65", &[auto as i32, value as i32, 0, 0, 0, 0])
+pub fn cmd_sea_clutter_full(status: bool, manual: u16, auto_val: u16, sea_mode: u16) -> String {
+    build_command("64", &[status as i32, manual as i32, auto_val as i32, sea_mode as i32, 0, 0])
+}
+
+/// Rain clutter (A/C RAIN): status 0=manual, 1=auto. value=0-255.
+/// ftc_mode: 0=OFF, 1=FTC-1, 2=FTC-2.
+/// rain_mode: 0=Calm, 1=Moderate, 2=Rough.
+pub fn cmd_rain_clutter(status: bool, value: u16) -> String {
+    cmd_rain_clutter_full(status, value, 0, 0, 0)
+}
+
+pub fn cmd_rain_clutter_full(status: bool, manual: u16, auto_val: u16, ftc_mode: u16, rain_mode: u16) -> String {
+    build_command("65", &[status as i32, manual as i32, auto_val as i32, ftc_mode as i32, rain_mode as i32, 0])
 }
 
 /// Pulse width: 0=S1, 1=S2, 2=M1, 3=M2, 4=M3, 5=L. range_index=wire index.
@@ -414,6 +426,75 @@ pub fn cmd_doppler(mode: u16) -> String {
 /// Antenna revolution: speed 0=LO, 1=HI, 2=AUTO; hi_rpm 0=off, 1=on
 pub fn cmd_antenna_revolution(speed: u16, hi_rpm: bool) -> String {
     build_command("89", &[speed as i32, hi_rpm as i32])
+}
+
+// --- Query (Read) Commands ---
+// These send $R requests to read current radar state.
+// The radar responds with $N messages containing the current values.
+
+/// Query current range setting
+pub fn query_range() -> String {
+    build_request("62", &[0, 0, 0, 0])
+}
+
+/// Query current gain setting
+pub fn query_gain() -> String {
+    build_request("63", &[0, 0, 0, 0, 0])
+}
+
+/// Query current sea clutter setting
+pub fn query_sea_clutter() -> String {
+    build_request("64", &[0, 0, 0, 0, 0, 0])
+}
+
+/// Query current rain clutter setting
+pub fn query_rain_clutter() -> String {
+    build_request("65", &[0, 0, 0, 0, 0, 0])
+}
+
+/// Query current pulse width
+pub fn query_pulse_width() -> String {
+    build_request("68", &[0, 0, 0, 0, 0])
+}
+
+/// Query TX state
+pub fn query_tx_state() -> String {
+    build_request("69", &[0, 0, 0, 0, 0, 0])
+}
+
+/// Query antenna revolution settings
+pub fn query_antenna_revolution() -> String {
+    build_request("89", &[0, 0])
+}
+
+/// Query bearing resolution (RezBoost)
+pub fn query_rezboost() -> String {
+    build_request("EE", &[0, 0])
+}
+
+/// Query STC values (near, middle, far)
+pub fn query_near_stc() -> String { build_request("85", &[0]) }
+pub fn query_middle_stc() -> String { build_request("86", &[0]) }
+pub fn query_far_stc() -> String { build_request("87", &[0]) }
+
+/// Query main bang suppression
+pub fn query_main_bang() -> String { build_request("83", &[0, 0]) }
+
+/// Query firmware version
+pub fn query_firmware() -> String {
+    "$R96,,,,,,,\r\n".to_string()
+}
+
+/// Query all init registers (returns the full set of $R commands)
+pub fn init_register_reads() -> Vec<String> {
+    include_str!("init_commands.txt")
+        .lines()
+        .filter(|l| {
+            let l = l.trim();
+            !l.is_empty() && !l.starts_with('#')
+        })
+        .map(|l| format!("{}\r\n", l.trim()))
+        .collect()
 }
 
 // --- Software Echo Interpolation ---
