@@ -1387,3 +1387,518 @@ These are the ONLY external dependencies. The Rust reimplementation must provide
 - **Echo Sounder (Esc\*/Es\*)**: 882 functions for fish-finder/depth sounder hardware. Not needed for radar.
 - **FVOS**: 44 functions, likely a virtual OS abstraction. May need partial reimplementation if init path requires it.
 - **Friend**: 8 functions, unknown purpose. Investigate if referenced by radar init path.
+
+---
+
+## Internal Function Architecture
+
+### Command Processing Pattern
+
+Every radar command follows a consistent 4-function chain:
+
+```
+RmcSet<Cmd>()          Public API: user calls this
+  → rmSubSet<Cmd>()    Internal: validates params, prepares state
+    → rmMakeCom<Cmd>() Internal: serializes into wire format packet
+      → NcSendRadarCommand()  Network: sends packet over UDP
+```
+
+For receiving:
+```
+UDP packet arrives
+  → rmConv<Cmd>()      Internal: deserializes wire bytes into state struct
+    → RmcGet<Cmd>()    Public API: user reads the stored state
+```
+
+Request path:
+```
+RmcReq<Cmd>()          Public API: explicitly request latest value
+  → sends request packet → radar responds → rmConv<Cmd>() → state updated
+```
+
+### Internal function counts:
+
+| Type | Prefix | Count | Role |
+|------|--------|-------|------|
+| Subroutine handlers | `rmSubSet*` | 153 | Validate and prepare command |
+| Packet builders | `rmMakeCom*` | 153 | Serialize to wire format |
+| Response converters | `rmConv*` | 155 | Deserialize from wire format |
+| Internal state | `rmSet*/rmGet*` | 6 | Low-level state access |
+| **Total internal** | | **467** | |
+
+This means reimplementing the radar command layer requires understanding the wire format, NOT reimplementing each of the 467 internal functions individually. Once we know the serialization format, one generic Rust function can replace the entire `rmMakeCom*` family.
+
+
+---
+
+## Full Internal Function Listings
+
+### rmSubSet* (153 functions)
+
+- `rmSubSet2ndEchoReject`
+- `rmSubSetAccuShip`
+- `rmSubSetACRAIN`
+- `rmSubSetACSEA`
+- `rmSubSetAisAlarm`
+- `rmSubSetAlarmAck`
+- `rmSubSetAlarmStatus`
+- `rmSubSetAliveCheck`
+- `rmSubSetAntennaHeight`
+- `rmSubSetAntennaNo`
+- `rmSubSetAntennaRevolution`
+- `rmSubSetAntennaSwitch`
+- `rmSubSetAntennaType`
+- `rmSubSetArpaAcqCorre`
+- `rmSubSetArpaAcquireTarget`
+- `rmSubSetArpaAcquireTargetDisplayId`
+- `rmSubSetArpaAlarm`
+- `rmSubSetArpaAllClear`
+- `rmSubSetArpaAnalyseInfo`
+- `rmSubSetArpaAntenna`
+- `rmSubSetArpaCancelStatus`
+- `rmSubSetArpaCancelTarget`
+- `rmSubSetArpaCancelTargetDisplayId`
+- `rmSubSetArpaCancelTargetId`
+- `rmSubSetArpaCancelTargetNo`
+- `rmSubSetArpaCatch`
+- `rmSubSetArpaCpaTcpa`
+- `rmSubSetArpaDetect`
+- `rmSubSetArpaDispMode`
+- `rmSubSetArpaEchoLevel`
+- `rmSubSetArpaFilterRespons`
+- `rmSubSetArpaGateSize`
+- `rmSubSetArpaJudgeInfo`
+- `rmSubSetArpaLandSize`
+- `rmSubSetArpaLostCount`
+- `rmSubSetArpaLostFilterMode`
+- `rmSubSetArpaLostFilterRange`
+- `rmSubSetArpaLostFilterSpeed`
+- `rmSubSetArpaMaxRange`
+- `rmSubSetArpaMaxSpeed`
+- `rmSubSetArpaPreset`
+- `rmSubSetArpaPursuit`
+- `rmSubSetArpaReAcquireTarget`
+- `rmSubSetArpaSelectTarget`
+- `rmSubSetArpaTargetAllClear`
+- `rmSubSetArpaTargetInfo`
+- `rmSubSetArpaTest`
+- `rmSubSetArpaTimeVector`
+- `rmSubSetArpaVector`
+- `rmSubSetArpaWeed`
+- `rmSubSetArpaWithoutGyro`
+- `rmSubSetAssociationStatus`
+- `rmSubSetAtfSettings`
+- `rmSubSetATT`
+- `rmSubSetBearingResolutionSelect`
+- `rmSubSetBlindSector`
+- `rmSubSetBuildUpTime`
+- `rmSubSetCancelSelectLostTarget`
+- `rmSubSetCancelSelectTarget`
+- `rmSubSetCombineData`
+- `rmSubSetCombineStatus`
+- `rmSubSetConnect`
+- `rmSubSetConningPosition`
+- `rmSubSetCustomAtfParameter`
+- `rmSubSetCustomMemory`
+- `rmSubSetCustomPicture`
+- `rmSubSetCustomPictureAll`
+- `rmSubSetDemoEcho`
+- `rmSubSetDisplayUnitInformation`
+- `rmSubSetDispMode`
+- `rmSubSetDrift`
+- `rmSubSetEavWithoutGyro`
+- `rmSubSetEchoClear`
+- `rmSubSetEchoColorType`
+- `rmSubSetEquipComp`
+- `rmSubSetExtAlarmAck`
+- `rmSubSetFarSTC`
+- `rmSubSetFreeCommand`
+- `rmSubSetGAIN`
+- `rmSubSetGC10`
+- `rmSubSetGpsAntennaPosition`
+- `rmSubSetGuardFan`
+- `rmSubSetGuardMode`
+- `rmSubSetGuardPolygon`
+- `rmSubSetGuardStatus`
+- `rmSubSetHeading`
+- `rmSubSetHeadingAdjust`
+- `rmSubSetHeadingSource`
+- `rmSubSetHighSensitivityMode`
+- `rmSubSetIceClass`
+- `rmSubSetImageCor`
+- `rmSubSetImoEchoSwitch`
+- `rmSubSetInterswInfo`
+- `rmSubSetJummingAble`
+- `rmSubSetKeyCommand`
+- `rmSubSetLostAck`
+- `rmSubSetMagnetron`
+- `rmSubSetMagnetronInd`
+- `rmSubSetMBSAdjust`
+- `rmSubSetMemory`
+- `rmSubSetMenuSet`
+- `rmSubSetMiddleSTC`
+- `rmSubSetMonitorSelect`
+- `rmSubSetNearSTC`
+- `rmSubSetNetworkPriority`
+- `rmSubSetNextEcho`
+- `rmSubSetNN3Command`
+- `rmSubSetObservationMode`
+- `rmSubSetOnTime`
+- `rmSubSetOperatorFitness`
+- `rmSubSetPictureDefault`
+- `rmSubSetPM`
+- `rmSubSetPmAdjust`
+- `rmSubSetPmAdjustEnd`
+- `rmSubSetPulseRange`
+- `rmSubSetPulseWidth`
+- `rmSubSetRadarPosition`
+- `rmSubSetRange`
+- `rmSubSetRangeSelect`
+- `rmSubSetReferencePoint`
+- `rmSubSetRfcVersionNo`
+- `rmSubSetRingSuppression`
+- `rmSubSetRsAllClear`
+- `rmSubSetRsPreset`
+- `rmSubSetRxEchoSelect`
+- `rmSubSetSART`
+- `rmSubSetSARTSignal`
+- `rmSubSetSelectAlarmOut`
+- `rmSubSetSelectAlarmPolarity`
+- `rmSubSetSelectAntenna`
+- `rmSubSetSelectCrt`
+- `rmSubSetSelectQVDisplay`
+- `rmSubSetSelectTtmOut`
+- `rmSubSetShipInfo`
+- `rmSubSetSpeedSelect`
+- `rmSubSetSsdTxChannel`
+- `rmSubSetStartSelfMode`
+- `rmSubSetStcRange`
+- `rmSubSetStoppedTx`
+- `rmSubSetSweepPosition`
+- `rmSubSetTimingAdjust`
+- `rmSubSetTrailClear`
+- `rmSubSetTrailMode`
+- `rmSubSetTrailProcess`
+- `rmSubSetTune`
+- `rmSubSetTuneAdjust`
+- `rmSubSetTuneIndicator`
+- `rmSubSetTxEchoSelect`
+- `rmSubSetTxStby`
+- `rmSubSetTxTime`
+- `rmSubSetVersionNo`
+- `rmSubSetVideoLevel`
+- `rmSubSetWakeupCount`
+
+### rmMakeCom* (153 functions)
+
+- `rmMakeCom2ndEchoReject`
+- `rmMakeComAccuShip`
+- `rmMakeComACRAIN`
+- `rmMakeComACSEA`
+- `rmMakeComAisAlarm`
+- `rmMakeComAlarm`
+- `rmMakeComAlarmAck`
+- `rmMakeComAliveCheck`
+- `rmMakeComAntennaHeight`
+- `rmMakeComAntennaNo`
+- `rmMakeComAntennaRevolution`
+- `rmMakeComAntennaSwitch`
+- `rmMakeComAntennaType`
+- `rmMakeComArpaAcqCorre`
+- `rmMakeComArpaAcquireTarget`
+- `rmMakeComArpaAcquireTargetDisplayId`
+- `rmMakeComArpaAlarm`
+- `rmMakeComArpaAllClear`
+- `rmMakeComArpaAntenna`
+- `rmMakeComArpaCancelStatus`
+- `rmMakeComArpaCancelTarget`
+- `rmMakeComArpaCancelTargetDisplayId`
+- `rmMakeComArpaCancelTargetId`
+- `rmMakeComArpaCancelTargetNo`
+- `rmMakeComArpaCatch`
+- `rmMakeComArpaCpaTcpa`
+- `rmMakeComArpaDetect`
+- `rmMakeComArpaDispMode`
+- `rmMakeComArpaEchoLevel`
+- `rmMakeComArpaFilterRespons`
+- `rmMakeComArpaGateSize`
+- `rmMakeComArpaLandSize`
+- `rmMakeComArpaLostCount`
+- `rmMakeComArpaLostFilterMode`
+- `rmMakeComArpaLostFilterRange`
+- `rmMakeComArpaLostFilterSpeed`
+- `rmMakeComArpaMaxRange`
+- `rmMakeComArpaMaxSpeed`
+- `rmMakeComArpaPreset`
+- `rmMakeComArpaPursuit`
+- `rmMakeComArpaReAcquireTarget`
+- `rmMakeComArpaSelectTarget`
+- `rmMakeComArpaTargetAllClear`
+- `rmMakeComArpaTest`
+- `rmMakeComArpaTimeVector`
+- `rmMakeComArpaVector`
+- `rmMakeComArpaWeed`
+- `rmMakeComArpaWithoutGyro`
+- `rmMakeComAssociationStatus`
+- `rmMakeComAtfParameter`
+- `rmMakeComAtfSettings`
+- `rmMakeComATT`
+- `rmMakeComBearingResolutionSelect`
+- `rmMakeComBlindSector`
+- `rmMakeComBuildUpTime`
+- `rmMakeComCancelSelectLostTarget`
+- `rmMakeComCancelSelectTarget`
+- `rmMakeComCombineData`
+- `rmMakeComCombineStatus`
+- `rmMakeComConnect`
+- `rmMakeComConningPosition`
+- `rmMakeComCustomMemory`
+- `rmMakeComCustomPicture`
+- `rmMakeComCustomPictureAll`
+- `rmMakeComDemoEcho`
+- `rmMakeComDisplayUnitInformation`
+- `rmMakeComDispMode`
+- `rmMakeComDrift`
+- `rmMakeComEavWithoutGyro`
+- `rmMakeComEchoClear`
+- `rmMakeComEchoColorType`
+- `rmMakeComEquipComp`
+- `rmMakeComExtAlarmAck`
+- `rmMakeComFarSTC`
+- `rmMakeComFreeCommand`
+- `rmMakeComGAIN`
+- `rmMakeComGC10`
+- `rmMakeComGetKindCase`
+- `rmMakeComGpsAntennaPosition`
+- `rmMakeComGuardFan1`
+- `rmMakeComGuardFan2`
+- `rmMakeComGuardMode`
+- `rmMakeComGuardPolygon`
+- `rmMakeComGuardStatus`
+- `rmMakeComHeading`
+- `rmMakeComHeadingAdjust`
+- `rmMakeComHeadingSource`
+- `rmMakeComHighSensitivityMode`
+- `rmMakeComIceClass`
+- `rmMakeComImageCor`
+- `rmMakeComImoEchoSwitch`
+- `rmMakeComInterswInfo`
+- `rmMakeComJummingAble`
+- `rmMakeComKeyCommand`
+- `rmMakeComLostAck`
+- `rmMakeComMagnetron`
+- `rmMakeComMagnetronInd`
+- `rmMakeComMBSAdjust`
+- `rmMakeComMenuSet`
+- `rmMakeComMiddleSTC`
+- `rmMakeComMonitorSelect`
+- `rmMakeComNearSTC`
+- `rmMakeComNetworkPriority`
+- `rmMakeComNextEcho`
+- `rmMakeComNN3Command`
+- `rmMakeComObservationMode`
+- `rmMakeComOnTime`
+- `rmMakeComOperatorFitness`
+- `rmMakeComPictureDefault`
+- `rmMakeComPM`
+- `rmMakeComPmAdjust`
+- `rmMakeComPmAdjustEnd`
+- `rmMakeComPulseRange`
+- `rmMakeComPulseWidth`
+- `rmMakeComRadarPosition`
+- `rmMakeComRange`
+- `rmMakeComRangeSelect`
+- `rmMakeComReferencePoint`
+- `rmMakeComRfcVersionNo`
+- `rmMakeComRingSuppression`
+- `rmMakeComRsAllClear`
+- `rmMakeComRsPreset`
+- `rmMakeComRxEchoSelect`
+- `rmMakeComSART`
+- `rmMakeComSARTSignal`
+- `rmMakeComSelectAlarmOut`
+- `rmMakeComSelectAlarmPolarity`
+- `rmMakeComSelectAntenna`
+- `rmMakeComSelectCrt`
+- `rmMakeComSelectQVDisplay`
+- `rmMakeComSelectTtmOut`
+- `rmMakeComSetKindCase`
+- `rmMakeComSetMemory`
+- `rmMakeComShipInfo`
+- `rmMakeComSpeedSelect`
+- `rmMakeComSsdTxChannel`
+- `rmMakeComStartSelfMode`
+- `rmMakeComStcRange`
+- `rmMakeComStoppedTx`
+- `rmMakeComSweepPosition`
+- `rmMakeComTimingAdjust`
+- `rmMakeComTrailClear`
+- `rmMakeComTrailMode`
+- `rmMakeComTrailProcess`
+- `rmMakeComTune`
+- `rmMakeComTuneAdjust`
+- `rmMakeComTuneIndicator`
+- `rmMakeComTxEchoSelect`
+- `rmMakeComTxStby`
+- `rmMakeComTxTime`
+- `rmMakeComVersionNo`
+- `rmMakeComVideoLevel`
+- `rmMakeComWakeupCount`
+
+### rmConv* (155 functions)
+
+- `rmConv2ndEchoReject`
+- `rmConvAccuShip`
+- `rmConvACRAIN`
+- `rmConvACSEA`
+- `rmConvAisAlarm`
+- `rmConvAlarm`
+- `rmConvAlarmAck`
+- `rmConvAliveCheck`
+- `rmConvAntennaHeight`
+- `rmConvAntennaRevolution`
+- `rmConvAntennaSwitch`
+- `rmConvAntennaType`
+- `rmConvAntNo`
+- `rmConvARPA`
+- `rmConvArpaAcqCorre`
+- `rmConvArpaAcquireTarget`
+- `rmConvArpaAcquireTargetDisplayId`
+- `rmConvArpaAlarm`
+- `rmConvArpaAllClear`
+- `rmConvArpaAntenna`
+- `rmConvArpaCancelStatus`
+- `rmConvArpaCancelTarget`
+- `rmConvArpaCancelTargetDisplayId`
+- `rmConvArpaCancelTargetId`
+- `rmConvArpaCancelTargetNo`
+- `rmConvArpaCatch`
+- `rmConvArpaCpaTcpa`
+- `rmConvArpaDetect`
+- `rmConvArpaDispMode`
+- `rmConvArpaEchoLevel`
+- `rmConvArpaFilterRespons`
+- `rmConvArpaGateSize`
+- `rmConvArpaLandSize`
+- `rmConvArpaLostCount`
+- `rmConvArpaLostFilterMode`
+- `rmConvArpaLostFilterRange`
+- `rmConvArpaLostFilterSpeed`
+- `rmConvArpaMaxRange`
+- `rmConvArpaMaxSpeed`
+- `rmConvArpaPreset`
+- `rmConvArpaPursuit`
+- `rmConvArpaReAcquireTarget`
+- `rmConvArpaSelectTarget`
+- `rmConvArpaTargetAllClear`
+- `rmConvArpaTimeVector`
+- `rmConvArpaVector`
+- `rmConvArpaWeed`
+- `rmConvArpaWithoutGyro`
+- `rmConvAssociationStatus`
+- `rmConvAtfParameter`
+- `rmConvAtfSettings`
+- `rmConvATT`
+- `rmConvBearingResolutionSelect`
+- `rmConvBlindSector`
+- `rmConvBuildUpTime`
+- `rmConvCancelLostTarget`
+- `rmConvCancelTarget`
+- `rmConvCombineData`
+- `rmConvCombineStatus`
+- `rmConvConnect`
+- `rmConvConningPosition`
+- `rmConvCustomMemory`
+- `rmConvCustomPicture`
+- `rmConvCustomPictureAll`
+- `rmConvDemoEcho`
+- `rmConvDisplayUnitInformation`
+- `rmConvDispMode`
+- `rmConvDrift`
+- `rmConvDummy`
+- `rmConvEavWithoutGyro`
+- `rmConvEchoClear`
+- `rmConvEchoColorType`
+- `rmConvEquipComp`
+- `rmConvExtAlarmAck`
+- `rmConvFarSTC`
+- `rmConvFreeCommand`
+- `rmConvGAIN`
+- `rmConvGC10`
+- `rmConvGetRxCommandType`
+- `rmConvGpsAntennaPosition`
+- `rmConvGuardFan1`
+- `rmConvGuardFan2`
+- `rmConvGuardMode`
+- `rmConvGuardPolygon`
+- `rmConvGuardStatus`
+- `rmConvHeading`
+- `rmConvHeadingAdjust`
+- `rmConvHeadingSource`
+- `rmConvHighSensitivityMode`
+- `rmConvIceClass`
+- `rmConvImageCor`
+- `rmConvImoEchoSwitch`
+- `rmConvInterswInfo`
+- `rmConvJummingAble`
+- `rmConvKeyCommand`
+- `rmConvLostAck`
+- `rmConvMagnetron`
+- `rmConvMagnetronInd`
+- `rmConvMBSAdjust`
+- `rmConvMenuSet`
+- `rmConvMiddleSTC`
+- `rmConvMonitorSelect`
+- `rmConvNearSTC`
+- `rmConvNetworkPriority`
+- `rmConvNextEcho`
+- `rmConvNN3Command`
+- `rmConvObservationMode`
+- `rmConvOnTime`
+- `rmConvOperatorFitness`
+- `rmConvPictureDefault`
+- `rmConvPM`
+- `rmConvPmAdjust`
+- `rmConvPmAdjustEnd`
+- `rmConvPulseRange`
+- `rmConvPulseWidth`
+- `rmConvRadarPosition`
+- `rmConvRange`
+- `rmConvRangeSelect`
+- `rmConvReferencePoint`
+- `rmConvRfcVersionNo`
+- `rmConvRingSuppression`
+- `rmConvRsAllClear`
+- `rmConvRsPreset`
+- `rmConvRxEchoSelect`
+- `rmConvSART`
+- `rmConvSARTSignal`
+- `rmConvSelectAlarmOut`
+- `rmConvSelectAlarmPolarity`
+- `rmConvSelectAntenna`
+- `rmConvSelectCrt`
+- `rmConvSelectQVDisplay`
+- `rmConvSelectTtmOut`
+- `rmConvSetMemory`
+- `rmConvSetRxCommandType`
+- `rmConvShipInfo`
+- `rmConvSpeedSelect`
+- `rmConvSsdTxChannel`
+- `rmConvStartArpaTest`
+- `rmConvStartSelfMode`
+- `rmConvStcRange`
+- `rmConvStoppedTx`
+- `rmConvSweepPosition`
+- `rmConvTimingAdjust`
+- `rmConvTrailClear`
+- `rmConvTrailMode`
+- `rmConvTrailProcess`
+- `rmConvTune`
+- `rmConvTuneAdjust`
+- `rmConvTuneIndicator`
+- `rmConvTxEchoSelect`
+- `rmConvTxStby`
+- `rmConvTxTime`
+- `rmConvVersionNo`
+- `rmConvVideoLevel`
+- `rmConvWakeupCount`
