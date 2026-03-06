@@ -1281,7 +1281,6 @@ fn write_echo_csv(path: &str, spokes: &[Spoke], settings: &CurrentSettings) {
     );
 
     // Write metadata header as comment lines
-    let _ = writeln!(f, "# timestamp,{}", timestamp_compact());
     let _ = writeln!(f, "# range_index,{}", settings.range_index);
     let _ = writeln!(f, "# range_label,{}", settings.range_label);
     let _ = writeln!(f, "# gain_auto,{}", settings.gain_auto);
