@@ -136,3 +136,57 @@ Default filter: `host 172.31.3.226 or net 239.255.0.0/16`
   - 03:54:32 - TX turned on via web UI
   - 03:54:47 - Capture stop (echoes flowing)
 - **Notes:** CRITICAL capture. Shows the full init handshake sequence. Init involves: (1) SSDP multicast discovery, (2) TCP connection to port 10010 with 56-byte handshake payload (closed immediately), (3) TCP connection to port 10100 (persistent control channel). No echo data until TX is explicitly enabled.
+
+---
+
+## Cross-Session Analysis Summary
+
+### Port Presence Across Sessions
+
+| Port | S1 (steady) | S2 (5min) | S3 (range) | S4 (gain) | S5 (TX) | S6 (sweep) | S7 (init) |
+|------|:-----------:|:---------:|:----------:|:---------:|:-------:|:----------:|:---------:|
+| 10024 (echo) | Y | Y | Y | Y | Y (gap) | Y | Y (after TX on) |
+| 10100 (ctrl) | Y | Y | Y | Y | Y | Y | Y (new conn) |
+| 10034 (ARPA) | Y | Y | Y | Y | Y | Y | Y |
+| 10010 (disc) | Y | Y | Y | Y | Y | Y | Y (TCP + UDP) |
+| 1900 (SSDP) | - | - | - | - | - | - | Y (init only) |
+
+### Wire Protocol Findings
+
+The TCP control protocol is **ASCII NMEA-like**, not binary:
+- `$S<hex_id>,<params>\r\n` = host command (Send)
+- `$R<hex_id>,<params>\r\n` = host query (Read, init only)
+- `$N<hex_id>,<params>\r\n` = radar response (Notify)
+
+### Command-to-Wire Mapping (from active sessions)
+
+| Web API | Wire Command | Wire Format |
+|---------|-------------|-------------|
+| set_range | $S62 | `$S62,<idx>,0,0,0` |
+| set_gain | $S63 | `$S63,<ch>,<val>,0,0,0` |
+| set_near/middle/far_stc | $S64 | `$S64,<ch>,<val>,0,0,0,0` |
+| set_pulse_width | $S65 | `$S65,<ch>,<val>,0,0,0,<p1>,<p2>` |
+| toggle_echo (TX) | $S69 | `$S69,<state>,0,0,0,0,0` (1=OFF, 2=ON) |
+| set_acsea | $S85 | `$S85,<val>` |
+| set_acrain | $S87 | `$S87,<val>` |
+| set_bearing_resolution | $SEE | `$SEE,<mode>,0` |
+
+### Echo Packet Analysis
+
+- 18-byte header: sequence(2) + version(2) + reserved(4) + timestamp(4) + flags(2) + config(2) + azimuth(2)
+- Variable-length body with sparse range-bin encoding
+- Sizes 484-868 bytes, avg ~625
+- Amplitude values are quantized steps (0x00 to 0xFD)
+
+### Init Sequence (from Session 7)
+
+1. SSDP announce (3 UDP packets to 239.255.255.250:1900)
+2. TCP 10010: copyright authentication (56 bytes out, 12 bytes back, close)
+3. TCP 10100: control channel opens
+4. Radar sends `$N00,CLIENTCONNECTION,`
+5. Host queries `$R96` (firmware version)
+6. Host dumps ~60 `$R<xx>` register reads (init config)
+7. Radar responds with `$N<xx>` for each
+8. Steady state: periodic `$NAF`, `$NF5` telemetry
+
+Full protocol details in `reverse/protocol_notes.md`.

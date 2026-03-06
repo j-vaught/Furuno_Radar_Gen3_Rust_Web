@@ -1,123 +1,249 @@
-# Furuno NAVNET Protocol Notes
+# Furuno NAVNET Wire Protocol Notes
 
-Generated: 2026-03-06 from live packet captures
+Generated: 2026-03-06 from 7 live packet capture sessions.
 
 ## Network Topology
 
-| Host | IP | Role |
-|------|-----|------|
-| Pi (our app) | 172.31.1.100 | Client |
-| Radar unit | 172.31.3.226 | Radar hardware |
-| Multicast echo | 239.255.0.2 | Echo data group |
-| Broadcast | 172.31.255.255 | ARPA + discovery |
-
-## Traffic Flows (steady state, 30 seconds)
-
-| Flow | Protocol | Port(s) | Count | Rate | Purpose |
-|------|----------|---------|-------|------|---------|
-| Radar → Multicast (239.255.0.2) | UDP | 10024 → 10024 | 1,871 | ~62/sec | **Echo sweep data** |
-| Radar → Pi | TCP | 10100 → 46732 | 61 | ~2/sec | Command/control (NMEA?) |
-| Pi → Radar | TCP | 46732 → 10100 | 60 | ~2/sec | ACKs / responses |
-| Radar → Broadcast | UDP | 10034 → 10034 | 38 | ~1.3/sec | **ARPA target data** |
-| Radar → Broadcast | UDP | 10010 → 10010 | 2 | rare | Discovery/heartbeat |
+```
+  172.31.1.100 (Host/Pi, eth0)          172.31.3.226 (Radar)
+  ================================      ================================
+  |  navnet_main (our app)       |      |  Furuno DRS4DL+ / NXT        |
+  |    TCP client -> 10100       |----->|    TCP server 10100          |
+  |    TCP client -> 10010 (init)|----->|    TCP server 10010          |
+  |    UDP 10010 (discovery)     |<---->|    UDP 10010 (discovery)     |
+  |    UDP multicast listener    |<-----|    UDP 10024 (echo data)     |
+  |    SSDP 239.255.255.250:1900|      |    UDP 10034 (ARPA bcast)   |
+  |    HTTP :8080 (web UI)       |      |                              |
+  |    UPnP :10998               |      |                              |
+  ================================      ================================
+                                          |
+                                          v
+                                   239.255.0.2:10024 (multicast echo)
+                                   172.31.255.255:10034 (ARPA broadcast)
+                                   172.31.255.255:10010 (discovery beacon)
+```
 
 ## Port Map
 
-| Port | Direction | Protocol | Purpose |
-|------|-----------|----------|---------|
-| 10024 | Radar → Multicast | UDP | Echo data (sweep packets) |
-| 10034 | Radar → Broadcast | UDP | ARPA target data |
-| 10010 | Radar → Broadcast | UDP | Discovery / alive / FNET |
-| 10100 | Radar ↔ Pi | TCP | Command channel (likely NMEA-style) |
+| Port | Direction | Protocol | Purpose | Rate |
+|------|-----------|----------|---------|------|
+| 10024 | Radar -> Multicast (239.255.0.2) | UDP | Echo sweep data | ~80/sec (~12ms) |
+| 10034 | Radar -> Broadcast | UDP | ARPA target data | ~1/sec |
+| 10010 | Radar -> Broadcast | UDP | Discovery beacon | ~1/16sec |
+| 10010 | Host <-> Radar | TCP | One-shot init auth (copyright exchange) | Once at startup |
+| 10100 | Host <-> Radar | TCP | Persistent control channel ($S/$N protocol) | ~2/sec + bursts |
+| 1900 | Host -> 239.255.255.250 | UDP | SSDP/UPnP announcement | Once at startup |
+| 10998 | Host listen | TCP | UPnP root device descriptor | On demand |
 
-**Base port appears to be 10000.** Offsets: +24 echo, +34 ARPA, +10 discovery, +100 TCP control.
+## Protocol Format
 
-## Echo Packets (Port 10024)
+### Control Channel (TCP 10100) -- NMEA-like ASCII
 
-- **Source:** 172.31.3.226 (radar)
-- **Destination:** 239.255.0.2 (multicast group)
-- **Rate:** ~62 packets/sec (~11-14ms between packets)
-- **Sizes:** 172-260 bytes (variable, likely depends on echo content)
-- **Packet interval changes:** first half ~14ms, second half ~11ms (antenna speed variation?)
+All messages use ASCII framing similar to NMEA:
 
-### Echo Packet Header (first 32 bytes of UDP payload)
-
-From hex dump of first echo packet (232 bytes UDP payload):
 ```
-Offset  Hex                     Notes
-0x00    02 ef                   ??? (possibly packet type 0x02 = echo?)
-0x02    00 01                   ??? (constant across packets?)
-0x04    00 00 00 00             ??? (padding or sequence?)
-0x08    37 0a                   Angle? 0x0A37 = 2615 (of 8192 ticks)
-0x0a    64 db                   Heading? 0xDB64 = could be heading ticks
-0x0c    02 00                   Heading flag? Range unit?
-0x0e    f0 09                   Range? 0x09F0 = 2544
-0x10    0a 00                   Scale?
-0x12    00 00                   ???
-0x14    00 fd 00 d5 ...         Echo data starts here (at offset 0x14 = 20)
+$<prefix><hex_id>,<param1>,<param2>,...\r\n
 ```
 
-Second packet (offset 0x00 of UDP payload):
+| Prefix | Direction | Meaning |
+|--------|-----------|---------|
+| `$S` | Host -> Radar | Send/Set command |
+| `$R` | Host -> Radar | Read/Request (used during init) |
+| `$N` | Radar -> Host | Notify/Response |
+
+Command IDs are 2-character hex. Parameters are comma-separated decimal values.
+Messages terminated with `\r\n` (0x0D 0x0A).
+
+### Binary Keepalive (TCP 10100)
+
+Periodically sent (every ~6-10 seconds):
 ```
-02 f0 00 01 00 00 00 00 3e 0a 64 db 02 00 f0 09
-```
-- Byte 0x01 changes: ef → f0 (could be low byte of angle or sweep count)
-- Bytes 0x08-0x09: 37 0a → 3e 0a (angle incrementing: 0x0A37=2615, 0x0A3E=2622, delta=7)
-
-Third packet:
-```
-02 f1 00 01 00 00 00 00 39 0a 64 db 02 00 f0 09
-```
-- Byte 0x01: f1 (incrementing: ef, f0, f1 — this is a sequence counter or packet sub-index)
-- Bytes 0x08-0x09: 39 0a (angle 0x0A39=2617 — angles are NOT strictly increasing, so this might be structured differently)
-
-**Key observation:** The bytes at offset 0x08-0x09 look like they could be angle in little-endian (0x370a = 0x0A37 LE). Need to cross-reference with `RadarSweepMetadata` struct and `DecodeImoEchoFormat`.
-
-### Echo Data Encoding
-
-Starting at offset ~0x14, the echo data appears to be:
-- Pairs of bytes where one is `00` and the other is an intensity value
-- `fd` and `fe` appear frequently (possibly special markers: run-length or range markers?)
-- Pattern suggests some form of compression (not raw intensity array)
-
-## ARPA Packets (Port 10034)
-
-- **Source:** 172.31.3.226 (radar)
-- **Destination:** 172.31.255.255 (broadcast)
-- **Rate:** ~1.3/sec
-- **Size:** 176 bytes (fixed)
-- **Contains ASCII:** `$ARPA,0,0,0032,0000,0032,` — NMEA-style ARPA sentence embedded in binary wrapper
-
-### ARPA Packet Structure (176 bytes UDP payload):
-```
-Offset  Content
-0x00    01 c7 00 01 00 00 00 00    Header (type 0x01 = ARPA?)
-0x08    24 41 52 50 41 2c ...      "$ARPA," ASCII NMEA sentence
-        Two ARPA sentences per packet
-0x30+   Binary ARPA target data
+00 00 00 08 00 00 00 00   (8 bytes, first 4 = length field)
 ```
 
-## TCP Control Channel (Port 10100)
+## Command Reference
 
-- Bidirectional TCP connection between radar (10100) and Pi (46732)
-- Small packets (~10 bytes)
-- Example payload: `24 4e 41 46 2c 32 35 36 0d 0a` = `$NAF,256\r\n`
-- This is **NMEA-style framing** with `$` prefix and `\r\n` terminator
-- `$NAF` likely = NAVNET Function code message
-- Rate: ~2/sec — likely heartbeat/alive check
+### Range ($S62)
+```
+$S62,<rangeIndex>,0,0,0\r\n
+```
+- rangeIndex: 0-24 (0=0.125NM, 3=0.75NM, 6=2NM, 12=12NM)
+- Response: `$N62,<rangeIndex>,0,0`
 
-## Discovery/FNET (Port 10010)
+### Gain ($S63)
+```
+$S63,<channel>,<value>,0,0,0\r\n
+```
+- channel: 0=manual gain, 1=auto gain
+- value: 0-255 (manual gain level)
+- Response: `$N63,<channel>,<value>,0,0,0`
 
-- Only 2 packets in 30 seconds — very infrequent
-- Broadcast to 172.31.255.255
-- Likely FNET host registration / discovery protocol
+### STC ($S64)
+```
+$S64,<channel>,<value>,0,0,0,0\r\n
+```
+- channel: 0=near, 1=middle, 2=far
+- value: STC level
+- Response: `$N64,<channel>,<value>,0,0,0,0`
 
-## Key Takeaways for Rust Implementation
+### Pulse Width ($S65)
+```
+$S65,<channel>,<value>,0,0,0,<p1>,<p2>\r\n
+```
+- channel: 0=set, 1=reset
+- value: pulse width level
+- Response: `$N65,...`
 
-1. **Echo data is multicast UDP** — just join group 239.255.0.2 on port 10024
-2. **ARPA is broadcast UDP** — listen on port 10034
-3. **Commands go over TCP** on port 10100, NMEA-style framing
-4. **The protocol is relatively simple** — no encryption visible, no complex handshake in steady state
-5. **Echo packets have a ~20-byte header** followed by compressed echo data
-6. **ARPA packets embed NMEA $ARPA sentences** in a binary wrapper
-7. **Need to investigate:** init/handshake sequence (what happens at startup before echoes flow?)
+### TX On/Off ($S69)
+```
+$S69,<state>,0,0,0,0,0\r\n
+```
+- state: 1=TX OFF (standby), 2=TX ON
+- TX toggle sends atomic burst: $S69 + $S85 + $S86 + $S87 (all within ~1ms)
+- Response: `$N69,<state>,0,0,0,0,0`
+
+### Firmware Version Query ($R96)
+```
+$R96,,,,,,,\r\n
+```
+- Response: `$N96,<ver1>,<ver2>,<ver3>,<ver4>,,,`
+- Example: `$N96,0359360-01.07,0359358-01.01,0359359-01.02,0359361-01.06,,,`
+
+### Bearing Resolution ($SEE)
+```
+$SEE,<mode>,0\r\n
+```
+- mode: 0=Off, 1=Low, 2=Med, 3=High
+
+### Antenna Revolution ($S89)
+```
+$S89,<rollSpeed>,<hiRpm>\r\n
+```
+
+### Sea Clutter ($S85/$S86)
+```
+$S85,<value>\r\n    (A/C SEA control)
+$S86,<value>\r\n    (A/C SEA mode)
+```
+
+### Rain Clutter ($S87)
+```
+$S87,<value>\r\n    (A/C RAIN control)
+```
+
+## Periodic Radar Telemetry (Unsolicited $N messages)
+
+| Message | Rate | Content |
+|---------|------|---------|
+| `$NAF,256` | ~1/sec | Antenna heading/rotation indicator |
+| `$NF5,<type>,<value>,0,0,0` | ~1/sec | Radar spoke/scan telemetry (type 3 or 4, value varies) |
+| `$NE3` | Periodic | Heartbeat/sync marker |
+| `$NE0,0,0,0,0,0,0,0,1` | Periodic | Extended status |
+| `$N83,100,1` | Periodic | Gain/threshold report |
+| `$N68,0,0,0,0,-2` | Periodic | Status with negative value |
+| `$N00,CLIENTCONNECTION,` | Once | Connection established notification |
+
+## Init Sequence (Cold Start)
+
+### Phase 1: Pre-connection
+- Radar broadcasts ARPA data on UDP 10034 (~1/sec) regardless of client
+- Radar broadcasts discovery beacon on UDP 10010 (~1/16sec): 32 bytes containing "RD003226"
+
+### Phase 2: SSDP Discovery
+- Host sends 3 SSDP NOTIFY packets to 239.255.255.250:1900
+- SERVER: `FURUNO/1.0 UPnP/1.1 FurunoSensorSDK/1.1`
+- LOCATION: `http://172.31.1.100:10998/rootDesc.xml`
+
+### Phase 3: Authentication (TCP 10010)
+- Host opens TCP to radar:10010
+- Host sends 56-byte binary payload:
+  ```
+  08 01 00 38 01 00 00 00 00 01 00 00
+  COPYRIGHT (C) 2001 FURUNO ELECTRIC CO.,LTD.
+  ```
+  Header: type=0x08, subtype=0x01, length=0x0038
+- Radar responds 12 bytes:
+  ```
+  09 01 00 0C 01 00 00 00 00 64 00 00
+  ```
+  Type=0x09, subtype=0x01, length=0x000C, status=0x0064 (100)
+- Connection closed immediately (one-shot auth)
+
+### Phase 4: Control Channel (TCP 10100)
+- Host opens TCP to radar:10100
+- Radar sends: `$N00,CLIENTCONNECTION,\r\n` (24 bytes)
+- Radar sends: `$NAF,256\r\n` (antenna heading)
+- Host sends: `$R96,,,,,,,\r\n` (firmware query)
+- Radar sends binary 8 bytes: `00 00 00 08 00 00 00 00`
+- Radar responds: `$N96,0359360-01.07,...`
+
+### Phase 5: Configuration Dump
+- Host sends ~60+ `$R<hex_id>` commands in rapid burst (~120ms)
+- Registers addressed: 61-B5 range (hex)
+- All sent with zero/default values
+- Radar responds with `$N<hex_id>` for each, reporting current state
+- Key responses include gain=100, timing params, device capabilities
+
+### Phase 6: Steady State
+- Periodic `$NAF,256` (1/sec) and `$NF5` telemetry
+- Binary keepalive every ~6-10 seconds
+- No echo data until TX explicitly enabled via `$S69,2,...`
+
+## Echo Packets (UDP 10024)
+
+### Characteristics
+- Rate: ~80 packets/sec (~12ms interval)
+- Source: 172.31.3.226:10024
+- Destination: 239.255.0.2:10024 (multicast)
+- Size: 484-868 bytes (variable, ~625 avg)
+- Only present when TX is ON
+
+### Header Structure (18 bytes)
+
+| Offset | Size | Field | Notes |
+|--------|------|-------|-------|
+| 0-1 | 2 | Sequence/spoke counter | Increments per packet |
+| 2-3 | 2 | Protocol version | Constant `00 01` |
+| 4-7 | 4 | Reserved | Constant `00 00 00 00` |
+| 8-11 | 4 | Timestamp | Upper bytes vary slowly |
+| 12-13 | 2 | Flags/mode | Constant `15 00` |
+| 14-15 | 2 | Config identifier | Constant `F0 09` (may change with range) |
+| 16-17 | 2 | Azimuth angle | Changes per spoke, wraps around |
+
+### Body Structure
+- Variable-length echo amplitude data
+- Range bins encoded with sub-headers indicating starting range offset
+- Amplitude values: quantized steps (FD, FC, FE, DC, BC, A4, 8C, 78, 68, 58, 4C, 40, 38, 2C, 24, 1C, 14, 08, 00)
+- Sparse encoding: only segments with returns are transmitted (explains variable size)
+- `FE 00` pairs = no return / noise floor
+
+## Broadcast Packets
+
+### ARPA Data (UDP 10034)
+- Rate: ~1/sec
+- Size: 65 bytes (standard) or 119 bytes (extended), occasionally 176 bytes
+- Format: `$ARPA,0,0,<len>,<seq>,<len>,` followed by binary data
+- Contains automatic radar plotting aid target data
+
+### Discovery Beacon (UDP 10010)
+- Rate: ~1/16sec
+- Size: 32 bytes
+- Contains device identifier "RD003226"
+- Structure:
+  ```
+  01 00 00 01 00 00 00 00  (header)
+  00 01 00 18 01 00 00 00  (capability/type)
+  52 44 30 30 33 32 32 36  ("RD003226")
+  01 01 00 02 00 01 00 12  (device type/version)
+  ```
+
+## Key Observations
+
+1. The protocol is **NMEA-like ASCII** on TCP, not binary -- much easier to reverse engineer
+2. `$S` (send) / `$R` (read) / `$N` (notify) prefix convention
+3. Init auth uses a **copyright string** on port 10010 -- simple authentication
+4. Radar **echoes every command** back as confirmation
+5. TX state: 1=OFF, 2=ON (counterintuitive)
+6. Echo data uses **sparse encoding** with variable-length spoke packets
+7. All register IDs are 2-char hex in range 0x61-0xB5+ (97-181+ decimal)
+8. The 8-byte binary keepalive has a 4-byte length prefix pattern
