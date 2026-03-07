@@ -1,6 +1,6 @@
 use crate::protocol::Spoke;
 
-pub const PPI_SIZE: usize = 800;
+pub const PPI_SIZE: usize = 640;
 pub const PPI_NUM_RANGE_BINS: usize = 868;
 pub const PPI_ANGLE_TICKS: f64 = 8192.0;
 

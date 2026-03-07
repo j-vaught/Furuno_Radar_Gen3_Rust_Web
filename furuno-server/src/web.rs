@@ -622,7 +622,7 @@ async fn handle_get_current(
                     _ => "Doppler: Unknown".into(),
                 }
             }
-            "SWEEP" => "Sweep: controlled locally (800x800 PPI)".into(),
+            "SWEEP" => "Sweep: controlled locally (640x640 PPI)".into(),
             _ => format!("Unknown command: {command}"),
         }
     }).await.unwrap_or_else(|e| format!("Error: {e}"));

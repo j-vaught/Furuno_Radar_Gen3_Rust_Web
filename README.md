@@ -4,7 +4,7 @@ Furuno DRS4D-NXT marine radar interface built in Rust. Provides full radar contr
 
 ## Overview
 
-This project is a complete reimplementation of the proprietary Furuno `libNAVNETDLL.so` library in Rust. It handles the full radar lifecycle: authentication, control commands, echo data decoding (4 encoding types), Doppler processing, PPI rendering, and automated calibration sweeps.
+This project is a complete reimplementation of the proprietary Furuno `libNAVNETDLL.so` library in Rust. It handles the full radar lifecycle: authentication, control commands, echo data decoding (4 encoding types), Doppler processing, and PPI rendering.
 
 ## Prerequisites
 
@@ -48,22 +48,20 @@ furuno-server [--radar-ip IP] [--host-ip IP] <mode> [args...]
 | `tx-on` / `tx-off` | Enable or disable the transmitter |
 | `echo` | Passively listen for multicast echo packets |
 | `full` | Full cycle: init, TX ON, capture one rotation, TX OFF |
-| `render-csv <file> [out.png]` | Render a recorded CSV as a PPI image (offline) |
 | `render-live [out.png]` | Capture one live rotation and render to PNG |
 | `dump-raw [count]` | Dump raw echo packet headers |
 | `discover` | Broadcast discovery beacons and listen for radar |
 | `validate` | Run the 6-phase validation suite |
 | `test-commands` | A/B command verification with PPI captures |
-| `calibrate <args>` | Automated multi-parameter calibration sweeps |
 
 ## Web Interface
 
 The browser UI provides:
 
-- Real-time PPI radar display
+- Real-time PPI radar display (640x640)
 - Radar settings controls (range, gain, pulse width, clutter, STC, Doppler, etc.)
 - Echo data recording to CSV with full settings metadata
-- Pattern-based calibration execution
+- Pattern-based parameter sweep execution
 - System status and firmware info
 
 ## Recorded Data Format
@@ -89,7 +87,7 @@ furuno-server/          Rust application
     render.rs          PPI image rendering
     modes.rs           CLI mode implementations
     testing.rs         Validation and A/B testing
-    calibrate.rs       Calibration pattern runner
+    calibrate.rs       Pattern runner
     tests.rs           27 live integration tests
 web/                   Static web frontend (HTML/CSS/JS)
 docs/                  LaTeX technical manual with diagrams
@@ -119,7 +117,7 @@ If the host is not on the radar's subnet, the application automatically adds a s
 
 ## Documentation
 
-See `docs/technical_manual.pdf` for the full 21-page technical reference covering the wire protocol, echo encoding, Doppler processing, system architecture, and API reference.
+See `docs/technical_manual.pdf` for the full technical reference covering the wire protocol, echo encoding, Doppler processing, system architecture, and API reference.
 
 ## Author
 
