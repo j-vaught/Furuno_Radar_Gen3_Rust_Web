@@ -195,14 +195,63 @@ The Rust codebase has **zero proprietary dependencies**. It can be built and dep
 
 ---
 
-## 4. Summary
+## 4. Thread Activity During Active Data Capture
+
+Thread activity was profiled for 60 seconds while both servers were actively capturing radar data (TX ON + PNG rendering + CSV recording). Thread states were sampled at 50 Hz from `/proc/PID/task/TID/stat`.
+
+### Rust: 8 Threads Active
+
+| Thread | Activity |
+|---|---|
+| radar-client (main) | Parked (futex), near-zero activity |
+| tokio-rt-worker ×4 | Brief wakes for HTTP requests, otherwise idle |
+| radar-client (echo) | Primary worker — decodes UDP echo, renders PNG, writes CSV |
+| tokio-rt-worker (extra) | Occasional wake for async tasks |
+| radar-client (recording) | Wakes briefly during CSV flush |
+
+- **Running samples:** 0.7% of all samples
+- **Max simultaneously active:** 1 thread
+- **Pattern:** Event-driven — threads wake for microseconds, complete work, return to kernel sleep. The echo listener thread does nearly all the real work.
+
+### C++: 23 Threads Active
+
+| Thread | Activity |
+|---|---|
+| navnet_main (main) | Periodic wakes for callback dispatch |
+| SweepWriter | Wakes on condition_variable for PNG/CSV writes |
+| web_server | Boost ASIO accept loop |
+| libNAVNETDLL threads ×18 | Sleep-poll loops (hrtimer_nanosleep), constant 50–200ms wake cycles |
+| gmain / gdbus | GLib event loop threads (minimal activity) |
+
+- **Running samples:** 3.1% of all samples (4.4x more than Rust)
+- **Max simultaneously active:** 3 threads
+- **Pattern:** Sleep-poll — SDK threads wake every 50–200ms to check state, even when no data is flowing. Multiple threads are often active simultaneously.
+
+### Key Observations
+
+1. **Rust does more work with fewer threads.** A single echo listener thread handles UDP recv, 4 encoding decoders, PPI rendering, and CSV/PNG writing — all in one tight loop. The C++ SDK spreads similar work across ~18 threads with inter-thread synchronization overhead.
+
+2. **CPU efficiency gap widens under load.** At idle, C++ burns 8.2% CPU vs Rust's 0.0%. During active capture, C++ has 3 threads running simultaneously vs Rust's 1, despite producing the same output (PNG images + CSV files).
+
+3. **The SDK's thread model is opaque and wasteful.** The application developer has no control over the 18 threads spawned by `libNAVNETDLL.so`. Many appear to be redundant polling loops that could be replaced with event-driven I/O.
+
+![Thread Activity Heatmap](thread_activity.png)
+
+*Thread activity heatmap during 60 seconds of active radar data capture (TX ON + PNG/CSV recording). Color intensity shows fraction of time each thread spends in the Running state per 200ms bin. Below each heatmap: number of simultaneously active threads over time.*
+
+---
+
+## 5. Summary
 
 | Metric | C++ | Rust | Winner |
 |---|---|---|---|
 | Startup time | 145 ms | 3,858 ms | C++ (26x faster) |
 | Idle RAM (RSS) | 9.9 MB | 3.7 MB | Rust (63% less) |
 | Idle CPU | 8.2% | 0.0% | Rust |
-| Thread count | 21 | 6 | Rust (71% fewer) |
+| Thread count (idle) | 21 | 6 | Rust (71% fewer) |
+| Thread count (active capture) | 23 | 8 | Rust (65% fewer) |
+| Active capture CPU (% running) | 3.1% | 0.7% | Rust (4.4x less) |
+| Max simultaneous active threads | 3 | 1 | Rust |
 | Binary size (total) | 1.64 MB | 3.15 MB | C++ (48% smaller) |
 | Proprietary dependencies | 1 (libNAVNETDLL.so) | 0 | Rust |
 | Cross-platform | Linux only (SDK) | Linux, macOS, Windows | Rust |
@@ -211,4 +260,4 @@ The Rust codebase has **zero proprietary dependencies**. It can be built and dep
 | CLI versatility | 1 mode | 12 modes | Rust |
 | Code lines | 2,451 | 5,469 | C++ (less code) |
 
-The C++ implementation starts faster because the SDK defers initialization, but pays for it with 3.5x more threads and constant idle CPU burn. The Rust implementation takes longer to start because it performs a thorough synchronous handshake, but once running it is significantly more efficient, portable, testable, and maintainable.
+The C++ implementation starts faster because the SDK defers initialization, but pays for it with 3x more threads, constant idle CPU burn, and 4.4x more CPU time during active data capture. The Rust implementation takes longer to start because it performs a thorough synchronous handshake, but once running it is significantly more efficient — handling the full radar pipeline (echo decoding, PPI rendering, CSV/PNG recording) with a single active thread versus C++'s 3. The Rust codebase is also more portable, testable, and maintainable with zero proprietary dependencies.
