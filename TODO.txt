@@ -1,7 +1,6 @@
 jvaught:
 Add 'info' icons to the settings page so it explains what everything does, the max/min, etc.
 
-Add additional information encoding into CSVs. [DONE - CSV metadata header with all 16 settings + settings.json per session]
 Add Doppler support for CSV; i.e., some way to decode them?
 
 Make it run faster, smoother.
