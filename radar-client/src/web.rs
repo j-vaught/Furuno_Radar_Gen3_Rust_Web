@@ -1181,6 +1181,70 @@ fn base64_decode(input: &str) -> Option<String> {
 
 // --- System metrics reader ---
 
+use std::sync::OnceLock;
+
+struct PrevSample {
+    cpu_times: Vec<(u64, u64)>,  // (idle, total) per core
+    net_rx: u64,
+    net_tx: u64,
+    timestamp: Instant,
+}
+
+static PREV_SAMPLE: OnceLock<Mutex<PrevSample>> = OnceLock::new();
+
+fn get_prev_sample() -> &'static Mutex<PrevSample> {
+    PREV_SAMPLE.get_or_init(|| Mutex::new(PrevSample {
+        cpu_times: vec![],
+        net_rx: 0,
+        net_tx: 0,
+        timestamp: Instant::now(),
+    }))
+}
+
+fn parse_cpu_times() -> Vec<(u64, u64)> {
+    let content = match std::fs::read_to_string("/proc/stat") {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut cores = vec![];
+    for line in content.lines() {
+        if !line.starts_with("cpu") { continue; }
+        // Skip the aggregate "cpu " line — only want "cpu0", "cpu1", etc.
+        let label = line.split_whitespace().next().unwrap_or("");
+        if label == "cpu" { continue; }
+        if !label.starts_with("cpu") { continue; }
+        let vals: Vec<u64> = line.split_whitespace().skip(1)
+            .filter_map(|s| s.parse::<u64>().ok())
+            .collect();
+        if vals.len() >= 4 {
+            // user, nice, system, idle, iowait, irq, softirq, ...
+            let idle = vals[3] + vals.get(4).copied().unwrap_or(0);
+            let total: u64 = vals.iter().sum();
+            cores.push((idle, total));
+        }
+    }
+    cores
+}
+
+fn parse_net_bytes() -> (u64, u64) {
+    let content = match std::fs::read_to_string("/proc/net/dev") {
+        Ok(c) => c,
+        Err(_) => return (0, 0),
+    };
+    let mut rx_total = 0u64;
+    let mut tx_total = 0u64;
+    for line in content.lines().skip(2) {
+        let line = line.trim();
+        if line.starts_with("lo:") { continue; }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 10 {
+            rx_total += parts[1].parse::<u64>().unwrap_or(0);
+            tx_total += parts[9].parse::<u64>().unwrap_or(0);
+        }
+    }
+    (rx_total, tx_total)
+}
+
 fn read_system_metrics() -> SystemMetrics {
     let mut metrics = SystemMetrics {
         cpu_cores: vec![],
@@ -1193,15 +1257,45 @@ fn read_system_metrics() -> SystemMetrics {
         temperature_c: 0.0,
     };
 
-    // CPU load from /proc/loadavg
-    if let Ok(content) = std::fs::read_to_string("/proc/loadavg") {
-        if let Some(load) = content.split_whitespace().next() {
-            if let Ok(val) = load.parse::<f64>() {
-                let num_cpus = num_cpus_count();
-                metrics.cpu_load = (val / num_cpus as f64).min(1.0);
-                metrics.cpu_cores = vec![metrics.cpu_load; num_cpus];
+    // Per-core CPU usage from /proc/stat delta
+    let cur_cpu = parse_cpu_times();
+    let (cur_rx, cur_tx) = parse_net_bytes();
+    let now = Instant::now();
+
+    if let Ok(mut prev) = get_prev_sample().lock() {
+        let elapsed = now.duration_since(prev.timestamp).as_secs_f64();
+        if elapsed > 0.05 && !prev.cpu_times.is_empty() && prev.cpu_times.len() == cur_cpu.len() {
+            let mut core_usage = Vec::with_capacity(cur_cpu.len());
+            for (i, &(cur_idle, cur_total)) in cur_cpu.iter().enumerate() {
+                let (prev_idle, prev_total) = prev.cpu_times[i];
+                let d_total = cur_total.saturating_sub(prev_total);
+                let d_idle = cur_idle.saturating_sub(prev_idle);
+                if d_total > 0 {
+                    core_usage.push(1.0 - (d_idle as f64 / d_total as f64));
+                } else {
+                    core_usage.push(0.0);
+                }
             }
+            metrics.cpu_load = if core_usage.is_empty() { 0.0 } else {
+                core_usage.iter().sum::<f64>() / core_usage.len() as f64
+            };
+            metrics.cpu_cores = core_usage;
+        } else if !cur_cpu.is_empty() {
+            metrics.cpu_cores = vec![0.0; cur_cpu.len()];
         }
+
+        // Network throughput
+        if elapsed > 0.05 && prev.net_rx > 0 {
+            let d_rx = cur_rx.saturating_sub(prev.net_rx) as f64;
+            let d_tx = cur_tx.saturating_sub(prev.net_tx) as f64;
+            metrics.network_rx_mbps = (d_rx / elapsed) / (1024.0 * 1024.0);
+            metrics.network_tx_mbps = (d_tx / elapsed) / (1024.0 * 1024.0);
+        }
+
+        prev.cpu_times = cur_cpu;
+        prev.net_rx = cur_rx;
+        prev.net_tx = cur_tx;
+        prev.timestamp = now;
     }
 
     // Memory from /proc/meminfo
@@ -1234,18 +1328,7 @@ fn read_system_metrics() -> SystemMetrics {
         }
     }
 
-    // Network (simplified — just report 0 for now since proper tracking needs two samples)
-    metrics.network_rx_mbps = 0.0;
-    metrics.network_tx_mbps = 0.0;
-
     metrics
-}
-
-fn num_cpus_count() -> usize {
-    std::fs::read_to_string("/proc/cpuinfo")
-        .map(|c| c.matches("processor").count())
-        .unwrap_or(4)
-        .max(1)
 }
 
 fn parse_meminfo_kb(line: &str) -> u64 {
