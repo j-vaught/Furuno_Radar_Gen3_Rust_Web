@@ -1,23 +1,21 @@
-# Ignore build artifacts
-*.o
-*.obj
-main/build/
-main/bin/
+# Rust build artifacts
+radar-client/target/
+
+# Runtime output
+collected_data/
+calibration_output/
+test_output/
+radar-client/validate_*/
+radar-client/recordings/
 
 # Data artifacts
 *.csv
-*.png
 *.tar
 *.tar.gz
 *.tgz
 *.gz
 *.zip
 *.zst
-
-# Runtime output directories
-main/runtime/output/
-collected_data/
-sample_backupv1/
 
 # OS/editor files
 .DS_Store

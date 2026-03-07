@@ -1,0 +1,10 @@
+\documentclass[border=5pt]{standalone}
+\usepackage{bytefield}
+
+\begin{document}
+\begin{bytefield}[bitwidth=1.5em]{32}
+\bitheader{0-31} \\
+\bitbox{32}{\texttt{00 00 00 08}} \\
+\bitbox{32}{\texttt{00 00 00 00}}
+\end{bytefield}
+\end{document}

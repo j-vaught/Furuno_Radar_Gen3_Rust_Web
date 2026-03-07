@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Furuno NXT DR-4D · Controls</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">Furuno NXT DR-4D</div>
+    <nav class="app-nav">
+      <a href="/index.html" data-active="true">Controls</a>
+      <a href="/radar.html">Radar View</a>
+      <a href="/settings.html">Settings</a>
+      <a href="/status.html">System Status</a>
+    </nav>
+  </header>
+
+  <main class="layout-home">
+    <section class="panel panel--span panel--preview-large">
+      <h2>Radar Preview</h2>
+      <img id="radarImage" class="preview preview--home" src="/newest_png" alt="No radar image">
+      <p class="small-note">Refreshing every 2 seconds. Need the big view? Jump to the <a href="/radar.html">Radar View</a>.</p>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>Quick Controls</h2>
+      <p class="small-note">For more control, go to the <a href="/settings.html">Settings</a> page.</p>
+      <input type="hidden" id="radarNo" value="0">
+      <div id="connStatus" class="callout callout--compact" data-variant="info">Checking...</div>
+      <div class="stack">
+        <div class="inline-actions">
+          <button class="btn-on" onclick="toggleEcho('on')" style="flex: 1;">ON</button>
+          <button class="btn-off" onclick="toggleEcho('off')" style="flex: 1;">OFF</button>
+        </div>
+        <button class="secondary" onclick="refreshTx()" style="width: 100%;">Refresh</button>
+      </div>
+      <div id="txResult" class="callout callout--compact" role="status" aria-live="polite" style="display:none;"></div>
+
+      <div class="stack">
+        <label>CSV Recording</label>
+        <div class="inline-actions">
+          <button class="btn-on" onclick="toggleRecording('start')" style="flex: 1;">Record</button>
+          <button class="btn-off" onclick="toggleRecording('stop')" style="flex: 1;">Stop</button>
+        </div>
+        <div id="recordResult" class="callout callout--compact" role="status" aria-live="polite" style="display:none;"></div>
+      </div>
+
+      <hr style="border:none; border-top:1px solid var(--border); margin:1rem 0;">
+
+      <div class="stack">
+        <label for="rangeIndex">Range</label>
+        <select id="rangeIndex">
+          <option value="0">0.125 NM</option>
+          <option value="1">0.25 NM</option>
+          <option value="2">0.5 NM</option>
+          <option value="3">0.75 NM</option>
+          <option value="4">1 NM</option>
+          <option value="5">1.5 NM</option>
+          <option value="6">2 NM</option>
+          <option value="7">3 NM</option>
+          <option value="8">4 NM</option>
+          <option value="9">6 NM</option>
+          <option value="10">8 NM</option>
+          <option value="11">12 NM</option>
+          <option value="12">16 NM</option>
+          <option value="13">24 NM</option>
+          <option value="14">32 NM</option>
+          <option value="19">36 NM</option>
+          <option value="21">0.0625 NM</option>
+        </select>
+        <div class="inline-actions">
+          <button class="primary" onclick="setRange()" style="flex: 1;">Set range</button>
+          <button class="secondary" onclick="refreshRange()" style="flex: 1;">Refresh</button>
+        </div>
+        <div id="rangeResult" class="callout callout--compact" role="status" aria-live="polite" style="display:none;"></div>
+      </div>
+
+      <div class="stack">
+        <label for="pwPulse">Pulse</label>
+        <select id="pwPulse">
+          <option value="0">S1</option>
+          <option value="1">S2</option>
+          <option value="2">M1</option>
+          <option value="3">M2</option>
+          <option value="4">M3</option>
+          <option value="5">L</option>
+        </select>
+        <div class="inline-actions">
+          <button class="primary" onclick="setPulse()" style="flex: 1;">Set pulse</button>
+          <button class="secondary" onclick="refreshPulse()" style="flex: 1;">Refresh</button>
+        </div>
+        <div id="pulseResult" class="callout callout--compact" role="status" aria-live="polite" style="display:none;"></div>
+      </div>
+
+      <div class="stack">
+        <label for="gainManual">Manual gain</label>
+        <input type="number" id="gainManual" value="50" min="0" max="100">
+        <div class="inline-actions">
+          <button class="primary" onclick="setGainManual()" style="flex: 1;">Apply</button>
+          <button class="secondary" onclick="refreshGain()" style="flex: 1;">Refresh</button>
+        </div>
+        <div id="gainResult" class="callout callout--compact" role="status" aria-live="polite" style="display:none;"></div>
+      </div>
+
+      <hr style="border:none; border-top:1px solid var(--border); margin:1rem 0;">
+
+      <div class="stack">
+        <label for="rezboostMode">RezBoost</label>
+        <select id="rezboostMode">
+          <option value="0">Off</option>
+          <option value="1">Low</option>
+          <option value="2">Medium</option>
+          <option value="3">High</option>
+        </select>
+        <div class="inline-actions">
+          <button class="primary" onclick="setRezBoost()" style="flex: 1;">Apply</button>
+          <button class="secondary" onclick="refreshRezBoost()" style="flex: 1;">Refresh</button>
+        </div>
+        <div id="rezboostResult" class="callout callout--compact" role="status" aria-live="polite" style="display:none;"></div>
+      </div>
+    </section>
+
+    <section class="panel calib-lock-card">
+      <h2>Pattern Loader</h2>
+      <p class="small-note">Load a pattern file, set repeats, and add to queue.</p>
+      <input id="patternFile" type="file" accept=".txt,.csv" style="display: none;">
+      <div class="stack">
+        <button class="primary" onclick="triggerFileInput()" style="width: 100%;">Load file</button>
+      </div>
+      <div class="stack">
+        <label for="patternRepeat">Repeat count</label>
+        <input id="patternRepeat" type="number" value="1" min="-1" step="1" title="-1 = infinite loop">
+      </div>
+      <div class="stack">
+        <label for="patternLabel">Pattern name</label>
+        <input id="patternLabel" type="text" placeholder="Optional label">
+      </div>
+      <div class="stack">
+        <button class="primary" onclick="addPatternToQueue()" style="width: 100%;">Add to queue</button>
+      </div>
+      <div id="patternStatus" class="callout" data-variant="info" role="status" aria-live="polite">Load a pattern file to get started.</div>
+      <div class="stack">
+        <div class="queue-heading">
+          <span class="queue-heading__title">Queue</span>
+          <span class="small-note">Patterns run in the order shown.</span>
+        </div>
+        <ul id="patternQueueList" class="list-plain"></ul>
+      </div>
+      <div class="inline-actions">
+        <button class="primary" onclick="startPatternQueue()" style="flex: 1;">RUN</button>
+        <button class="destructive" onclick="stopGainSweep()" style="flex: 1;">STOP</button>
+        <button class="secondary" onclick="clearPatternQueue()" style="flex: 1;">RESET</button>
+      </div>
+      <div id="patternRunResult" class="callout callout--compact" role="status" aria-live="polite">Output terminal</div>
+    </section>
+  </main>
+
+  <footer>
+    Visit the Settings page for more granular control. For System Metrics, go to the System Status page.
+  </footer>
+
+  <script src="/script.js" defer></script>
+</body>
+</html>

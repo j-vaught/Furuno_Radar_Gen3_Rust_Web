@@ -1,3 +1,0 @@
-# CHANGELOG
-
-- OpenAI Codex - 2026-03-06 01:49:36 EST
