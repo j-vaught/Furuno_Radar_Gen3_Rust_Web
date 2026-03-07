@@ -6,7 +6,6 @@ mod web;
 mod echo;
 mod modes;
 mod testing;
-mod calibrate;
 #[cfg(test)]
 mod tests;
 
@@ -109,7 +108,6 @@ fn main() {
             modes::run_dump_raw(count);
         }
         "test-commands" => testing::run_test_commands(),
-        "calibrate" => calibrate::run_calibrate(&positional[1..]),
         "discover" => modes::run_discover(),
         "validate" => testing::run_validate(),
         "web" => {
