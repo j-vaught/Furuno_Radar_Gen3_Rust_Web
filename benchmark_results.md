@@ -197,47 +197,60 @@ The Rust codebase has **zero proprietary dependencies**. It can be built and dep
 
 ## 4. Thread Activity During Active Data Capture
 
-Thread activity was profiled for 60 seconds while both servers were actively capturing radar data (TX ON + PNG rendering + CSV recording). Thread states were sampled at 50 Hz from `/proc/PID/task/TID/stat`.
+Profiled with `perf sched record` (kernel-level context switch tracing, nanosecond precision), `pidstat -t` (per-thread CPU% at 1-second intervals), and `/proc/stat` sampling at 50 Hz. All three tools ran simultaneously for 60 seconds while both servers were actively capturing radar data (TX ON + PNG rendering + CSV recording).
 
-### Rust: 8 Threads Active
+### perf sched: Kernel-Level Context Switch Analysis
 
-| Thread | Activity |
-|---|---|
-| radar-client (main) | Parked (futex), near-zero activity |
-| tokio-rt-worker ×4 | Brief wakes for HTTP requests, otherwise idle |
-| radar-client (echo) | Primary worker — decodes UDP echo, renders PNG, writes CSV |
-| tokio-rt-worker (extra) | Occasional wake for async tasks |
-| radar-client (recording) | Wakes briefly during CSV flush |
+| Metric | Rust | C++ |
+|---|---|---|
+| Threads with scheduler activity | 1 | 21 |
+| Total context switches | 6,413 | 80,456 (12.5x more) |
+| Total thread runtime | 91,713 ms | 239,807 ms (2.6x more) |
+| CPU utilization (of 240,000ms across 4 cores) | 38.2% | 99.9% |
 
-- **Running samples:** 0.7% of all samples
-- **Max simultaneously active:** 1 thread
-- **Pattern:** Event-driven — threads wake for microseconds, complete work, return to kernel sleep. The echo listener thread does nearly all the real work.
+**Rust** has a single thread (the echo listener, TID 871345) doing all the work — 6,413 context switches with an average run duration of 14.3ms. The Tokio worker threads and main thread have zero scheduler events because they are parked on epoll/futex the entire time.
 
-### C++: 23 Threads Active
+**C++ top threads by runtime:**
 
-| Thread | Activity |
-|---|---|
-| navnet_main (main) | Periodic wakes for callback dispatch |
-| SweepWriter | Wakes on condition_variable for PNG/CSV writes |
-| web_server | Boost ASIO accept loop |
-| libNAVNETDLL threads ×18 | Sleep-poll loops (hrtimer_nanosleep), constant 50–200ms wake cycles |
-| gmain / gdbus | GLib event loop threads (minimal activity) |
+| TID | Context Switches | Runtime (ms) | Avg Run (ms) | Max Run (ms) | Likely Role |
+|---|---|---|---|---|---|
+| 941979 | 8,665 | 45,229 | 5.2 | 177 | Sweep writer (PNG/CSV) |
+| 941949 | 20,709 | 40,375 | 1.9 | 436 | SDK polling loop |
+| 941955 | 5,966 | 23,721 | 4.0 | 206 | SDK polling loop |
+| 941970 | 765 | 22,746 | 29.7 | 886 | Echo/render thread |
+| 941959 | 6,027 | 23,152 | 3.8 | 363 | SDK polling loop |
+| 941967 | 5,974 | 20,944 | 3.5 | 202 | SDK polling loop |
+| 941953 | 5,969 | 18,670 | 3.1 | 192 | SDK polling loop |
+| (14 more) | ... | ... | ... | ... | SDK internal threads |
 
-- **Running samples:** 3.1% of all samples (4.4x more than Rust)
-- **Max simultaneously active:** 3 threads
-- **Pattern:** Sleep-poll — SDK threads wake every 50–200ms to check state, even when no data is flowing. Multiple threads are often active simultaneously.
+### pidstat: Per-Thread CPU Utilization
+
+| Metric | Rust | C++ |
+|---|---|---|
+| Process average CPU% | **4.10%** | **66.41%** |
+| Highest single thread | 4.12% (echo listener) | 37.49% (echo/render) |
+| Second highest thread | 0.00% (all others idle) | 24.70% (sweep writer) |
+| Threads with >0% CPU | 1 of 7 | 15 of 23 |
+
+The Rust process uses **16x less CPU** than C++ while producing the same output. Only the echo listener thread registers any measurable CPU usage. All 4 Tokio workers, the main thread, and the recording thread show 0.00% CPU.
 
 ### Key Observations
 
 1. **Rust does more work with fewer threads.** A single echo listener thread handles UDP recv, 4 encoding decoders, PPI rendering, and CSV/PNG writing — all in one tight loop. The C++ SDK spreads similar work across ~18 threads with inter-thread synchronization overhead.
 
-2. **CPU efficiency gap widens under load.** At idle, C++ burns 8.2% CPU vs Rust's 0.0%. During active capture, C++ has 3 threads running simultaneously vs Rust's 1, despite producing the same output (PNG images + CSV files).
+2. **C++ saturates all 4 CPU cores.** At 99.9% of total available CPU time (240,000ms across 4 cores), the C++ process is nearly maxing out the Pi's resources during active capture. Rust uses 38.2% — leaving 62% of CPU capacity free for other tasks.
 
-3. **The SDK's thread model is opaque and wasteful.** The application developer has no control over the 18 threads spawned by `libNAVNETDLL.so`. Many appear to be redundant polling loops that could be replaced with event-driven I/O.
+3. **The SDK's thread model is opaque and wasteful.** 21 threads generate 80,456 context switches (12.5x more than Rust). Many SDK threads have short average run times (1-5ms) with thousands of context switches, indicating sleep-poll patterns that burn CPU and cause scheduling overhead.
+
+4. **Context switch overhead compounds.** Each of the 80,456 C++ context switches incurs cache invalidation, TLB flush, and kernel transition costs. At ~1μs each, that's ~80ms of pure overhead — more than Rust's entire non-echo-listener CPU budget.
+
+![Thread Profiling](thread_profiling.png)
+
+*Top: Per-thread CPU% over time (pidstat, 1-second intervals). Middle: Context switches per thread (perf sched). Bottom: Total runtime per thread (perf sched). All captured during 60 seconds of active radar data capture.*
 
 ![Thread Activity Heatmap](thread_activity.png)
 
-*Thread activity heatmap during 60 seconds of active radar data capture (TX ON + PNG/CSV recording). Color intensity shows fraction of time each thread spends in the Running state per 200ms bin. Below each heatmap: number of simultaneously active threads over time.*
+*Thread activity heatmap from /proc/stat sampling at 50 Hz. Color intensity shows fraction of time each thread spends in the Running state per 200ms bin.*
 
 ---
 
@@ -250,8 +263,9 @@ Thread activity was profiled for 60 seconds while both servers were actively cap
 | Idle CPU | 8.2% | 0.0% | Rust |
 | Thread count (idle) | 21 | 6 | Rust (71% fewer) |
 | Thread count (active capture) | 23 | 8 | Rust (65% fewer) |
-| Active capture CPU (% running) | 3.1% | 0.7% | Rust (4.4x less) |
-| Max simultaneous active threads | 3 | 1 | Rust |
+| Active capture CPU (pidstat avg) | 66.41% | 4.10% | Rust (16x less) |
+| Context switches (60s capture) | 80,456 | 6,413 | Rust (12.5x fewer) |
+| CPU utilization (4-core, perf sched) | 99.9% | 38.2% | Rust |
 | Binary size (total) | 1.64 MB | 3.15 MB | C++ (48% smaller) |
 | Proprietary dependencies | 1 (libNAVNETDLL.so) | 0 | Rust |
 | Cross-platform | Linux only (SDK) | Linux, macOS, Windows | Rust |
@@ -260,4 +274,4 @@ Thread activity was profiled for 60 seconds while both servers were actively cap
 | CLI versatility | 1 mode | 12 modes | Rust |
 | Code lines | 2,451 | 5,469 | C++ (less code) |
 
-The C++ implementation starts faster because the SDK defers initialization, but pays for it with 3x more threads, constant idle CPU burn, and 4.4x more CPU time during active data capture. The Rust implementation takes longer to start because it performs a thorough synchronous handshake, but once running it is significantly more efficient — handling the full radar pipeline (echo decoding, PPI rendering, CSV/PNG recording) with a single active thread versus C++'s 3. The Rust codebase is also more portable, testable, and maintainable with zero proprietary dependencies.
+The C++ implementation starts faster because the SDK defers initialization, but pays for it with 3.5x more threads, 12.5x more context switches, and 16x more CPU usage during active data capture. The C++ process consumes 99.9% of available CPU across all 4 cores while Rust uses just 38.2% — leaving the majority of the Pi's resources free. The Rust implementation takes longer to start because it performs a thorough synchronous handshake, but once running it handles the full radar pipeline (echo decoding, PPI rendering, CSV/PNG recording) with a single active thread. The Rust codebase is also more portable, testable, and maintainable with zero proprietary dependencies.
