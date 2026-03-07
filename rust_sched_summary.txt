@@ -1,0 +1,18 @@
+Samples of sched_switch event do not have callchains.
+
+Runtime summary
+                          comm  parent   sched-in     run-time    min-run     avg-run     max-run  stddev  migrations
+                                          (count)       (msec)     (msec)      (msec)      (msec)       %
+---------------------------------------------------------------------------------------------------------------------
+   radar-client[871345/871231]      -1       6413    91713.265      0.000      14.301   23549.818   26.11       0
+
+Idle stats:
+    CPU  0 idle entire time window
+    CPU  1 idle entire time window
+    CPU  2 idle entire time window
+    CPU  3 idle entire time window
+
+    Total number of unique tasks: 1
+Total number of context switches: 6413
+           Total run time (msec): 91713.265 
+    Total scheduling time (msec): 60000.165  (x 4)

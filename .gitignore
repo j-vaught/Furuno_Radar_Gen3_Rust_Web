@@ -12,6 +12,8 @@ radar-client/recordings/
 *.csv
 !rust_threads2.csv
 !cpp_threads2.csv
+!rust_threads3.csv
+!cpp_threads3.csv
 *.tar
 *.tar.gz
 *.tgz
