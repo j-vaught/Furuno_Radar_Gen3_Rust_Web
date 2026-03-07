@@ -107,8 +107,8 @@ pub fn run_calibrate(args: &[String]) {
     for (step_idx, step) in pattern.iter().enumerate() {
         println!("[{}/{}] range={} gain={} pulse={} rez={} rot={} interp={}",
             step_idx + 1, total_steps,
-            step.range, step.gain, step.pulse_length,
-            step.rez_boost, step.rotation_speed, step.interpolation);
+            step.range.unwrap_or(0), step.gain.unwrap_or(0), step.pulse_length.unwrap_or(0),
+            step.rez_boost.unwrap_or(0), step.rotation_speed.unwrap_or(0), step.interpolation.unwrap_or(0));
 
         let cmds = step.commands_vs(prev_step);
         for cmd in &cmds {
@@ -126,7 +126,7 @@ pub fn run_calibrate(args: &[String]) {
 
             if !spokes.is_empty() {
                 let png_path = format!("{}/step{:05}_r{}_g{}_p{}_rot{}.png",
-                    output_dir, step_idx, step.range, step.gain, step.pulse_length, rot);
+                    output_dir, step_idx, step.range.unwrap_or(0), step.gain.unwrap_or(0), step.pulse_length.unwrap_or(0), rot);
                 let pixels = render::render_ppi(&spokes);
                 render::write_png(&png_path, &pixels, PPI_SIZE, PPI_SIZE);
             }

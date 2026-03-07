@@ -41,6 +41,78 @@ pub struct CurrentSettings {
     pub far_stc: u16,
 }
 
+#[derive(Clone, Serialize)]
+struct PatternStepInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    range: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gain: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pulse_length: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rez_boost: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rotation_speed: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interpolation: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sea_clutter: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rain_clutter: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    main_bang: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interference_rejection: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bird_mode: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    doppler: Option<u16>,
+    repeat: u16,
+}
+
+#[derive(Clone, Serialize)]
+struct PatternInfo {
+    mode: String,
+    label: String,
+    repeat: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    queue_total: Option<usize>,
+    steps: Vec<PatternStepInfo>,
+}
+
+#[derive(Clone, Serialize)]
+struct SettingChange {
+    timestamp: String,
+    setting: String,
+    value: serde_json::Value,
+}
+
+#[derive(Clone, Serialize)]
+struct ManualRecordingSettingsSnapshot {
+    mode: &'static str,
+    recording_dir: String,
+    current_settings: CurrentSettings,
+    history: Vec<SettingChange>,
+}
+
+#[derive(Clone, Serialize)]
+struct PatternRecordingSettingsSnapshot {
+    mode: &'static str,
+    recording_dir: String,
+    current_settings: CurrentSettings,
+    pattern: PatternInfo,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    history: Vec<SettingChange>,
+}
+
+#[derive(Clone)]
+enum RecordingSessionKind {
+    Manual,
+    Pattern(PatternInfo),
+}
+
 impl Default for CurrentSettings {
     fn default() -> Self {
         Self {
@@ -65,6 +137,10 @@ pub struct AppState {
     pattern_stop: AtomicBool,
     pattern_running: AtomicBool,
     pattern_status: RwLock<String>,
+    active_pattern: RwLock<Option<PatternInfo>>,
+    active_pattern_step: RwLock<Option<protocol::ControlStep>>,
+    setting_history: RwLock<Vec<SettingChange>>,
+    recording_session_kind: RwLock<RecordingSessionKind>,
     host_ip: Ipv4Addr,
     settings: RwLock<CurrentSettings>,
     start_time: Instant,
@@ -100,6 +176,10 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         pattern_stop: AtomicBool::new(false),
         pattern_running: AtomicBool::new(false),
         pattern_status: RwLock::new(String::new()),
+        active_pattern: RwLock::new(None),
+        active_pattern_step: RwLock::new(None),
+        setting_history: RwLock::new(Vec::new()),
+        recording_session_kind: RwLock::new(RecordingSessionKind::Manual),
         host_ip,
         settings: RwLock::new(CurrentSettings::default()),
         start_time: Instant::now(),
@@ -563,11 +643,21 @@ async fn handle_set_range(
     State(state): State<Arc<AppState>>,
     Query(params): Query<RangeParams>,
 ) -> String {
-    let cmd = protocol::cmd_range(params.range_index);
-    if let Ok(mut s) = state.settings.write() {
-        s.range_index = params.range_index;
-        s.range_label = protocol::wire_index_to_label(params.range_index).to_string();
+    if let Some(msg) = reject_manual_setting_change(&state, "range") {
+        return msg;
     }
+    let cmd = protocol::cmd_range(params.range_index);
+    apply_settings_update(
+        &state,
+        vec![
+            ("range_index", serde_json::json!(params.range_index)),
+            ("range_label", serde_json::json!(protocol::wire_index_to_label(params.range_index))),
+        ],
+        |s| {
+            s.range_index = params.range_index;
+            s.range_label = protocol::wire_index_to_label(params.range_index).to_string();
+        },
+    );
     send_cmd(state, cmd, "$N62,", format!("Range set to index {}", params.range_index)).await
 }
 
@@ -575,9 +665,14 @@ async fn handle_set_pulse(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PulseParams>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "pulse_width") {
+        return msg;
+    }
     let range_idx = params.range_index.unwrap_or(0);
     let cmd = protocol::cmd_pulse_width(params.pulse, range_idx);
-    if let Ok(mut s) = state.settings.write() { s.pulse_width = params.pulse; }
+    apply_settings_update(&state, vec![("pulse_width", serde_json::json!(params.pulse))], |s| {
+        s.pulse_width = params.pulse;
+    });
     let names = ["S1", "S2", "M1", "M2", "M3", "L"];
     let name = names.get(params.pulse as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$N68,", format!("Pulse set to {name}")).await
@@ -587,10 +682,23 @@ async fn handle_set_gain(
     State(state): State<Arc<AppState>>,
     Query(params): Query<GainParams>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "gain") {
+        return msg;
+    }
     let auto = params.status == 1;
     let value = if auto { params.auto_value.unwrap_or(0) } else { params.manual_value.unwrap_or(50) };
     let cmd = protocol::cmd_gain(auto, value);
-    if let Ok(mut s) = state.settings.write() { s.gain_auto = auto; s.gain_value = value; }
+    apply_settings_update(
+        &state,
+        vec![
+            ("gain_auto", serde_json::json!(auto)),
+            ("gain_value", serde_json::json!(value)),
+        ],
+        |s| {
+            s.gain_auto = auto;
+            s.gain_value = value;
+        },
+    );
     let mode = if auto { "auto" } else { "manual" };
     send_cmd(state, cmd, "$N63,", format!("Gain {mode}={value}")).await
 }
@@ -599,12 +707,17 @@ async fn handle_set_acsea(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SeaParams>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "sea_clutter") {
+        return msg;
+    }
     let status = params.status.unwrap_or(1) != 0;
     let manual = params.manual.unwrap_or(0);
     let auto_val = params.auto_val.unwrap_or(0);
     let sea_mode = params.mode.unwrap_or(0);
     let cmd = protocol::cmd_sea_clutter_full(status, manual, auto_val, sea_mode);
-    if let Ok(mut s) = state.settings.write() { s.sea_clutter = manual; }
+    apply_settings_update(&state, vec![("sea_clutter", serde_json::json!(manual))], |s| {
+        s.sea_clutter = manual;
+    });
     send_cmd(state, cmd, "$N64,", format!("A/C SEA: manual={manual}, auto={auto_val}")).await
 }
 
@@ -612,13 +725,18 @@ async fn handle_set_acrain(
     State(state): State<Arc<AppState>>,
     Query(params): Query<RainParams>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "rain_clutter") {
+        return msg;
+    }
     let status = params.status.unwrap_or(1) != 0;
     let manual = params.manual.unwrap_or(0);
     let auto_val = params.auto_val.unwrap_or(0);
     let ftc = params.ftc_mode.unwrap_or(0);
     let rain = params.rain_mode.unwrap_or(0);
     let cmd = protocol::cmd_rain_clutter_full(status, manual, auto_val, ftc, rain);
-    if let Ok(mut s) = state.settings.write() { s.rain_clutter = manual; }
+    apply_settings_update(&state, vec![("rain_clutter", serde_json::json!(manual))], |s| {
+        s.rain_clutter = manual;
+    });
     send_cmd(state, cmd, "$N65,", format!("A/C RAIN: manual={manual}, auto={auto_val}")).await
 }
 
@@ -626,9 +744,14 @@ async fn handle_set_rezboost(
     State(state): State<Arc<AppState>>,
     Query(params): Query<RezboostParams>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "rezboost") {
+        return msg;
+    }
     let mode = params.mode.unwrap_or(0);
     let cmd = protocol::cmd_rezboost(mode);
-    if let Ok(mut s) = state.settings.write() { s.rezboost = mode; }
+    apply_settings_update(&state, vec![("rezboost", serde_json::json!(mode))], |s| {
+        s.rezboost = mode;
+    });
     let names = ["Off", "Low", "Medium", "High"];
     let name = names.get(mode as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$NEE,", format!("RezBoost set to {name}")).await
@@ -638,10 +761,15 @@ async fn handle_set_antenna(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AntennaParams>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "antenna_speed") {
+        return msg;
+    }
     let speed = params.roll_speed.unwrap_or(0);
     let hi_rpm = params.hi_rpm.unwrap_or(0) != 0;
     let cmd = protocol::cmd_antenna_revolution(speed, hi_rpm);
-    if let Ok(mut s) = state.settings.write() { s.antenna_speed = speed; }
+    apply_settings_update(&state, vec![("antenna_speed", serde_json::json!(speed))], |s| {
+        s.antenna_speed = speed;
+    });
     let speed_names = ["Low", "High", "Auto"];
     let speed_name = speed_names.get(speed as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$N89,", format!("Antenna: speed={speed_name}, hiRPM={hi_rpm}")).await
@@ -651,8 +779,13 @@ async fn handle_set_near_stc(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ValueParam>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "near_stc") {
+        return msg;
+    }
     let cmd = protocol::cmd_near_stc(params.value);
-    if let Ok(mut s) = state.settings.write() { s.near_stc = params.value; }
+    apply_settings_update(&state, vec![("near_stc", serde_json::json!(params.value))], |s| {
+        s.near_stc = params.value;
+    });
     send_cmd(state, cmd, "$N85,", format!("Near STC set to {}", params.value)).await
 }
 
@@ -660,8 +793,13 @@ async fn handle_set_middle_stc(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ValueParam>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "middle_stc") {
+        return msg;
+    }
     let cmd = protocol::cmd_middle_stc(params.value);
-    if let Ok(mut s) = state.settings.write() { s.middle_stc = params.value; }
+    apply_settings_update(&state, vec![("middle_stc", serde_json::json!(params.value))], |s| {
+        s.middle_stc = params.value;
+    });
     send_cmd(state, cmd, "$N86,", format!("Middle STC set to {}", params.value)).await
 }
 
@@ -669,8 +807,13 @@ async fn handle_set_far_stc(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ValueParam>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "far_stc") {
+        return msg;
+    }
     let cmd = protocol::cmd_far_stc(params.value);
-    if let Ok(mut s) = state.settings.write() { s.far_stc = params.value; }
+    apply_settings_update(&state, vec![("far_stc", serde_json::json!(params.value))], |s| {
+        s.far_stc = params.value;
+    });
     send_cmd(state, cmd, "$N87,", format!("Far STC set to {}", params.value)).await
 }
 
@@ -678,9 +821,14 @@ async fn handle_set_main_bang(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ModeParam>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "main_bang") {
+        return msg;
+    }
     let val = params.value.unwrap_or(0);
     let cmd = protocol::cmd_main_bang(val);
-    if let Ok(mut s) = state.settings.write() { s.main_bang = val; }
+    apply_settings_update(&state, vec![("main_bang", serde_json::json!(val))], |s| {
+        s.main_bang = val;
+    });
     send_cmd(state, cmd, "$N83,", format!("Main Bang Suppression set to {val}")).await
 }
 
@@ -688,9 +836,18 @@ async fn handle_set_ir(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ModeParam>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "interference_rejection") {
+        return msg;
+    }
     let enabled = params.enabled.unwrap_or(0) != 0;
     let cmd = protocol::cmd_interference_rejection(enabled);
-    if let Ok(mut s) = state.settings.write() { s.interference_rejection = enabled; }
+    apply_settings_update(
+        &state,
+        vec![("interference_rejection", serde_json::json!(enabled))],
+        |s| {
+            s.interference_rejection = enabled;
+        },
+    );
     let label = if enabled { "ON" } else { "OFF" };
     send_cmd(state, cmd, "$N67,", format!("Interference Rejection {label}")).await
 }
@@ -699,9 +856,14 @@ async fn handle_set_bird_mode(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ModeParam>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "bird_mode") {
+        return msg;
+    }
     let level = params.level.unwrap_or(0);
     let cmd = protocol::cmd_bird_mode(level);
-    if let Ok(mut s) = state.settings.write() { s.bird_mode = level; }
+    apply_settings_update(&state, vec![("bird_mode", serde_json::json!(level))], |s| {
+        s.bird_mode = level;
+    });
     let names = ["Off", "Low", "Medium", "High"];
     let name = names.get(level as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$NED,", format!("Bird Mode set to {name}")).await
@@ -711,9 +873,14 @@ async fn handle_set_doppler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ModeParam>,
 ) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "doppler") {
+        return msg;
+    }
     let mode = params.mode.unwrap_or(0);
     let cmd = protocol::cmd_doppler(mode);
-    if let Ok(mut s) = state.settings.write() { s.doppler = mode; }
+    apply_settings_update(&state, vec![("doppler", serde_json::json!(mode))], |s| {
+        s.doppler = mode;
+    });
     let names = ["Off", "On (internal heading)", "On (external heading)"];
     let name = names.get(mode as usize).unwrap_or(&"?");
     send_cmd(state, cmd, "$NEF,", format!("Doppler set to {name}")).await
@@ -860,21 +1027,19 @@ async fn handle_toggle_recording(
 ) -> String {
     match params.mode.as_str() {
         "on" | "start" => {
-            let ts = timestamp_compact();
-            let dir = format!("recordings/{ts}");
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                return format!("Failed to create directory: {e}");
-            }
-            if let Ok(mut d) = state.record_dir.write() {
-                *d = dir.clone();
-            }
-            // Write initial settings.json for this recording session
-            if let Ok(settings) = state.settings.read() {
-                if let Ok(json) = serde_json::to_string_pretty(&*settings) {
-                    let _ = std::fs::write(format!("{dir}/settings.json"), json);
-                }
-            }
             state.recording.store(true, Ordering::Relaxed);
+            let active_pattern = state.active_pattern.read().ok().and_then(|p| p.clone());
+            let dir = if let Some(pattern) = active_pattern {
+                match start_pattern_recording_session(&state, pattern, Some("pattern")) {
+                    Ok(dir) => dir,
+                    Err(e) => return format!("Failed to create directory: {e}"),
+                }
+            } else {
+                match start_manual_recording_session(&state) {
+                    Ok(dir) => dir,
+                    Err(e) => return format!("Failed to create directory: {e}"),
+                }
+            };
             format!("Recording started. Saving to {dir}/")
         }
         "off" | "stop" => {
@@ -896,6 +1061,7 @@ async fn handle_stub() -> String {
 struct PatternParams {
     steps: String,
     repeat: Option<i32>,
+    label: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -909,21 +1075,80 @@ fn parse_pattern_steps(steps_str: &str) -> Result<Vec<protocol::ControlStep>, St
         let part = part.trim();
         if part.is_empty() { continue; }
         let fields: Vec<&str> = part.split(',').collect();
-        if fields.len() < 7 {
-            return Err(format!("Step {} has {} fields, need 7 (range,gain,pulse,rezboost,speed,interp,repeat)", i + 1, fields.len()));
+        if fields.len() != 7 && fields.len() != 13 {
+            return Err(format!(
+                "Step {} has {} fields, need 7 (legacy) or 13 (advanced)",
+                i + 1,
+                fields.len()
+            ));
         }
         let parse = |idx: usize, name: &str| -> Result<u16, String> {
             fields[idx].trim().parse::<u16>().map_err(|_| format!("Step {}: invalid {}: '{}'", i + 1, name, fields[idx].trim()))
         };
-        steps.push(protocol::ControlStep {
-            range: parse(0, "range")?,
-            gain: parse(1, "gain")?,
-            pulse_length: parse(2, "pulse")?,
-            rez_boost: parse(3, "rezboost")?,
-            rotation_speed: parse(4, "speed")?,
-            interpolation: parse(5, "interp")?,
-            repeat: parse(6, "repeat")?,
-        });
+        let parse_bool = |idx: usize, name: &str| -> Result<bool, String> {
+            match fields[idx].trim() {
+                "0" => Ok(false),
+                "1" => Ok(true),
+                other => Err(format!("Step {}: invalid {}: '{}'", i + 1, name, other)),
+            }
+        };
+        let parse_optional = |idx: usize, name: &str| -> Result<Option<u16>, String> {
+            let raw = fields[idx].trim();
+            if raw.eq_ignore_ascii_case("nan") {
+                Ok(None)
+            } else {
+                raw.parse::<u16>()
+                    .map(Some)
+                    .map_err(|_| format!("Step {}: invalid {}: '{}'", i + 1, name, raw))
+            }
+        };
+        let parse_optional_bool = |idx: usize, name: &str| -> Result<Option<bool>, String> {
+            let raw = fields[idx].trim();
+            if raw.eq_ignore_ascii_case("nan") {
+                Ok(None)
+            } else {
+                parse_bool(idx, name).map(Some)
+            }
+        };
+        let mut step = protocol::ControlStep {
+            range: None,
+            gain: None,
+            pulse_length: None,
+            rez_boost: None,
+            rotation_speed: None,
+            interpolation: None,
+            sea_clutter: None,
+            rain_clutter: None,
+            main_bang: None,
+            interference_rejection: None,
+            bird_mode: None,
+            doppler: None,
+            repeat: 0,
+        };
+        if fields.len() == 7 {
+            step.range = Some(parse(0, "range")?);
+            step.gain = Some(parse(1, "gain")?);
+            step.pulse_length = Some(parse(2, "pulse")?);
+            step.rez_boost = Some(parse(3, "rezboost")?);
+            step.rotation_speed = Some(parse(4, "speed")?);
+            step.interpolation = Some(parse(5, "interp")?);
+            step.repeat = parse(6, "repeat")?;
+        } else {
+            step.range = parse_optional(0, "range")?;
+            step.gain = parse_optional(1, "gain")?;
+            step.pulse_length = parse_optional(2, "pulse")?;
+            step.rez_boost = parse_optional(3, "rezboost")?;
+            step.rotation_speed = parse_optional(4, "speed")?;
+            step.interpolation = parse_optional(5, "interp")?;
+            step.sea_clutter = parse_optional(6, "sea_clutter")?;
+            step.rain_clutter = parse_optional(7, "rain_clutter")?;
+            step.main_bang = parse_optional(8, "main_bang")?;
+            step.interference_rejection = parse_optional_bool(9, "interference_rejection")?;
+            step.bird_mode = parse_optional(10, "bird_mode")?;
+            step.doppler = parse_optional(11, "doppler")?;
+            step.repeat = parse(12, "repeat")?;
+        }
+        steps.push(step);
     }
     if steps.is_empty() {
         return Err("No valid steps found".into());
@@ -931,7 +1156,280 @@ fn parse_pattern_steps(steps_str: &str) -> Result<Vec<protocol::ControlStep>, St
     Ok(steps)
 }
 
-fn execute_pattern(state: Arc<AppState>, steps: Vec<protocol::ControlStep>, loop_count: i32) {
+fn format_pattern_value<T: std::fmt::Display>(value: Option<T>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_else(|| "NaN".to_string())
+}
+
+fn pattern_step_allows_override(step: &protocol::ControlStep, setting: &str) -> bool {
+    match setting {
+        "range" => step.range.is_none(),
+        "gain" => step.gain.is_none(),
+        "pulse_width" => step.pulse_length.is_none(),
+        "rezboost" => step.rez_boost.is_none(),
+        "antenna_speed" => step.rotation_speed.is_none(),
+        "sea_clutter" => step.sea_clutter.is_none(),
+        "rain_clutter" => step.rain_clutter.is_none(),
+        "main_bang" => step.main_bang.is_none(),
+        "interference_rejection" => step.interference_rejection.is_none(),
+        "bird_mode" => step.bird_mode.is_none(),
+        "doppler" => step.doppler.is_none(),
+        _ => false,
+    }
+}
+
+fn reject_manual_setting_change(state: &AppState, setting: &str) -> Option<String> {
+    if !state.pattern_running.load(Ordering::Relaxed) {
+        return None;
+    }
+    let allowed = state
+        .active_pattern_step
+        .read()
+        .ok()
+        .and_then(|step| step.clone())
+        .is_some_and(|step| pattern_step_allows_override(&step, setting));
+    if allowed {
+        None
+    } else {
+        Some(format!(
+            "Pattern is running. '{setting}' is locked unless the current pattern step uses NaN for that field."
+        ))
+    }
+}
+
+fn pattern_info_from_steps(
+    mode: &str,
+    label: &str,
+    repeat: Option<i32>,
+    queue_index: Option<usize>,
+    queue_total: Option<usize>,
+    steps: &[protocol::ControlStep],
+) -> PatternInfo {
+    PatternInfo {
+        mode: mode.to_string(),
+        label: label.to_string(),
+        repeat,
+        queue_index,
+        queue_total,
+        steps: steps
+            .iter()
+            .map(|step| PatternStepInfo {
+                range: step.range,
+                gain: step.gain,
+                pulse_length: step.pulse_length,
+                rez_boost: step.rez_boost,
+                rotation_speed: step.rotation_speed,
+                interpolation: step.interpolation,
+                sea_clutter: step.sea_clutter,
+                rain_clutter: step.rain_clutter,
+                main_bang: step.main_bang,
+                interference_rejection: step.interference_rejection,
+                bird_mode: step.bird_mode,
+                doppler: step.doppler,
+                repeat: step.repeat,
+            })
+            .collect(),
+    }
+}
+
+fn record_setting_change(state: &AppState, setting: &str, value: serde_json::Value) {
+    if let Ok(mut history) = state.setting_history.write() {
+        history.push(SettingChange {
+            timestamp: timestamp_compact(),
+            setting: setting.to_string(),
+            value,
+        });
+    }
+}
+
+fn apply_settings_update<F>(state: &AppState, changes: Vec<(&str, serde_json::Value)>, update: F)
+where
+    F: FnOnce(&mut CurrentSettings),
+{
+    if let Ok(mut settings) = state.settings.write() {
+        update(&mut settings);
+    }
+    for (setting, value) in changes {
+        record_setting_change(state, setting, value);
+    }
+    if state.recording.load(Ordering::Relaxed) {
+        persist_recording_settings(state);
+    }
+}
+
+fn write_manual_settings_snapshot(state: &AppState, dir: &str) {
+    let current_settings = match state.settings.read() {
+        Ok(settings) => settings.clone(),
+        Err(_) => return,
+    };
+    let history = match state.setting_history.read() {
+        Ok(history) => history.clone(),
+        Err(_) => return,
+    };
+
+    let snapshot = ManualRecordingSettingsSnapshot {
+        mode: "manual",
+        recording_dir: dir.to_string(),
+        current_settings,
+        history,
+    };
+
+    if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
+        let _ = std::fs::write(format!("{dir}/settings.json"), json);
+    }
+}
+
+fn write_pattern_settings_snapshot(state: &AppState, dir: &str, pattern: &PatternInfo) {
+    let current_settings = match state.settings.read() {
+        Ok(settings) => settings.clone(),
+        Err(_) => return,
+    };
+    let history = match state.setting_history.read() {
+        Ok(history) => history.clone(),
+        Err(_) => return,
+    };
+    let snapshot = PatternRecordingSettingsSnapshot {
+        mode: "pattern",
+        recording_dir: dir.to_string(),
+        current_settings,
+        pattern: pattern.clone(),
+        history,
+    };
+    if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
+        let _ = std::fs::write(format!("{dir}/settings.json"), json);
+    }
+}
+
+fn persist_recording_settings(state: &AppState) {
+    let dir = match state.record_dir.read() {
+        Ok(dir) if !dir.is_empty() => dir.clone(),
+        _ => return,
+    };
+    let kind = match state.recording_session_kind.read() {
+        Ok(kind) => kind.clone(),
+        Err(_) => return,
+    };
+    match kind {
+        RecordingSessionKind::Manual => write_manual_settings_snapshot(state, &dir),
+        RecordingSessionKind::Pattern(pattern) => write_pattern_settings_snapshot(state, &dir, &pattern),
+    }
+}
+
+fn create_recording_dir(tag: Option<&str>) -> Result<String, std::io::Error> {
+    let ts = timestamp_compact();
+    let base = match tag {
+        Some(tag) => format!("recordings/{ts}_{tag}"),
+        None => format!("recordings/{ts}"),
+    };
+    let mut dir = base.clone();
+    let mut suffix = 1usize;
+    while std::path::Path::new(&dir).exists() {
+        dir = format!("{base}_{suffix:02}");
+        suffix += 1;
+    }
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+fn sanitize_pattern_label(label: &str) -> String {
+    let cleaned = label
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else if ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let trimmed = cleaned.trim_matches('_');
+    if trimmed.is_empty() {
+        "pattern".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn start_manual_recording_session(state: &AppState) -> Result<String, std::io::Error> {
+    let dir = create_recording_dir(None)?;
+    if let Ok(mut record_dir) = state.record_dir.write() {
+        *record_dir = dir.clone();
+    }
+    if let Ok(mut history) = state.setting_history.write() {
+        history.clear();
+    }
+    if let Ok(mut kind) = state.recording_session_kind.write() {
+        *kind = RecordingSessionKind::Manual;
+    }
+    persist_recording_settings(state);
+    Ok(dir)
+}
+
+fn start_pattern_recording_session(
+    state: &AppState,
+    pattern: PatternInfo,
+    tag: Option<&str>,
+) -> Result<String, std::io::Error> {
+    let dir = create_recording_dir(tag)?;
+    if let Ok(mut record_dir) = state.record_dir.write() {
+        *record_dir = dir.clone();
+    }
+    if let Ok(mut history) = state.setting_history.write() {
+        history.clear();
+    }
+    if let Ok(mut kind) = state.recording_session_kind.write() {
+        *kind = RecordingSessionKind::Pattern(pattern);
+    }
+    persist_recording_settings(state);
+    Ok(dir)
+}
+
+fn apply_pattern_step_to_settings(state: &AppState, step: &protocol::ControlStep) {
+    if let Ok(mut settings) = state.settings.write() {
+        if let Some(value) = step.range {
+            settings.range_index = value;
+            settings.range_label = protocol::wire_index_to_label(value).to_string();
+        }
+        if let Some(value) = step.gain {
+            settings.gain_auto = false;
+            settings.gain_value = value;
+        }
+        if let Some(value) = step.pulse_length {
+            settings.pulse_width = value;
+        }
+        if let Some(value) = step.rez_boost {
+            settings.rezboost = value;
+        }
+        if let Some(value) = step.rotation_speed {
+            settings.antenna_speed = value;
+        }
+        if let Some(value) = step.sea_clutter {
+            settings.sea_clutter = value;
+        }
+        if let Some(value) = step.rain_clutter {
+            settings.rain_clutter = value;
+        }
+        if let Some(value) = step.main_bang {
+            settings.main_bang = value;
+        }
+        if let Some(value) = step.interference_rejection {
+            settings.interference_rejection = value;
+        }
+        if let Some(value) = step.bird_mode {
+            settings.bird_mode = value;
+        }
+        if let Some(value) = step.doppler {
+            settings.doppler = value;
+        }
+    }
+}
+
+fn execute_pattern(
+    state: Arc<AppState>,
+    steps: Vec<protocol::ControlStep>,
+    loop_count: i32,
+) {
     state.pattern_running.store(true, Ordering::Relaxed);
     state.pattern_stop.store(false, Ordering::Relaxed);
 
@@ -958,14 +1456,26 @@ fn execute_pattern(state: Arc<AppState>, steps: Vec<protocol::ControlStep>, loop
                 if let Ok(mut status) = state.pattern_status.write() {
                     *status = "Stopped by user".into();
                 }
+                if let Ok(mut pattern) = state.active_pattern.write() {
+                    *pattern = None;
+                }
+                if let Ok(mut step_state) = state.active_pattern_step.write() {
+                    *step_state = None;
+                }
+                if state.recording.load(Ordering::Relaxed) {
+                    let _ = start_manual_recording_session(&state);
+                }
                 state.pattern_running.store(false, Ordering::Relaxed);
                 return;
             }
 
             if let Ok(mut status) = state.pattern_status.write() {
                 *status = format!("{iter_label} | step {}/{total_steps} | range={} gain={} pulse={} rez={} speed={} interp={} | waiting {} rotations",
-                    step_idx + 1, step.range, step.gain, step.pulse_length,
-                    step.rez_boost, step.rotation_speed, step.interpolation, step.repeat);
+                    step_idx + 1, format_pattern_value(step.range), format_pattern_value(step.gain), format_pattern_value(step.pulse_length),
+                    format_pattern_value(step.rez_boost), format_pattern_value(step.rotation_speed), format_pattern_value(step.interpolation), step.repeat);
+            }
+            if let Ok(mut step_state) = state.active_pattern_step.write() {
+                *step_state = Some(step.clone());
             }
 
             // Send commands for changed parameters
@@ -978,6 +1488,10 @@ fn execute_pattern(state: Arc<AppState>, steps: Vec<protocol::ControlStep>, loop
                 }
                 // Brief settle time after config change
                 thread::sleep(Duration::from_millis(300));
+            }
+            apply_pattern_step_to_settings(&state, step);
+            if state.recording.load(Ordering::Relaxed) {
+                persist_recording_settings(&state);
             }
 
             // Wait for the specified number of rotations
@@ -1002,6 +1516,15 @@ fn execute_pattern(state: Arc<AppState>, steps: Vec<protocol::ControlStep>, loop
     if let Ok(mut status) = state.pattern_status.write() {
         *status = format!("Complete ({total_steps} steps x {loop_label} loops)");
     }
+    if let Ok(mut pattern) = state.active_pattern.write() {
+        *pattern = None;
+    }
+    if let Ok(mut step_state) = state.active_pattern_step.write() {
+        *step_state = None;
+    }
+    if state.recording.load(Ordering::Relaxed) {
+        let _ = start_manual_recording_session(&state);
+    }
     state.pattern_running.store(false, Ordering::Relaxed);
 }
 
@@ -1024,6 +1547,18 @@ async fn handle_run_pattern(
     let repeat = params.repeat.unwrap_or(1);
     let num_steps = steps.len();
     let loop_label = if repeat < 0 { "infinite".to_string() } else { repeat.to_string() };
+    let pattern_label = params.label.unwrap_or_else(|| "pattern".to_string());
+    let pattern_info = pattern_info_from_steps("single", &pattern_label, Some(repeat), None, None, &steps);
+    if let Ok(mut pattern) = state.active_pattern.write() {
+        *pattern = Some(pattern_info.clone());
+    }
+    if state.recording.load(Ordering::Relaxed) {
+        let folder_tag = sanitize_pattern_label(&pattern_info.label);
+        match start_pattern_recording_session(&state, pattern_info.clone(), Some(&folder_tag)) {
+            Ok(_) => {}
+            Err(e) => return format!("Failed to create recording directory: {e}"),
+        }
+    }
 
     let st = state.clone();
     thread::spawn(move || execute_pattern(st, steps, repeat));
@@ -1053,18 +1588,22 @@ async fn handle_run_pattern_queue(
     }
 
     // Parse payload: "repeat1:base64(steps1),repeat2:base64(steps2),..."
-    let mut queue: Vec<(i32, Vec<protocol::ControlStep>)> = Vec::new();
+    let mut queue: Vec<(String, i32, Vec<protocol::ControlStep>)> = Vec::new();
 
     for (i, item) in form.payload.split(',').enumerate() {
-        let parts: Vec<&str> = item.splitn(2, ':').collect();
-        if parts.len() != 2 {
-            return format!("Queue item {} invalid format (expected repeat:base64)", i + 1);
+        let parts: Vec<&str> = item.splitn(3, ':').collect();
+        if parts.len() != 3 {
+            return format!("Queue item {} invalid format (expected repeat:base64(label):base64(steps))", i + 1);
         }
         let repeat: i32 = match parts[0].parse() {
             Ok(r) => r,
             Err(_) => return format!("Queue item {}: invalid repeat count '{}'", i + 1, parts[0]),
         };
-        let decoded = match base64_decode(parts[1]) {
+        let label = match base64_decode(parts[1]) {
+            Some(s) => s,
+            None => return format!("Queue item {}: invalid label base64", i + 1),
+        };
+        let decoded = match base64_decode(parts[2]) {
             Some(s) => s,
             None => return format!("Queue item {}: invalid base64", i + 1),
         };
@@ -1072,7 +1611,7 @@ async fn handle_run_pattern_queue(
             Ok(s) => s,
             Err(e) => return format!("Queue item {}: {e}", i + 1),
         };
-        queue.push((repeat, steps));
+        queue.push((label, repeat, steps));
     }
 
     if queue.is_empty() {
@@ -1085,9 +1624,22 @@ async fn handle_run_pattern_queue(
         st.pattern_running.store(true, Ordering::Relaxed);
         st.pattern_stop.store(false, Ordering::Relaxed);
 
-        for (qi, (repeat, steps)) in queue.iter().enumerate() {
+        for (qi, (label, repeat, steps)) in queue.iter().enumerate() {
             if st.pattern_stop.load(Ordering::Relaxed) {
                 break;
+            }
+            let queue_pattern = pattern_info_from_steps("queue", label, Some(*repeat), Some(qi + 1), Some(num_items), steps);
+            if let Ok(mut pattern) = st.active_pattern.write() {
+                *pattern = Some(queue_pattern.clone());
+            }
+            if st.recording.load(Ordering::Relaxed) {
+                let tag = sanitize_pattern_label(&queue_pattern.label);
+                if let Err(e) = start_pattern_recording_session(&st, queue_pattern.clone(), Some(&tag)) {
+                    if let Ok(mut status) = st.pattern_status.write() {
+                        *status = format!("Queue {}/{} failed to create recording directory: {e}", qi + 1, num_items);
+                    }
+                    break;
+                }
             }
             if let Ok(mut status) = st.pattern_status.write() {
                 *status = format!("Queue {}/{num_items}: starting ({} steps, repeat={})", qi + 1, steps.len(), repeat);
@@ -1107,8 +1659,11 @@ async fn handle_run_pattern_queue(
                     }
                     if let Ok(mut status) = st.pattern_status.write() {
                         *status = format!("Queue {}/{num_items} | loop {iteration} | step {}/{total_steps} | r={} g={} p={} rez={} spd={} interp={} | {} rots",
-                            qi + 1, step_idx + 1, step.range, step.gain, step.pulse_length,
-                            step.rez_boost, step.rotation_speed, step.interpolation, step.repeat);
+                            qi + 1, step_idx + 1, format_pattern_value(step.range), format_pattern_value(step.gain), format_pattern_value(step.pulse_length),
+                            format_pattern_value(step.rez_boost), format_pattern_value(step.rotation_speed), format_pattern_value(step.interpolation), step.repeat);
+                    }
+                    if let Ok(mut step_state) = st.active_pattern_step.write() {
+                        *step_state = Some(step.clone());
                     }
                     let cmds = step.commands_vs(prev_step);
                     if !cmds.is_empty() {
@@ -1118,6 +1673,10 @@ async fn handle_run_pattern_queue(
                             }
                         }
                         thread::sleep(Duration::from_millis(300));
+                    }
+                    apply_pattern_step_to_settings(&st, step);
+                    if st.recording.load(Ordering::Relaxed) {
+                        persist_recording_settings(&st);
                     }
                     let start_rot = st.rotation_count.load(Ordering::Relaxed);
                     let target_rot = start_rot + step.repeat as u64;
@@ -1137,6 +1696,15 @@ async fn handle_run_pattern_queue(
             } else {
                 *status = format!("Queue complete ({num_items} patterns)");
             }
+        }
+        if let Ok(mut pattern) = st.active_pattern.write() {
+            *pattern = None;
+        }
+        if let Ok(mut step_state) = st.active_pattern_step.write() {
+            *step_state = None;
+        }
+        if st.recording.load(Ordering::Relaxed) {
+            let _ = start_manual_recording_session(&st);
         }
         st.pattern_running.store(false, Ordering::Relaxed);
     });
@@ -1453,26 +2021,24 @@ fn write_echo_csv(path: &str, spokes: &[Spoke], settings: &CurrentSettings) {
     let _ = writeln!(f, "# near_stc,{}", settings.near_stc);
     let _ = writeln!(f, "# middle_stc,{}", settings.middle_stc);
     let _ = writeln!(f, "# far_stc,{}", settings.far_stc);
+    let _ = writeln!(f, "Status\tScale\tRange\tGain\tAngle\tEchoValues");
 
-    let max_bins = spokes.iter().map(|s| s.echo.len()).max().unwrap_or(0);
-    let mut header = String::from("spoke_index,angle_ticks,angle_deg,heading_ticks,num_bins");
-    for i in 0..max_bins {
-        header.push_str(&format!(",bin_{i}"));
-    }
-    let _ = writeln!(f, "{header}");
+    let gain = ((settings.gain_value as u32 * 100) / 255) as u16;
+    let scale = settings.range_index;
+    let range = settings.range_index;
 
-    for (i, spoke) in spokes.iter().enumerate() {
-        let angle_deg = spoke.angle_ticks as f64 / 8192.0 * 360.0;
-        let _ = write!(
-            f, "{i},{},{angle_deg:.2},{},{}",
-            spoke.angle_ticks, spoke.heading_ticks, spoke.echo.len()
+    for spoke in spokes {
+        let echo_values = spoke
+            .echo
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let _ = writeln!(
+            f,
+            "0\t{scale}\t{range}\t{gain}\t{}\t{}",
+            spoke.angle_ticks.min(8191),
+            echo_values
         );
-        for &val in &spoke.echo {
-            let _ = write!(f, ",{val}");
-        }
-        for _ in spoke.echo.len()..max_bins {
-            let _ = write!(f, ",0");
-        }
-        let _ = writeln!(f);
     }
 }

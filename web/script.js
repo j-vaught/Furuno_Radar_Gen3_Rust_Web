@@ -733,7 +733,7 @@ function startGainSweep() {
   }
   setCallout('patternStatus', `Running "${label}" with repeat ${repeatText}.`, 'info');
   setCallout('patternRunResult', 'Starting pattern…', 'info');
-  fetch(`/run_pattern?steps=${encodeURIComponent(lastLoadedPattern.steps)}&repeat=${repeat}`)
+  fetch(`/run_pattern?steps=${encodeURIComponent(lastLoadedPattern.steps)}&repeat=${repeat}&label=${encodeURIComponent(label)}`)
     .then(r => r.text())
     .then(t => {
       setCallout('patternRunResult', t, 'info');
@@ -807,14 +807,20 @@ function loadPatternFromTextarea() {
     textarea.style.display = '';
     // Show help text if textarea is empty
     if (!textarea.value) {
-      const helpText = `Format: range,gain,pulse,rezboost,speed,interp,repeat
+      const helpText = `Legacy format: range,gain,pulse,rezboost,speed,interp,repeat
+Advanced format: range,gain,pulse,rezboost,speed,interp,sea,rain,mainbang,ir,bird,doppler,repeat
 
-range(0-21) gain(0-99) pulse(0=S1…5=L) rezboost(0=Off…3=High)
+range(0-21) gain(0-255) pulse(0=S1…5=L) rezboost(0=Off…3=High)
 speed(0=Lo,1=Hi,2=Auto) interp(0=2048,1=4096,2=8192,3=1024,4=720,5=Off)
+sea/rain/mainbang use radar numeric values
+ir(0=off,1=on) bird(0=off..3=high) doppler(0=off,1=internal,2=external)
+In advanced patterns, any field except repeat can be set to NaN to preserve the current radar setting
 repeat(sweeps at this setting)
 
-Example:
-0,20,0,0,2,5,2; 0,25,1,1,2,0,3
+Examples:
+0,20,0,0,2,5,2
+0,128,0,0,2,5,10,0,0,1,0,0,2
+0,128,0,0,2,5,NaN,NaN,2,keep,3,NaN,2
 
 Separate steps with semicolons`;
       textarea.value = helpText;
@@ -895,7 +901,7 @@ function startPatternQueue() {
   }
 
   const payload = patternQueue
-    .map(item => `${item.repeat}:${btoa(item.steps)}`)
+    .map(item => `${item.repeat}:${btoa(unescape(encodeURIComponent(item.label || 'pattern')))}:${btoa(item.steps)}`)
     .join(',');
 
   setCallout('patternRunResult', 'Starting queued patterns…', 'info');

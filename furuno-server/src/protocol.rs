@@ -843,12 +843,18 @@ pub fn is_keepalive(data: &[u8]) -> bool {
 /// full antenna rotations to hold at that configuration.
 #[derive(Clone)]
 pub struct ControlStep {
-    pub range: u16,
-    pub gain: u16,
-    pub pulse_length: u16,     // 0=S1, 1=S2, 2=M1, 3=M2, 4=M3, 5=L
-    pub rez_boost: u16,        // 0=off, 1=low, 2=med, 3=high
-    pub rotation_speed: u16,   // 0=LO, 1=HI, 2=AUTO
-    pub interpolation: u16,    // 0=2048, 1=4096, 2=8192, 3=1024, 4=720, 5=OFF
+    pub range: Option<u16>,
+    pub gain: Option<u16>,
+    pub pulse_length: Option<u16>,     // 0=S1, 1=S2, 2=M1, 3=M2, 4=M3, 5=L
+    pub rez_boost: Option<u16>,        // 0=off, 1=low, 2=med, 3=high
+    pub rotation_speed: Option<u16>,   // 0=LO, 1=HI, 2=AUTO
+    pub interpolation: Option<u16>,    // 0=2048, 1=4096, 2=8192, 3=1024, 4=720, 5=OFF
+    pub sea_clutter: Option<u16>,
+    pub rain_clutter: Option<u16>,
+    pub main_bang: Option<u16>,
+    pub interference_rejection: Option<bool>,
+    pub bird_mode: Option<u16>,
+    pub doppler: Option<u16>,
     pub repeat: u16,           // number of rotations at this setting
 }
 
@@ -857,27 +863,64 @@ impl ControlStep {
     /// Only emits commands for parameters that differ from `prev`.
     pub fn commands_vs(&self, prev: Option<&ControlStep>) -> Vec<String> {
         let mut cmds = Vec::new();
-        let changed = |getter: fn(&ControlStep) -> u16| -> bool {
-            match prev {
-                Some(p) => getter(self) != getter(p),
-                None => true,
-            }
+        let changed_u16 = |getter: fn(&ControlStep) -> Option<u16>| -> Option<u16> {
+            let current = getter(self)?;
+            let prev_val = prev.and_then(getter);
+            if prev_val != Some(current) { Some(current) } else { None }
+        };
+        let changed_bool = |getter: fn(&ControlStep) -> Option<bool>| -> Option<bool> {
+            let current = getter(self)?;
+            let prev_val = prev.and_then(getter);
+            if prev_val != Some(current) { Some(current) } else { None }
         };
 
-        if changed(|s| s.range) {
-            cmds.push(cmd_range(self.range));
+        if let Some(value) = changed_u16(|s| s.range) {
+            cmds.push(cmd_range(value));
         }
-        if changed(|s| s.gain) {
-            cmds.push(cmd_gain(false, self.gain));
+        if let Some(value) = changed_u16(|s| s.gain) {
+            cmds.push(cmd_gain(false, value));
         }
-        if changed(|s| s.pulse_length) {
-            cmds.push(cmd_pulse_width(self.pulse_length, self.range));
+        if let (Some(pulse), Some(range)) = (changed_u16(|s| s.pulse_length), self.range) {
+            cmds.push(cmd_pulse_width(pulse, range));
         }
-        if changed(|s| s.rez_boost) {
-            cmds.push(cmd_rezboost(self.rez_boost));
+        if let Some(value) = changed_u16(|s| s.rez_boost) {
+            cmds.push(cmd_rezboost(value));
         }
-        if changed(|s| s.rotation_speed) {
-            cmds.push(cmd_antenna_revolution(self.rotation_speed, self.rotation_speed == 1));
+        if let Some(value) = changed_u16(|s| s.rotation_speed) {
+            cmds.push(cmd_antenna_revolution(value, value == 1));
+        }
+        if self
+            .sea_clutter
+            .is_some_and(|value| prev.and_then(|p| p.sea_clutter) != Some(value))
+        {
+            cmds.push(cmd_sea_clutter(true, self.sea_clutter.unwrap()));
+        }
+        if self
+            .rain_clutter
+            .is_some_and(|value| prev.and_then(|p| p.rain_clutter) != Some(value))
+        {
+            cmds.push(cmd_rain_clutter(true, self.rain_clutter.unwrap()));
+        }
+        if self
+            .main_bang
+            .is_some_and(|value| prev.and_then(|p| p.main_bang) != Some(value))
+        {
+            cmds.push(cmd_main_bang(self.main_bang.unwrap()));
+        }
+        if let Some(value) = changed_bool(|s| s.interference_rejection) {
+            cmds.push(cmd_interference_rejection(value));
+        }
+        if self
+            .bird_mode
+            .is_some_and(|value| prev.and_then(|p| p.bird_mode) != Some(value))
+        {
+            cmds.push(cmd_bird_mode(self.bird_mode.unwrap()));
+        }
+        if self
+            .doppler
+            .is_some_and(|value| prev.and_then(|p| p.doppler) != Some(value))
+        {
+            cmds.push(cmd_doppler(self.doppler.unwrap()));
         }
         cmds
     }
@@ -902,12 +945,18 @@ pub fn generate_pattern(
                     for &interp in interpolations {
                         for gain in gain_start..=gain_end {
                             pattern.push(ControlStep {
-                                range,
-                                gain,
-                                pulse_length: pulse,
-                                rez_boost: rez,
-                                rotation_speed: rot,
-                                interpolation: interp,
+                                range: Some(range),
+                                gain: Some(gain),
+                                pulse_length: Some(pulse),
+                                rez_boost: Some(rez),
+                                rotation_speed: Some(rot),
+                                interpolation: Some(interp),
+                                sea_clutter: None,
+                                rain_clutter: None,
+                                main_bang: None,
+                                interference_rejection: None,
+                                bird_mode: None,
+                                doppler: None,
                                 repeat: repeat_count,
                             });
                         }
