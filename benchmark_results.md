@@ -248,10 +248,6 @@ The Rust process uses **16x less CPU** than C++ while producing the same output.
 
 *Top: Per-thread CPU% over time (pidstat, 1-second intervals). Middle: Context switches per thread (perf sched). Bottom: Total runtime per thread (perf sched). All captured during 60 seconds of active radar data capture.*
 
-![Thread Activity Heatmap](thread_activity.png)
-
-*Thread activity heatmap from /proc/stat sampling at 50 Hz. Color intensity shows fraction of time each thread spends in the Running state per 200ms bin.*
-
 ---
 
 ## 5. Summary
