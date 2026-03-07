@@ -244,7 +244,7 @@ The Rust process uses **16x less CPU** than C++ while producing the same output.
 
 4. **Context switch overhead compounds.** Each of the 80,456 C++ context switches incurs cache invalidation, TLB flush, and kernel transition costs. At ~1μs each, that's ~80ms of pure overhead — more than Rust's entire non-echo-listener CPU budget.
 
-![Thread Profiling](thread_profiling.png)
+![Thread Profiling](profiling/thread_profiling.png)
 
 *Top: Per-thread CPU% over time (pidstat, 1-second intervals). Middle: Context switches per thread (perf sched). Bottom: Total runtime per thread (perf sched). All captured during 60 seconds of active radar data capture.*
 
