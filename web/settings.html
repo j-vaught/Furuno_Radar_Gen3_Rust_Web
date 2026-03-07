@@ -48,7 +48,7 @@
       <h2>Range &amp; Pulse</h2>
       <p class="small-note">Adjust range and pulse independently or apply both together.</p>
       <div class="stack">
-        <label for="rangeIndex">Range</label>
+        <label for="rangeIndex">Range <span class="info-tip" data-tip="Detection range in nautical miles. Shorter ranges give higher resolution; longer ranges detect farther targets. 0.0625–36 NM.">i</span></label>
         <div class="inline-actions">
           <select id="rangeIndex" style="flex: 1;">
             <option value="0">0.125 NM</option>
@@ -73,7 +73,7 @@
         </div>
       </div>
       <div class="stack">
-        <label for="pwPulse">Pulse</label>
+        <label for="pwPulse">Pulse <span class="info-tip" data-tip="Transmit pulse width. S1/S2 = short (better resolution), M1–M3 = medium, L = long (better range). Shorter pulses resolve nearby targets; longer pulses reach farther.">i</span></label>
         <div class="inline-actions">
           <select id="pwPulse" style="flex: 1;">
             <option value="0">S1</option>
@@ -94,7 +94,7 @@
     <section class="panel calib-lock-card">
       <h2>Calibration Tools</h2>
       <div class="stack">
-        <label>Calibration cycles</label>
+        <label>Calibration cycles <span class="info-tip" data-tip="Automated sweeps across parameter combinations. Standard cycles through range/gain/pulse. RezBoost adds RezBoost levels to the sweep.">i</span></label>
         <button class="secondary" style="width: 100%;" onclick="beginCalibration()">Begin Standard Calibration</button>
         <button class="secondary" style="width: 100%;" onclick="beginRezboostCalibration()">Begin RezBoost Calibration</button>
         <button class="destructive" style="width: 100%;" onclick="stopCalibration()">STOP CALIBRATION</button>
@@ -113,7 +113,7 @@
         <textarea id="patternTextarea" rows="4" style="display:none;"></textarea>
       </div>
       <div class="stack">
-        <label for="patternRepeat">Repeat count</label>
+        <label for="patternRepeat">Repeat count <span class="info-tip" data-tip="How many times to repeat the pattern. Set to -1 for infinite looping.">i</span></label>
         <input id="patternRepeat" type="number" value="1" min="-1" step="1" title="-1 = infinite loop">
       </div>
       <div class="stack">
@@ -142,7 +142,7 @@
     <section class="panel calib-lock-card">
       <h2>RezBoost &amp; Display Defaults</h2>
       <div class="stack">
-        <label for="rezboostMode">RezBoost baseline</label>
+        <label for="rezboostMode">RezBoost baseline <span class="info-tip" data-tip="Resolution enhancement processing. Off/Low/Medium/High. Higher settings improve target separation but may increase noise.">i</span></label>
         <select id="rezboostMode">
           <option value="0">Off</option>
           <option value="1">Low</option>
@@ -155,7 +155,7 @@
         </div>
       </div>
       <div class="stack">
-        <label for="sweepMode">Sweep lines</label>
+        <label for="sweepMode">Sweep lines <span class="info-tip" data-tip="Number of radial spokes per rotation. Higher values (8192) give finer angular resolution but use more bandwidth. 720–8192.">i</span></label>
         <select id="sweepMode">
           <option value="3">1024</option>
           <option value="0">2048</option>
@@ -165,7 +165,7 @@
         </select>
       </div>
       <div class="stack">
-        <label for="interpEnable">Interpolation</label>
+        <label for="interpEnable">Interpolation <span class="info-tip" data-tip="Smooths gaps between spokes for a cleaner display. Always On recommended for normal use.">i</span></label>
         <select id="interpEnable">
           <option value="1">Always on</option>
           <option value="0">Off</option>
@@ -182,7 +182,7 @@
     <section class="panel calib-lock-card">
       <h2>Antenna Speed</h2>
       <div class="stack">
-        <label for="rollSpd">Rotation speed</label>
+        <label for="rollSpd">Rotation speed <span class="info-tip" data-tip="Antenna rotation speed. Auto adjusts based on range. Low = ~24 RPM, High = ~48 RPM. Higher speed gives faster updates but less dwell time per spoke.">i</span></label>
         <select id="rollSpd">
           <option value="2">Auto</option>
           <option value="0">Low</option>
@@ -194,7 +194,7 @@
         </div>
       </div>
       <div class="stack">
-        <label for="hiRpm">High RPM mode</label>
+        <label for="hiRpm">High RPM mode <span class="info-tip" data-tip="Forces maximum antenna rotation speed regardless of range setting. Use for fast-update applications.">i</span></label>
         <select id="hiRpm">
           <option value="0">Off</option>
           <option value="1">On</option>
@@ -210,7 +210,7 @@
     <section class="panel calib-lock-card">
       <h2>Gain</h2>
       <div class="stack">
-        <label for="gainMode">Gain mode</label>
+        <label for="gainMode">Gain mode <span class="info-tip" data-tip="Manual: set gain directly. Auto: radar adjusts gain automatically with a bias offset.">i</span></label>
         <select id="gainMode">
           <option value="manual">Manual</option>
           <option value="auto">Auto</option>
@@ -218,12 +218,12 @@
       </div>
       <div class="grid grid--two">
         <div class="stack" data-gain-mode="manual">
-          <label for="gainManual">Manual gain</label>
+          <label for="gainManual">Manual gain <span class="info-tip" data-tip="Receiver gain level. 0 = minimum sensitivity, 100 = maximum. Higher values show weaker echoes but also more noise.">i</span></label>
           <input type="number" id="gainManual" value="50" min="0" max="100">
           <button class="secondary" onclick="setGainManual()">Apply manual</button>
         </div>
         <div class="stack" data-gain-mode="auto">
-          <label for="gainAuto">Auto gain</label>
+          <label for="gainAuto">Auto gain <span class="info-tip" data-tip="Bias offset for automatic gain control. 0–100. Higher values make auto gain more aggressive (shows weaker targets).">i</span></label>
           <input type="number" id="gainAuto" value="30" min="0" max="100">
           <button class="secondary" onclick="setGainAuto()">Apply auto</button>
         </div>
@@ -236,15 +236,15 @@
       <h2>STC</h2>
       <div class="grid grid--two">
         <div class="stack">
-          <label for="nearStc">STC near</label>
+          <label for="nearStc">STC near <span class="info-tip" data-tip="Sensitivity Time Control for near-range echoes. Reduces clutter from close targets and sea return. 0 = off.">i</span></label>
           <input id="nearStc" type="number" value="0">
         </div>
         <div class="stack">
-          <label for="midStc">STC mid</label>
+          <label for="midStc">STC mid <span class="info-tip" data-tip="Sensitivity Time Control for mid-range echoes. Attenuates clutter in the middle distance band. 0 = off.">i</span></label>
           <input id="midStc" type="number" value="0">
         </div>
         <div class="stack">
-          <label for="farStc">STC far</label>
+          <label for="farStc">STC far <span class="info-tip" data-tip="Sensitivity Time Control for far-range echoes. Attenuates clutter at long distances. 0 = off.">i</span></label>
           <input id="farStc" type="number" value="0">
         </div>
       </div>
@@ -258,7 +258,7 @@
       <h2>Signal Processing</h2>
       <div class="grid grid--two">
         <div class="stack">
-          <label for="mainBangVal">Main Bang Suppression</label>
+          <label for="mainBangVal">Main Bang Suppression <span class="info-tip" data-tip="Suppresses the transmitter's own signal reflected at zero range. 0–255. Increase if you see a bright spot at the center of the PPI.">i</span></label>
           <input id="mainBangVal" type="number" value="0" min="0" max="255">
           <div class="inline-actions">
             <button class="secondary" onclick="setMainBang()" style="flex: 1;">Apply</button>
@@ -266,7 +266,7 @@
           </div>
         </div>
         <div class="stack">
-          <label for="irMode">Interference Rejection</label>
+          <label for="irMode">Interference Rejection <span class="info-tip" data-tip="Filters out interference from other nearby radars. Appears as spiral patterns on the PPI. Turn on if you see interference artifacts.">i</span></label>
           <select id="irMode">
             <option value="0">Off</option>
             <option value="1">On</option>
@@ -277,7 +277,7 @@
           </div>
         </div>
         <div class="stack">
-          <label for="birdMode">Bird Mode</label>
+          <label for="birdMode">Bird Mode <span class="info-tip" data-tip="Filters echoes from birds and insects. Off/Low/Medium/High. Higher settings suppress more bird clutter but may also suppress small real targets.">i</span></label>
           <select id="birdMode">
             <option value="0">Off</option>
             <option value="1">Low</option>
@@ -290,7 +290,7 @@
           </div>
         </div>
         <div class="stack">
-          <label for="dopplerMode">Doppler</label>
+          <label for="dopplerMode">Doppler <span class="info-tip" data-tip="Doppler processing to distinguish moving targets. Off = normal echo. Internal heading uses the radar's own heading sensor. External heading requires an external NMEA heading source.">i</span></label>
           <select id="dopplerMode">
             <option value="0">Off</option>
             <option value="1">On (internal heading)</option>
@@ -309,33 +309,33 @@
       <h2>Clutter</h2>
       <div class="grid grid--two">
         <div class="stack">
-          <label for="seaMode">A/C SEA mode</label>
+          <label for="seaMode">A/C SEA mode <span class="info-tip" data-tip="Sea clutter suppression. Manual: set a fixed level. Auto: radar adjusts dynamically based on sea conditions.">i</span></label>
           <select id="seaMode">
             <option value="manual">Manual</option>
             <option value="auto">Auto</option>
           </select>
           <div data-clutter-mode="sea-manual">
-            <label for="seaMan">A/C SEA manual</label>
+            <label for="seaMan">A/C SEA manual <span class="info-tip" data-tip="Manual sea clutter rejection level. 0–100. Increase in rough seas to reduce wave returns.">i</span></label>
             <input id="seaMan" type="number" value="20" min="0" max="100">
           </div>
           <div data-clutter-mode="sea-auto" style="display:none;">
-            <label for="seaAuto">A/C SEA auto</label>
+            <label for="seaAuto">A/C SEA auto <span class="info-tip" data-tip="Bias for automatic sea clutter control. 0–100. Higher values make the filter more aggressive.">i</span></label>
             <input id="seaAuto" type="number" value="30" min="0" max="100">
           </div>
           <button class="secondary" onclick="setACSEA()">Apply SEA</button>
         </div>
         <div class="stack">
-          <label for="rainMode">A/C RAIN mode</label>
+          <label for="rainMode">A/C RAIN mode <span class="info-tip" data-tip="Rain clutter suppression. Manual: set a fixed level. Auto: radar adjusts dynamically based on precipitation.">i</span></label>
           <select id="rainMode">
             <option value="manual">Manual</option>
             <option value="auto">Auto</option>
           </select>
           <div data-clutter-mode="rain-manual">
-            <label for="rainMan">A/C RAIN manual</label>
+            <label for="rainMan">A/C RAIN manual <span class="info-tip" data-tip="Manual rain clutter rejection level. 0–100. Increase during heavy rain to reduce precipitation returns.">i</span></label>
             <input id="rainMan" type="number" value="40" min="0" max="100">
           </div>
           <div data-clutter-mode="rain-auto" style="display:none;">
-            <label for="rainAuto">A/C RAIN auto</label>
+            <label for="rainAuto">A/C RAIN auto <span class="info-tip" data-tip="Bias for automatic rain clutter control. 0–100. Higher values make the filter more aggressive.">i</span></label>
             <input id="rainAuto" type="number" value="50" min="0" max="100">
           </div>
           <button class="secondary" onclick="setACRAIN()">Apply RAIN</button>
