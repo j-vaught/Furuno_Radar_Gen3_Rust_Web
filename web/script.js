@@ -1081,16 +1081,78 @@ if (byId('connStatus')) {
   refreshConnectionStatus();
 }
 
-const statusNewest = byId('statusNewestPng');
-if (statusNewest) {
+function formatUptime(secs) {
+  const d = Math.floor(secs / 86400);
+  const h = Math.floor((secs % 86400) / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  return `${m}m ${s}s`;
+}
+
+const PULSE_LABELS = ['S1','S2','M1','M2','M3','L'];
+const REZBOOST_LABELS = ['Off','Low','Medium','High'];
+const BIRD_LABELS = ['Off','Low','Medium','High'];
+const DOPPLER_LABELS = ['Off','On (internal)','On (external)'];
+const ANTENNA_LABELS = ['Low','High','Auto'];
+
+function updateSystemInfo() {
   fetch('/get_system_info')
     .then(r => r.json())
     .then(d => {
-      statusNewest.textContent = d.newest_png || '–';
+      const set = (id, val) => { const el = byId(id); if (el) el.textContent = val; };
+      const setClass = (id, val, cls) => { const el = byId(id); if (el) { el.textContent = val; el.className = 'status-val ' + cls; } };
+
+      if (d.connected) {
+        setClass('siConnected', 'Connected', 'status-val--ok');
+      } else {
+        setClass('siConnected', 'Disconnected', 'status-val--warn');
+      }
+      set('siRadarIp', d.radar_ip || '--');
+      set('siHostIp', d.host_ip || '--');
+      if (d.tx_active) {
+        setClass('siTxState', 'Transmitting', 'status-val--ok');
+      } else {
+        setClass('siTxState', 'Standby', '');
+      }
+      set('siFirmware', d.firmware || '--');
+
+      set('siUptime', formatUptime(d.uptime_seconds || 0));
+      set('siRotations', (d.rotation_count || 0).toLocaleString());
+      if (d.recording) {
+        setClass('siRecording', 'Active', 'status-val--ok');
+      } else {
+        setClass('siRecording', 'Inactive', '');
+      }
+      set('siRecordDir', d.record_dir || '--');
+      set('siPatternRunning', d.pattern_running ? 'Running' : 'Idle');
+
+      if (d.settings) {
+        const s = d.settings;
+        set('siRange', s.range_index);
+        set('siPulse', PULSE_LABELS[s.pulse_width] || s.pulse_width);
+        set('siGain', s.gain_auto ? `Auto (${s.gain_value})` : `Manual (${s.gain_value})`);
+        set('siRezboost', REZBOOST_LABELS[s.rezboost] || s.rezboost);
+        set('siAntenna', ANTENNA_LABELS[s.antenna_speed] || s.antenna_speed);
+        set('siDoppler', DOPPLER_LABELS[s.doppler] || s.doppler);
+        set('siIR', s.interference_rejection ? 'On' : 'Off');
+        set('siBird', BIRD_LABELS[s.bird_mode] || s.bird_mode);
+        set('siMainBang', s.main_bang);
+        set('siSTC', `${s.near_stc} / ${s.middle_stc} / ${s.far_stc}`);
+        set('siSea', s.sea_clutter);
+        set('siRain', s.rain_clutter);
+      }
+
+      set('siMemoryAbs', `${d.memory_used_mb || 0} MB / ${d.memory_total_mb || 0} MB`);
+      set('siStorageAbs', `${(d.storage_used_gb || 0).toFixed(1)} GB / ${(d.storage_total_gb || 0).toFixed(1)} GB`);
     })
-    .catch(() => {
-      statusNewest.textContent = 'Unavailable';
-    });
+    .catch(() => {});
+}
+
+if (byId('siConnected')) {
+  updateSystemInfo();
+  setInterval(updateSystemInfo, 1000);
 }
 
 const statusLabels = [

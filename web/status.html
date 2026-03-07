@@ -16,46 +16,83 @@
     </nav>
   </header>
 
-  <main class="layout-status">
-    <section class="panel status-card">
-      <span class="status-title">Newest Capture</span>
-      <span id="statusNewestPng" class="status-value small-note">–</span>
+  <main class="layout-two">
+    <section class="panel">
+      <h2>Radar Connection</h2>
+      <div class="status-row"><span class="status-label">Status</span><span id="siConnected" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Radar IP</span><span id="siRadarIp" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Host IP</span><span id="siHostIp" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">TX State</span><span id="siTxState" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Firmware</span><span id="siFirmware" class="status-val">--</span></div>
     </section>
 
-    <section class="panel status-card">
-      <span class="status-title">Pattern Queue</span>
-      <span id="statusQueueLength" class="status-value">0</span>
+    <section class="panel">
+      <h2>Session</h2>
+      <div class="status-row"><span class="status-label">Server Uptime</span><span id="siUptime" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Rotations Received</span><span id="siRotations" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Recording</span><span id="siRecording" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Record Directory</span><span id="siRecordDir" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Pattern Queue</span><span id="siPatternRunning" class="status-val">--</span></div>
     </section>
 
-    <section class="panel status-card">
-      <span class="status-title">CPU Load</span>
-      <span id="statusCpuLabel" class="status-value">--%</span>
-      <div class="progress"><span id="statusCpu"></span></div>
-      <div id="cpuCores" class="status-core-list"></div>
+    <section class="panel">
+      <h2>Active Settings</h2>
+      <div class="status-row"><span class="status-label">Range Index</span><span id="siRange" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Pulse Width</span><span id="siPulse" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Gain</span><span id="siGain" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">RezBoost</span><span id="siRezboost" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Antenna Speed</span><span id="siAntenna" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Doppler</span><span id="siDoppler" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">IR</span><span id="siIR" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Bird Mode</span><span id="siBird" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Main Bang</span><span id="siMainBang" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">STC (N/M/F)</span><span id="siSTC" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Sea Clutter</span><span id="siSea" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Rain Clutter</span><span id="siRain" class="status-val">--</span></div>
     </section>
 
-    <section class="panel status-card">
-      <span class="status-title">Memory Usage</span>
-      <span id="statusMemoryLabel" class="status-value">--%</span>
-      <div class="progress"><span id="statusMemory"></span></div>
+    <section class="panel">
+      <h2>Host Resources</h2>
+      <div class="status-card">
+        <span class="status-title">CPU Load</span>
+        <span id="statusCpuLabel" class="status-value">--%</span>
+        <div class="progress"><span id="statusCpu"></span></div>
+        <div id="cpuCores" class="status-core-list"></div>
+      </div>
     </section>
 
-    <section class="panel status-card">
-      <span class="status-title">Storage</span>
-      <span id="statusStorageLabel" class="status-value">--%</span>
-      <div class="progress"><span id="statusStorage"></span></div>
+    <section class="panel">
+      <h2>Memory</h2>
+      <div class="status-card">
+        <span id="statusMemoryLabel" class="status-value">--%</span>
+        <div class="progress"><span id="statusMemory"></span></div>
+        <span id="siMemoryAbs" class="status-footnote">--</span>
+      </div>
     </section>
 
-    <section class="panel status-card">
-      <span class="status-title">Network</span>
-      <span id="statusNetworkLabel" class="status-value">-- / -- MB/s</span>
-      <div class="progress"><span id="statusNetwork"></span></div>
+    <section class="panel">
+      <h2>Storage</h2>
+      <div class="status-card">
+        <span id="statusStorageLabel" class="status-value">--%</span>
+        <div class="progress"><span id="statusStorage"></span></div>
+        <span id="siStorageAbs" class="status-footnote">--</span>
+      </div>
     </section>
 
-    <section class="panel status-card">
-      <span class="status-title">Temperature</span>
-      <span id="statusTempLabel" class="status-value">--°C / --°F</span>
-      <div class="progress"><span id="statusTemp"></span></div>
+    <section class="panel">
+      <h2>Network</h2>
+      <div class="status-card">
+        <span id="statusNetworkLabel" class="status-value">-- / -- MB/s</span>
+        <div class="progress"><span id="statusNetwork"></span></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Temperature</h2>
+      <div class="status-card">
+        <span id="statusTempLabel" class="status-value">--°C / --°F</span>
+        <div class="progress"><span id="statusTemp"></span></div>
+      </div>
     </section>
   </main>
 

@@ -67,6 +67,7 @@ pub struct AppState {
     pattern_status: RwLock<String>,
     host_ip: Ipv4Addr,
     settings: RwLock<CurrentSettings>,
+    start_time: Instant,
 }
 
 // --- Server entry point ---
@@ -101,6 +102,7 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         pattern_status: RwLock::new(String::new()),
         host_ip,
         settings: RwLock::new(CurrentSettings::default()),
+        start_time: Instant::now(),
     });
 
     // Start echo listener thread
@@ -780,20 +782,63 @@ struct SystemInfo {
     connected: bool,
     tx_active: bool,
     firmware: String,
+    radar_ip: String,
+    host_ip: String,
+    recording: bool,
+    record_dir: String,
+    rotation_count: u64,
+    uptime_seconds: u64,
+    pattern_running: bool,
+    settings: CurrentSettings,
+    memory_total_mb: u64,
+    memory_used_mb: u64,
+    storage_total_gb: f64,
+    storage_used_gb: f64,
 }
 
 async fn handle_get_system_info(State(state): State<Arc<AppState>>) -> axum::response::Response {
     let connected = state.connected.load(Ordering::Relaxed);
     let tx = state.tx_active.load(Ordering::Relaxed);
-    let firmware = state.conn.lock()
-        .map(|c| c.firmware.clone().unwrap_or_default())
+    let recording = state.recording.load(Ordering::Relaxed);
+    let pattern_running = state.pattern_running.load(Ordering::Relaxed);
+    let rotation_count = state.rotation_count.load(Ordering::Relaxed);
+    let uptime_seconds = state.start_time.elapsed().as_secs();
+
+    let (firmware, radar_ip) = state.conn.lock()
+        .map(|c| (
+            c.firmware.clone().unwrap_or_default(),
+            c.radar_ip.to_string(),
+        ))
         .unwrap_or_default();
+
+    let record_dir = state.record_dir.read()
+        .map(|d| d.clone())
+        .unwrap_or_default();
+
+    let settings = state.settings.read()
+        .map(|s| s.clone())
+        .unwrap_or_default();
+
+    let (memory_total_mb, memory_used_mb) = read_memory_abs();
+    let (storage_total_gb, storage_used_gb) = read_storage_abs();
 
     let info = SystemInfo {
         newest_png: if tx { "Live radar feed" } else { "TX off" }.into(),
         connected,
         tx_active: tx,
         firmware,
+        radar_ip,
+        host_ip: state.host_ip.to_string(),
+        recording,
+        record_dir,
+        rotation_count,
+        uptime_seconds,
+        pattern_running,
+        settings,
+        memory_total_mb,
+        memory_used_mb,
+        storage_total_gb,
+        storage_used_gb,
     };
 
     let json = serde_json::to_string(&info).unwrap_or_default();
@@ -1228,6 +1273,35 @@ fn nix_statvfs(path: &str) -> Result<StatVfs, ()> {
         } else {
             Err(())
         }
+    }
+}
+
+fn read_memory_abs() -> (u64, u64) {
+    if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+        let mut total_kb = 0u64;
+        let mut available_kb = 0u64;
+        for line in content.lines() {
+            if line.starts_with("MemTotal:") {
+                total_kb = parse_meminfo_kb(line);
+            } else if line.starts_with("MemAvailable:") {
+                available_kb = parse_meminfo_kb(line);
+            }
+        }
+        let total_mb = total_kb / 1024;
+        let used_mb = total_mb.saturating_sub(available_kb / 1024);
+        (total_mb, used_mb)
+    } else {
+        (0, 0)
+    }
+}
+
+fn read_storage_abs() -> (f64, f64) {
+    if let Ok(stat) = nix_statvfs("/") {
+        let total_gb = stat.total as f64 / (1024.0 * 1024.0 * 1024.0);
+        let used_gb = total_gb - (stat.available as f64 / (1024.0 * 1024.0 * 1024.0));
+        (total_gb, used_gb)
+    } else {
+        (0.0, 0.0)
     }
 }
 

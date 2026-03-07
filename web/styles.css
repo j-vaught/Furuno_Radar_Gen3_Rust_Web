@@ -562,6 +562,40 @@ button:focus-visible {
   color: var(--text-strong);
 }
 
+.status-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.3rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.88rem;
+}
+
+.status-row:last-child {
+  border-bottom: none;
+}
+
+.status-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.status-val {
+  color: var(--text-strong);
+  font-weight: 500;
+  text-align: right;
+  word-break: break-all;
+}
+
+.status-val--ok {
+  color: var(--success);
+}
+
+.status-val--warn {
+  color: var(--danger);
+}
+
 .status-footnote {
   font-size: 0.8rem;
   color: var(--text-muted);
