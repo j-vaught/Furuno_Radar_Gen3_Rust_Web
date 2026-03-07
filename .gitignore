@@ -10,6 +10,8 @@ radar-client/recordings/
 
 # Data artifacts
 *.csv
+!rust_threads2.csv
+!cpp_threads2.csv
 *.tar
 *.tar.gz
 *.tgz
