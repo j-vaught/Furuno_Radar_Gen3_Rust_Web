@@ -52,7 +52,7 @@
 
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\textcolor{garnet}{\textsc{Furuno DRS4DL+ Technical Manual}}}
+\fancyhead[L]{\textcolor{garnet}{\textsc{Furuno DRS4D-NXT Technical Manual}}}
 \fancyhead[R]{\textcolor{black70}{\thepage}}
 \fancyfoot[C]{\textcolor{black50}{\small J.C. Vaught --- University of South Carolina}}
 \renewcommand{\headrulewidth}{0.5pt}
@@ -65,7 +65,7 @@
 \title{
     \vspace{-1cm}
     {\color{garnet}\rule{\textwidth}{2pt}}\\[0.5cm]
-    {\Huge\bfseries\color{garnet} Furuno DRS4DL+ Radar}\\[0.3cm]
+    {\Huge\bfseries\color{garnet} Furuno DRS4D-NXT Radar}\\[0.3cm]
     {\LARGE\color{black90} Wire Protocol \& System Technical Manual}\\[0.3cm]
     {\color{garnet}\rule{\textwidth}{2pt}}
 }
@@ -84,9 +84,9 @@ University of South Carolina}
 \section{Introduction}
 %=============================================================================
 
-This document provides a comprehensive technical reference for the Furuno DRS4DL+ marine radar system as interfaced through the \texttt{furuno-server} Rust application. It covers the complete wire protocol, echo data encoding, system architecture, web API, and calibration procedures. All information was obtained through reverse engineering of the proprietary \texttt{libNAVNETDLL.so} shared library and live packet captures from the radar hardware.
+This document provides a comprehensive technical reference for the Furuno DRS4D-NXT marine radar system as interfaced through the \texttt{furuno-server} Rust application. It covers the complete wire protocol, echo data encoding, system architecture, web API, and calibration procedures. All information was obtained through reverse engineering of the proprietary \texttt{libNAVNETDLL.so} shared library and live packet captures from the radar hardware.
 
-The Furuno DRS4DL+ is a solid-state Doppler radar operating in the X-band (9.41~GHz). It communicates with its host processor over Ethernet using a combination of TCP control channels and UDP multicast for echo data delivery.
+The Furuno DRS4D-NXT is a solid-state Doppler radar operating in the X-band (9.41~GHz). It communicates with its host processor over Ethernet using a combination of TCP control channels and UDP multicast for echo data delivery.
 
 \subsection{Hardware Overview}
 
@@ -596,7 +596,7 @@ Uses the two least significant bits for control. If $\texttt{bits}[1{:}0] = 00$,
 \label{sec:doppler}
 %=============================================================================
 
-The DRS4DL+ supports Doppler target analysis, which repurposes the most significant bit of each echo byte to encode target motion information.
+The DRS4D-NXT supports Doppler target analysis, which repurposes the most significant bit of each echo byte to encode target motion information.
 
 \subsection{Status Field Encoding}
 

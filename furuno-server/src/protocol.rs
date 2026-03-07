@@ -1,4 +1,4 @@
-// Furuno NXT radar wire protocol implementation.
+// Furuno DRS4D-NXT radar wire protocol implementation.
 // Covers: authentication, control commands, echo decoding, discovery.
 
 use std::fmt;

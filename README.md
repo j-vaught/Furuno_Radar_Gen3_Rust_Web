@@ -1,6 +1,6 @@
 # RADAR_web
 
-Furuno DRS4DL+ marine radar interface built in Rust. Provides full radar control, real-time PPI display, echo data recording, and a browser-based web interface.
+Furuno DRS4D-NXT marine radar interface built in Rust. Provides full radar control, real-time PPI display, echo data recording, and a browser-based web interface.
 
 ## Overview
 
@@ -9,7 +9,7 @@ This project is a complete reimplementation of the proprietary Furuno `libNAVNET
 ## Prerequisites
 
 - Rust toolchain (`rustup` + `cargo`)
-- Furuno DRS4DL+ radar connected via Ethernet
+- Furuno DRS4D-NXT radar connected via Ethernet
 - Linux, macOS, or Windows
 
 Install Rust if needed:
