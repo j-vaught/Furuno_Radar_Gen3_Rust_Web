@@ -1,4 +1,3 @@
-use std::io::BufRead;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::Duration;
 
@@ -364,31 +363,6 @@ pub fn run_dump_raw(count: usize) {
     // TX OFF
     conn.set_nonblocking(false).unwrap();
     let _ = conn.tx_off();
-}
-
-pub fn run_render_csv(csv_path: &str, out_path: &str) {
-    println!("Rendering PPI from CSV: {csv_path}");
-
-    let file = std::fs::File::open(csv_path).expect("Failed to open CSV");
-    let reader = std::io::BufReader::new(file);
-    let mut spokes = Vec::new();
-
-    for (i, line) in reader.lines().enumerate() {
-        let line = line.expect("read line");
-        if i == 0 { continue; }
-        let fields: Vec<&str> = line.split(',').collect();
-        if fields.len() < 6 { continue; }
-        let angle: u16 = fields[4].parse().unwrap_or(0);
-        let echo_data: Vec<u8> = fields[5..].iter()
-            .map(|v| v.parse::<u8>().unwrap_or(0))
-            .collect();
-        spokes.push(Spoke { angle_ticks: angle, heading_ticks: 0, echo: echo_data });
-    }
-
-    println!("Loaded {} spokes, rendering {}x{} PPI...", spokes.len(), PPI_SIZE, PPI_SIZE);
-    let pixels = render::render_ppi(&spokes);
-    render::write_png(out_path, &pixels, PPI_SIZE, PPI_SIZE);
-    println!("Saved: {out_path}");
 }
 
 pub fn run_render_live(out_path: &str) {

@@ -90,14 +90,6 @@ fn main() {
 
     let mode = positional.first().map(|s| s.as_str()).unwrap_or("handshake");
 
-    // Modes that don't need radar connection
-    if mode == "render-csv" {
-        let csv_path = positional.get(1).expect("Usage: furuno-server render-csv <csv_file> [output.png]");
-        let out_path = positional.get(2).map(|s| s.as_str()).unwrap_or("radar_ppi.png");
-        modes::run_render_csv(csv_path, out_path);
-        return;
-    }
-
     // Resolve IPs for modes that need the radar
     resolve_ips(&args);
 
@@ -127,7 +119,7 @@ fn main() {
         }
         _ => {
             eprintln!("Usage: furuno-server [--radar-ip IP] [--host-ip IP] <mode>");
-            eprintln!("Modes: handshake|tx-on|tx-off|echo|full|command|render-csv|render-live|test-commands|calibrate|discover|validate|web");
+            eprintln!("Modes: handshake|tx-on|tx-off|echo|full|command|render-live|test-commands|discover|validate|web");
             std::process::exit(1);
         }
     }
