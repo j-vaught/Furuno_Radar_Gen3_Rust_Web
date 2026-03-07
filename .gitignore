@@ -1,12 +1,12 @@
 # Rust build artifacts
-radar-client/target/
+furuno-server/target/
 
 # Runtime output
 collected_data/
 calibration_output/
 test_output/
-radar-client/validate_*/
-radar-client/recordings/
+furuno-server/validate_*/
+furuno-server/recordings/
 
 # Data artifacts
 *.csv

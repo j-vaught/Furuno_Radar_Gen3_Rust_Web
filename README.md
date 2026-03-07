@@ -22,7 +22,7 @@ source ~/.cargo/env
 ## Quick Start
 
 ```bash
-cd radar-client
+cd furuno-server
 cargo build --release
 cargo run --release -- web
 ```
@@ -38,7 +38,7 @@ cargo run --release -- --radar-ip 172.31.3.226 web
 ## CLI Modes
 
 ```
-radar-client [--radar-ip IP] [--host-ip IP] <mode> [args...]
+furuno-server [--radar-ip IP] [--host-ip IP] <mode> [args...]
 ```
 
 | Mode | Description |
@@ -79,7 +79,7 @@ CSV files include a metadata header (lines starting with `#`) containing all rad
 ## Project Structure
 
 ```
-radar-client/          Rust application
+furuno-server/          Rust application
   src/
     main.rs            Entry point, CLI parsing, IP resolution
     protocol.rs        Wire protocol: commands, echo decoders, discovery
@@ -92,7 +92,6 @@ radar-client/          Rust application
     calibrate.rs       Calibration pattern runner
     tests.rs           27 live integration tests
 web/                   Static web frontend (HTML/CSS/JS)
-protocol-notes/        Reverse-engineering notes and packet captures
 docs/                  LaTeX technical manual with diagrams
 ```
 
@@ -101,7 +100,7 @@ docs/                  LaTeX technical manual with diagrams
 Tests require a live radar connection and must run sequentially:
 
 ```bash
-cd radar-client
+cd furuno-server
 cargo test -- --test-threads=1
 ```
 
