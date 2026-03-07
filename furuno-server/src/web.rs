@@ -219,8 +219,6 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         .route("/toggle_recording", get(handle_toggle_recording))
         // Echo image
         .route("/newest_png", get(handle_newest_png))
-        .route("/newest_trail", get(handle_newest_png))
-        .route("/newest_detection", get(handle_newest_png))
         // Pattern execution
         .route("/run_pattern", get(handle_run_pattern))
         .route("/stop_pattern", get(handle_stop_pattern))
