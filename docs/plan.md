@@ -76,8 +76,8 @@ High-level introduction only — points readers to detailed sections. No deep di
 ### II.2 PPI Rendering (`render.rs`)
 Most commonly modified subsystem — changing colors, overlays, image size, etc.
 - Coordinate Transformation — compass bearing to math angle, range bin to pixel
-- Color Mapping (corrected from current manual):
-  - Actual formula: R = intensity, G = intensity * 180/255, B = intensity * 20/255 (warm-tinted, not pure green)
+- Color Mapping:
+  - Actual formula: R = intensity, G = intensity * 180/255, B = intensity * 20/255
 - Overlay Elements — crosshairs (dark gray RGB 54,54,54 at center), 4 equally-spaced range rings
 - PNG Encoding — `encode_png_bytes()` for in-memory, `write_png()` for file output
 - How to modify — changing image size, color palette, adding new overlays
@@ -159,43 +159,52 @@ All CLI modes beyond `web` and `discover` (documented in Part I).
 
 ## Part III — Echo Data Pipeline
 
-### III.1 Echo Data Format (existing section 6)
-- Packet Structure + figure (existing)
-- Echo Metadata — sweep_count, sweep_len, encoding extraction (existing)
-- Azimuth and Heading — 8192 ticks/rotation, compass bearing (existing)
+### III.1 Echo Data Format
+- Packet Structure + figure
+- 16-byte header field breakdown
+- Echo Metadata extraction — sweep_count, sweep_len, encoding
+- Spoke sub-header — 4-byte layout per spoke: 2 bytes azimuth (u16 LE) + 2 bytes heading (u16 LE)
+- Multi-spoke packing — how multiple spokes are packed sequentially after the header; sweep_count tells you how many
+- Azimuth and Heading — 8192 ticks per full rotation, compass bearing convention
+- Typical packet characteristics — sizes and rates observed at different range settings
 
-### III.2 Echo Encoding Types (promoted from subsections of current section 6)
-- Encoding 0: Raw Uncompressed (existing)
-- Encoding 1: RLE with Repeat Marker (existing)
-- Encoding 2: Delta RLE with Previous Spoke Reference (existing)
-- Encoding 3: 2-Bit RLE with Dual Reference (existing)
-- Display Value Conversion — `display = wire >> 2` (existing)
+### III.2 Echo Encoding Types
+- Overview — 4 encoding schemes selected by header field; all produce fixed-length array of range bins (typically 868)
+- Encoding 0: Raw Uncompressed + 4-byte alignment padding rule
+- Encoding 1: RLE with Repeat Marker + worked byte-level example
+- Encoding 2: Delta RLE with Previous Spoke Reference + worked example showing previous-spoke copy
+- Encoding 3: 2-Bit RLE with Dual Reference + worked example showing both repeat and copy modes
+- Encoding selection — which encodings are observed at which ranges/conditions (adaptive behavior)
+- Display Value Conversion — `display = wire >> 2`
 - Rotation Detection — echo listener detects wrap-around when azimuth drops by >1000 ticks from previous spoke
 
-### III.3 Doppler Processing (existing section 7, unchanged)
-- Status Field Encoding (existing)
-- Echo Byte Encoding — normal vs Doppler mode (existing)
+### III.3 Doppler Processing
+- Status Field Encoding — bit layout table
+- Echo Byte Encoding — normal (full 8-bit intensity) vs Doppler (bit 7 = D flag, bits 6:0 = 7-bit intensity)
+- Downstream usage — how the D bit is used after decoding: rendering color, metadata, or both?
+- Practical notes — what "moving target" looks like in real echo data, reliability, range limitations
 
-### III.4 Dual-Pulse Interleaving (existing section 8, unchanged)
-- Pulse Types — long (17 levels) vs short (130-240 levels) (existing)
-- Range Dependence (existing)
-- Rez Boost Effect (existing)
+### III.4 Dual-Pulse Interleaving
+- Pulse Types — long (17 discrete levels, full quantization table) vs short (130-240 continuous levels)
+- Range Dependence — ratio table by range setting
+- Rez Boost Effect — how rez boost shifts the long/short ratio and short-pulse resolution
+- Spoke handling — how the code treats long vs short pulse spokes (displayed independently? merged? filtered?)
 
 ---
 
 ## Part IV — Network & Wire Protocol
 
 ### IV.1 Network Architecture (existing section 2)
-- Topology + figure (existing)
-- Port Map table (existing)
+- Topology + figure
+- Port Map table
 - Auto-Discovery and Network Configuration (existing, expanded):
-  - **NEW:** Platform-specific alias commands (Linux: `ip addr add`, macOS: `ifconfig alias`, Windows: placeholder only)
-  - **NEW:** Three-stage fallback logic in detail
+  - Platform-specific alias commands (Linux: `ip addr add`, macOS: `ifconfig alias`, Windows: placeholder only)
+  - Three-stage fallback logic in detail
 
 ### IV.2 Control Protocol (existing section 3)
-- Message Format — `$S`, `$R`, `$N` prefixes (existing)
-- Binary Keepalive + figure (existing)
-- Initialization Sequence — 6 phases + figure (existing)
+- Message Format — `$S`, `$R`, `$N` prefixes
+- Binary Keepalive + figure
+- Initialization Sequence — 6 phases + figure
 - **NEW: Keepalive in the Echo Listener** — echo thread sends keepalives every 5s even when TX is off, plus `drain_control()` to consume pending responses
 
 ### IV.3 Command Reference (existing section 4)
@@ -206,10 +215,10 @@ All CLI modes beyond `web` and `discover` (documented in Part I).
   - Interference rejection command ID: manual says `$S88`, code uses `$S67` — verify against protocol.rs
 
 ### IV.4 Periodic Telemetry (existing section 5, unchanged)
-- Telemetry message table (existing)
+- Telemetry message table
 
 ### IV.5 Proprietary Library Reference (existing section 15, unchanged)
-- libNAVNETDLL.so module breakdown table (existing)
+- libNAVNETDLL.so module breakdown table
 
 ## Key Corrections to Make During Rewrite
 
