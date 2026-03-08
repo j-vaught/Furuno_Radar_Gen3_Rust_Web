@@ -1,0 +1,1077 @@
+% technical_manual_v2.tex — Furuno DRS4D-NXT Wire Protocol & System Technical Manual
+% Author: J.C. Vaught
+% Single self-contained LaTeX file with all figures inline via TikZ.
+
+\documentclass[11pt,letterpaper]{article}
+
+% ── Geometry ──────────────────────────────────────────────────────────────────
+\usepackage[margin=1in]{geometry}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage{tikz}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{fancyhdr}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{caption}
+
+% ── Brand Colors ──────────────────────────────────────────────────────────────
+% Primary
+\definecolor{Garnet}{HTML}{73000A}
+\definecolor{Black}{HTML}{000000}
+\definecolor{White}{HTML}{FFFFFF}
+% Neutral
+\definecolor{NinetyBlack}{HTML}{363636}
+\definecolor{SeventyBlack}{HTML}{5C5C5C}
+\definecolor{FiftyBlack}{HTML}{A2A2A2}
+\definecolor{ThirtyBlack}{HTML}{C7C7C7}
+\definecolor{TenBlack}{HTML}{ECECEC}
+\definecolor{WarmGrey}{HTML}{676156}
+\definecolor{Sandstorm}{HTML}{FFF2E3}
+% Accent
+\definecolor{Rose}{HTML}{CC2E40}
+\definecolor{Atlantic}{HTML}{466A9F}
+\definecolor{Congaree}{HTML}{1F414D}
+\definecolor{Horseshoe}{HTML}{65780B}
+\definecolor{Grass}{HTML}{CED318}
+\definecolor{Honeycomb}{HTML}{A49137}
+
+% ── Hyperref Setup ────────────────────────────────────────────────────────────
+\hypersetup{
+    colorlinks=true,
+    linkcolor=Garnet,
+    urlcolor=Atlantic,
+    citecolor=Congaree,
+    pdftitle={Furuno DRS4D-NXT --- Wire Protocol \& System Technical Manual},
+    pdfauthor={J.C. Vaught},
+}
+
+% ── Section Heading Colors ────────────────────────────────────────────────────
+\usepackage{titlesec}
+\titleformat{\section}
+    {\normalfont\Large\bfseries\color{Garnet}}{\thesection}{1em}{}
+\titleformat{\subsection}
+    {\normalfont\large\bfseries\color{NinetyBlack}}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+    {\normalfont\normalsize\bfseries\color{SeventyBlack}}{\thesubsubsection}{1em}{}
+
+% ── Header / Footer ──────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{SeventyBlack}Furuno DRS4D-NXT}
+\fancyhead[R]{\small\color{SeventyBlack}Technical Manual}
+\fancyfoot[C]{\small\color{FiftyBlack}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% ── Code Listing Style ───────────────────────────────────────────────────────
+\lstdefinestyle{code}{
+    backgroundcolor=\color{TenBlack},
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{Garnet}\bfseries,
+    stringstyle=\color{Atlantic},
+    commentstyle=\color{FiftyBlack}\itshape,
+    frame=single,
+    framerule=0.4pt,
+    rulecolor=\color{ThirtyBlack},
+    framesep=6pt,
+    xleftmargin=6pt,
+    xrightmargin=6pt,
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4,
+}
+\lstset{style=code}
+
+% ── TikZ Libraries ───────────────────────────────────────────────────────────
+\usetikzlibrary{arrows.meta, positioning, calc, shapes.geometric}
+
+% ── Paragraph Spacing (no indent, half-line skip) ────────────────────────────
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5\baselineskip}
+
+% ── No rounded corners globally ──────────────────────────────────────────────
+\tikzset{every node/.append style={rounded corners=0pt}}
+
+% ══════════════════════════════════════════════════════════════════════════════
+\begin{document}
+
+% ── Title Page ────────────────────────────────────────────────────────────────
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+
+    {\Huge\bfseries\color{Garnet} Furuno DRS4D-NXT Radar}\\[0.5cm]
+    {\LARGE\color{NinetyBlack} Wire Protocol \& System Technical Manual}\\[2cm]
+
+    {\Large J.C. Vaught}\\[0.5cm]
+    {\large\color{SeventyBlack} March 2026}\\[3cm]
+
+    \begin{tikzpicture}
+        \fill[Garnet] (0,0) rectangle (10,0.15);
+        \fill[Atlantic] (0,-0.3) rectangle (10,-0.15);
+    \end{tikzpicture}
+
+    \vfill
+    {\normalsize\color{SeventyBlack}
+    A complete technical reference for the Furuno DRS4D-NXT marine radar\\
+    system, covering the wire protocol, echo data encoding, system\\
+    architecture, web interface, and development guide.}
+    \vspace{2cm}
+\end{titlepage}
+
+{\setlength{\parskip}{0pt}\tableofcontents}
+\newpage
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+%
+%   PART I — OVERVIEW & USAGE
+%
+% ══════════════════════════════════════════════════════════════════════════════
+
+\part{Overview \& Usage}
+\label{part:usage}
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+\label{sec:introduction}
+
+% TODO: What this system does — one-paragraph summary
+
+\subsection{Hardware Overview}
+\label{subsec:hardware-overview}
+
+% TODO: DRS4D-NXT specs (X-band, 9.41 GHz, solid-state Doppler, radome enclosure)
+
+\subsection{Software Components}
+\label{subsec:software-components}
+
+% TODO: furuno-server, web interface, docs
+
+\subsection{Reverse Engineering Context}
+\label{subsec:reverse-engineering}
+
+% TODO: Where the protocol knowledge came from
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Quick Start \& Installation}
+\label{sec:quickstart}
+
+\subsection{Prerequisites}
+\label{subsec:prerequisites}
+
+% TODO: Rust toolchain, platform notes
+
+\subsection{Building}
+\label{subsec:building}
+
+% TODO: cargo build --release
+
+\subsection{First Run}
+\label{subsec:first-run}
+
+% TODO: cargo run --release -- web, open browser at http://localhost:8080
+
+\subsection{Auto-Discovery}
+\label{subsec:auto-discovery-quickstart}
+
+% TODO: What happens on startup, manual IP override (--radar-ip, --host-ip)
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{CLI Modes}
+\label{sec:cli-modes-user}
+
+\subsection{General Syntax}
+\label{subsec:cli-syntax}
+
+% TODO: furuno-server [--radar-ip IP] [--host-ip IP] <mode>
+
+\subsection{Web Server Mode}
+\label{subsec:cli-web}
+
+% TODO: web [port] [webdir] — start the HTTP server (default port 8080)
+
+\subsection{Discover Mode}
+\label{subsec:cli-discover}
+
+% TODO: discover — broadcast discovery beacons and listen for radar responses
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Web Interface}
+\label{sec:web-interface}
+
+\subsection{Starting the Server}
+\label{subsec:starting-server}
+
+% TODO: Port config, static file path, graceful degradation if radar unreachable
+
+\subsection{Page Tour}
+\label{subsec:page-tour}
+
+% TODO: Describe each of the 4 HTML pages
+
+\subsubsection{Controls (index.html)}
+\label{subsubsec:page-controls}
+
+% TODO: Quick controls — TX on/off, range, pulse, gain, RezBoost
+
+\subsubsection{Radar View (radar.html)}
+\label{subsubsec:page-radar}
+
+% TODO: Full-screen PPI display
+
+\subsubsection{Settings (settings.html)}
+\label{subsubsec:page-settings}
+
+% TODO: Detailed parameter panels — clutter, STC, Doppler, antenna
+
+\subsubsection{System Status (status.html)}
+\label{subsubsec:page-status}
+
+% TODO: System metrics, firmware, session stats
+
+\subsection{PPI Display}
+\label{subsec:ppi-display}
+
+% TODO: Live radar view with history compositing (track length, current/track color controls)
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Recording \& Data Formats}
+\label{sec:recording}
+
+\subsection{Starting and Stopping Recording}
+\label{subsec:recording-toggle}
+
+% TODO: Toggle via web UI or API, automatic directory creation
+
+\subsection{Output Directory Structure}
+\label{subsec:recording-directory}
+
+% TODO: recordings/<timestamp>/{csv/, png/, settings.json}
+
+\subsection{CSV Format}
+\label{subsec:csv-format}
+
+% TODO: Metadata header (#-prefixed lines), columnar spoke data
+
+\subsection{Settings Snapshot}
+\label{subsec:settings-snapshot}
+
+% TODO: settings.json schema — CurrentSettings fields, SettingChange history array
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Pattern System}
+\label{sec:pattern-system}
+
+\subsection{What Patterns Do}
+\label{subsec:pattern-overview}
+
+% TODO: Automated parameter sequences, each step held for N rotations
+
+\subsection{Simple Pattern Format (7-Field)}
+\label{subsec:pattern-simple}
+
+% TODO: range,gain,pulse,rezboost,speed,interp,repeat — all fields required
+
+\subsection{Advanced Pattern Format (13-Field)}
+\label{subsec:pattern-advanced}
+
+% TODO: Adds sea_clutter,rain_clutter,main_bang,interference_rejection,bird_mode,doppler
+% TODO: Fields can be NaN to skip
+
+\subsection{Pattern Queue}
+\label{subsec:pattern-queue}
+
+% TODO: Load multiple patterns, each with repeat count and label; execute in order; stop mid-run
+
+\subsection{Loading Patterns}
+\label{subsec:pattern-loading}
+
+% TODO: File upload (.txt/.csv) or manual textarea input; steps separated by semicolons
+
+\subsection{NaN Override Behavior}
+\label{subsec:pattern-nan}
+
+% TODO: NaN fields remain unlocked for manual changes via web UI during execution
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+%
+%   PART II — SOFTWARE INTERNALS
+%
+% ══════════════════════════════════════════════════════════════════════════════
+
+\newpage
+\part{Software Internals}
+\label{part:internals}
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{System Architecture Overview}
+\label{sec:architecture}
+
+% TODO: High-level introduction only — points readers to detailed sections
+
+\subsection{Module Summary}
+\label{subsec:module-summary}
+
+% TODO: Brief module list with one-line descriptions and cross-reference pointers
+
+\subsection{System-Level Block Diagram}
+\label{subsec:system-diagram}
+
+% TODO: Figure — radar hardware <-> Rust server <-> browser
+
+\subsection{Module-Level Diagram}
+\label{subsec:module-diagram}
+
+% TODO: Figure — how the .rs files relate to each other
+
+\subsection{Data Flow Diagram}
+\label{subsec:dataflow-diagram}
+
+% TODO: Figure — echo packet -> decode -> Spoke structs -> render_ppi() -> PNG -> browser
+
+\subsection{Concurrency Model}
+\label{subsec:concurrency}
+
+% TODO: Tokio async for HTTP, dedicated echo listener thread, Mutex<RadarConnection>
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{PPI Rendering}
+\label{sec:ppi-rendering}
+
+% TODO: Most commonly modified subsystem
+
+\subsection{Coordinate Transformation}
+\label{subsec:coordinate-transform}
+
+% TODO: Compass bearing to math angle, range bin to pixel
+
+\subsection{Color Mapping}
+\label{subsec:color-mapping}
+
+% TODO: R = intensity, G = intensity * 180/255, B = intensity * 20/255
+
+\subsection{Overlay Elements}
+\label{subsec:overlays}
+
+% TODO: Crosshairs (dark gray RGB 54,54,54), 4 equally-spaced range rings
+
+\subsection{PNG Encoding}
+\label{subsec:png-encoding}
+
+% TODO: encode_png_bytes() for in-memory, write_png() for file output
+
+\subsection{How to Modify}
+\label{subsec:ppi-how-to-modify}
+
+% TODO: Changing image size, color palette, adding new overlays
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Web Server}
+\label{sec:web-server}
+
+\subsection{Framework}
+\label{subsec:web-framework}
+
+% TODO: Axum 0.7 + Tokio async runtime
+
+\subsection{Shared State}
+\label{subsec:appstate}
+
+% TODO: AppState struct — key fields and synchronization primitives
+
+\subsection{Route Registration}
+\label{subsec:route-registration}
+
+% TODO: How routes are wired in start_server()
+
+\subsection{Handler Pattern}
+\label{subsec:handler-pattern}
+
+% TODO: async fn handler(State(state), Query(params)) -> impl IntoResponse
+
+\subsection{Echo Listener Thread}
+\label{subsec:echo-listener}
+
+% TODO: Dedicated std::thread, UDP multicast, decode spokes, render PPI, update latest_png
+
+\subsection{Static File Serving}
+\label{subsec:static-files}
+
+% TODO: ServeDir fallback for the web/ directory
+
+\subsection{How to Add a New Endpoint}
+\label{subsec:add-endpoint}
+
+% TODO: Step-by-step: define params struct, write handler, register route
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{REST API Reference}
+\label{sec:rest-api}
+
+% TODO: All endpoints with correct parameter names (verified against code)
+
+\subsection{Power and Connection}
+\label{subsec:api-power}
+
+% TODO: /toggle_echo, /reconnect
+
+\subsection{Settings}
+\label{subsec:api-settings}
+
+% TODO: All GET settings endpoints with correct query params
+
+\subsection{State Queries}
+\label{subsec:api-state}
+
+% TODO: /get_current, /get_system_info, /system_metrics
+
+\subsection{Echo Image}
+\label{subsec:api-echo-image}
+
+% TODO: /newest_png
+
+\subsection{Recording}
+\label{subsec:api-recording}
+
+% TODO: /toggle_recording
+
+\subsection{Pattern Execution}
+\label{subsec:api-patterns}
+
+% TODO: /run_pattern, /run_pattern_queue, /stop_pattern, /pattern_status
+
+\subsection{Stub Endpoints}
+\label{subsec:api-stubs}
+
+% TODO: /set_sweep_total and /set_interpolation — wired but return stub responses
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Recording System Internals}
+\label{sec:recording-internals}
+
+\subsection{Echo Listener Integration}
+\label{subsec:recording-echo-listener}
+
+% TODO: Rotation detection triggers CSV + PNG write
+
+\subsection{Directory Creation}
+\label{subsec:recording-directory-creation}
+
+% TODO: Timestamped folder with csv/ and png/ subdirectories
+
+\subsection{CSV Writing}
+\label{subsec:recording-csv-writing}
+
+% TODO: Metadata header generation from CurrentSettings, spoke-by-spoke output
+
+\subsection{Settings Snapshots}
+\label{subsec:recording-snapshots}
+
+% TODO: settings.json schema — ManualRecordingSettingsSnapshot vs PatternRecordingSettingsSnapshot
+
+\subsection{Setting Change History}
+\label{subsec:recording-history}
+
+% TODO: How SettingChange entries accumulate during a session
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Pattern Execution Engine}
+\label{sec:pattern-engine}
+
+\subsection{Step Parsing}
+\label{subsec:pattern-parsing}
+
+% TODO: parse_pattern_steps(): 7-field (simple) vs 13-field (advanced) format
+
+\subsection{Differential Command Generation}
+\label{subsec:pattern-diff-commands}
+
+% TODO: Only changed parameters sent to radar
+
+\subsection{Single Pattern Execution}
+\label{subsec:pattern-single}
+
+% TODO: execute_pattern() loop: apply step, wait N rotations, advance
+
+\subsection{Queue Execution}
+\label{subsec:pattern-queue-exec}
+
+% TODO: handle_run_pattern_queue(): base64 decode, iterate items, per-item recording sessions
+
+\subsection{NaN Override Logic}
+\label{subsec:pattern-nan-logic}
+
+% TODO: pattern_step_allows_override(): fields set to NaN remain unlocked
+
+\subsection{Stop Mechanism}
+\label{subsec:pattern-stop}
+
+% TODO: pattern_stop: AtomicBool checked between steps and rotations
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{CLI Modes (All Other Modes)}
+\label{sec:cli-modes-dev}
+
+% TODO: All CLI modes beyond web and discover
+
+\subsection{Handshake}
+\label{subsec:cli-handshake}
+
+% TODO: Authenticate and initialize, print firmware info (default if no mode given)
+
+\subsection{TX On / TX Off}
+\label{subsec:cli-tx}
+
+% TODO: Enable or disable the transmitter from the command line
+
+\subsection{Full Cycle}
+\label{subsec:cli-full}
+
+% TODO: Init, TX ON, capture one rotation, TX OFF
+
+\subsection{Render Live}
+\label{subsec:cli-render-live}
+
+% TODO: render-live [out.png] — capture one live rotation and render to PNG
+
+\subsection{Echo Listen}
+\label{subsec:cli-echo}
+
+% TODO: Passively listen for multicast echo packets (no auth needed)
+
+\subsection{Command Test}
+\label{subsec:cli-command}
+
+% TODO: Send test commands and display acknowledgments
+
+\subsection{Dump Raw}
+\label{subsec:cli-dump-raw}
+
+% TODO: dump-raw [count] — dump raw echo packet headers and hex data
+
+\subsection{Test Commands}
+\label{subsec:cli-test-commands}
+
+% TODO: A/B command verification with before/after PPI captures
+
+\subsection{Validate}
+\label{subsec:cli-validate}
+
+% TODO: Run the 6-phase validation suite (27 integration tests)
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Connection State Machine}
+\label{sec:connection-state-machine}
+
+\subsection{States and Transitions}
+\label{subsec:connection-states}
+
+% TODO: Disconnected, Authenticated, ControlConnected, Initialized, Transmitting
+% TODO: Figure — state transition diagram
+
+\subsection{RadarError Enum}
+\label{subsec:radar-error}
+
+% TODO: AuthFailed, ConnectionFailed, IoError, Timeout, InvalidState, ProtocolError
+
+\subsection{Timeout Values}
+\label{subsec:timeouts}
+
+% TODO: auth: 5s, control: 5s, init registers: 3s, command ack: 3s, keepalive: 5-10s
+
+\subsection{Graceful Degradation}
+\label{subsec:graceful-degradation}
+
+% TODO: Web server starts even if radar unreachable, /reconnect endpoint for retry
+
+\subsection{Keepalive Handling}
+\label{subsec:keepalive-handling}
+
+% TODO: Echo thread sends keepalives every 5s, drain_control() consumes pending responses
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Testing \& Validation}
+\label{sec:testing}
+
+\subsection{Running Tests}
+\label{subsec:running-tests}
+
+% TODO: cargo test -- --test-threads=1, requires live radar, sequential only
+
+\subsection{Test Categories}
+\label{subsec:test-categories}
+
+% TODO: Connection (6), TX (3), Settings (14), Echo Impact (2), Render Integration (1)
+
+\subsubsection{Connection Tests}
+\label{subsubsec:test-connection}
+
+% TODO: Auth, control channel, init, firmware, keepalive, echo socket
+
+\subsubsection{TX Tests}
+\label{subsubsec:test-tx}
+
+% TODO: TX on/off cycling, echo reception, full rotation collection
+
+\subsubsection{Settings Tests}
+\label{subsubsec:test-settings}
+
+% TODO: Set-and-read verification for each parameter
+
+\subsubsection{Echo Impact Tests}
+\label{subsubsec:test-echo-impact}
+
+% TODO: Gain and range changes produce measurable echo differences
+
+\subsubsection{Render Integration Test}
+\label{subsubsec:test-render}
+
+% TODO: Full pipeline: UDP -> decode -> render -> PNG
+
+\subsection{A/B Command Testing}
+\label{subsec:ab-testing}
+
+% TODO: testing.rs methodology: capture PPI before, send command, capture PPI after, compare
+
+\subsection{Validation Suite}
+\label{subsec:validation-suite}
+
+% TODO: validate mode — 6-phase automated verification
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+%
+%   PART III — ECHO DATA PIPELINE
+%
+% ══════════════════════════════════════════════════════════════════════════════
+
+\newpage
+\part{Echo Data Pipeline}
+\label{part:echo}
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Echo Data Format}
+\label{sec:echo-data-format}
+
+\subsection{Packet Structure}
+\label{subsec:echo-packet-structure}
+
+% TODO: Figure — echo UDP packet layout
+
+\subsection{Header Field Breakdown}
+\label{subsec:echo-header}
+
+% TODO: 16-byte header field-by-field
+
+\subsection{Echo Metadata Extraction}
+\label{subsec:echo-metadata}
+
+% TODO: sweep_count, sweep_len, encoding extraction formulas
+
+\subsection{Spoke Sub-Header}
+\label{subsec:spoke-subheader}
+
+% TODO: 4-byte layout per spoke: 2 bytes azimuth (u16 LE) + 2 bytes heading (u16 LE)
+
+\subsection{Multi-Spoke Packing}
+\label{subsec:multi-spoke}
+
+% TODO: How multiple spokes are packed sequentially; sweep_count tells how many
+
+\subsection{Azimuth and Heading}
+\label{subsec:azimuth-heading}
+
+% TODO: 8192 ticks per full rotation, compass bearing convention
+
+\subsection{Typical Packet Characteristics}
+\label{subsec:echo-packet-characteristics}
+
+% TODO: Sizes and rates observed at different range settings
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Echo Encoding Types}
+\label{sec:echo-encoding}
+
+% TODO: Overview — 4 encoding schemes, selected by header field
+
+\subsection{Encoding 0: Raw Uncompressed}
+\label{subsec:encoding-0}
+
+% TODO: Direct byte storage + 4-byte alignment padding rule
+
+\subsection{Encoding 1: RLE with Repeat Marker}
+\label{subsec:encoding-1}
+
+% TODO: LSB=0 literal, LSB=1 repeat; worked byte-level example
+
+\subsection{Encoding 2: Delta RLE with Previous Spoke Reference}
+\label{subsec:encoding-2}
+
+% TODO: Like Encoding 1 but repeats copy from previous spoke; worked example
+
+\subsection{Encoding 3: 2-Bit RLE with Dual Reference}
+\label{subsec:encoding-3}
+
+% TODO: 2-bit control; worked example showing both repeat and copy modes
+
+\subsection{Encoding Selection}
+\label{subsec:encoding-selection}
+
+% TODO: Which encodings are observed at which ranges/conditions
+
+\subsection{Display Value Conversion}
+\label{subsec:display-conversion}
+
+% TODO: display = wire >> 2
+
+\subsection{Rotation Detection}
+\label{subsec:rotation-detection}
+
+% TODO: Echo listener detects wrap-around when azimuth drops by >1000 ticks
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Doppler Processing}
+\label{sec:doppler}
+
+\subsection{Status Field Encoding}
+\label{subsec:doppler-status}
+
+% TODO: Bit layout table
+
+\subsection{Echo Byte Encoding}
+\label{subsec:doppler-echo-byte}
+
+% TODO: Normal (full 8-bit) vs Doppler (bit 7 = D flag, bits 6:0 = 7-bit intensity)
+
+\subsection{Downstream Usage}
+\label{subsec:doppler-downstream}
+
+% TODO: How the D bit is used after decoding
+
+\subsection{Practical Notes}
+\label{subsec:doppler-practical}
+
+% TODO: What "moving target" looks like in real data, reliability, range limitations
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Dual-Pulse Interleaving}
+\label{sec:dual-pulse}
+
+\subsection{Pulse Types}
+\label{subsec:pulse-types}
+
+% TODO: Long (17 discrete levels, full quantization table) vs short (130-240 continuous)
+
+\subsection{Range Dependence}
+\label{subsec:pulse-range-dependence}
+
+% TODO: Ratio table by range setting
+
+\subsection{Rez Boost Effect}
+\label{subsec:pulse-rez-boost}
+
+% TODO: How rez boost shifts the long/short ratio and short-pulse resolution
+
+\subsection{Spoke Handling}
+\label{subsec:pulse-spoke-handling}
+
+% TODO: How the code treats long vs short pulse spokes
+
+
+% ══════════════════════════════════════════════════════════════════════════════
+%
+%   PART IV — NETWORK & WIRE PROTOCOL
+%
+% ══════════════════════════════════════════════════════════════════════════════
+
+\newpage
+\part{Network \& Wire Protocol}
+\label{part:protocol}
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\section{Network Architecture}
+\label{sec:network-architecture}
+
+\subsection{Topology}
+\label{subsec:network-topology}
+
+% TODO: Figure — network topology
+
+\subsection{Port Map}
+\label{subsec:port-map}
+
+% TODO: Port table
+
+\subsection{Auto-Discovery and Network Configuration}
+\label{subsec:auto-discovery}
+
+% TODO: Three-stage fallback logic
+
+\subsubsection{Platform-Specific IP Alias}
+\label{subsubsec:ip-alias}
+
+% TODO: Linux: ip addr add, macOS: ifconfig alias, Windows: placeholder only
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Control Protocol}
+\label{sec:control-protocol}
+
+\subsection{Message Format}
+\label{subsec:message-format}
+
+% TODO: $S (set), $R (read), $N (notify) prefixes, comma-separated params, \r\n terminated
+
+\subsection{Binary Keepalive}
+\label{subsec:keepalive}
+
+% TODO: 8-byte packet, sent every 5s + figure
+
+\subsection{Binary vs ASCII Disambiguation}
+\label{subsec:binary-ascii}
+
+% TODO: Exact 8-byte match for keepalive, not just "check first byte"
+
+\subsection{Response Types}
+\label{subsec:response-types}
+
+% TODO: RadarResponse enum — ClientConnection, Keepalive, RegisterValue, Unknown
+
+\subsection{Response Parsing Pipeline}
+\label{subsec:response-parsing}
+
+% TODO: read_responses(), partial line buffering, parse_response_line()
+
+\subsection{Command Acknowledgment}
+\label{subsec:command-ack}
+
+% TODO: send_and_read_ack() — deadline-based waiting
+
+\subsection{Control Channel Drain}
+\label{subsec:drain-control}
+
+% TODO: drain_control() — flush pending data without parsing
+
+\subsection{Initialization Sequence}
+\label{subsec:init-sequence}
+
+% TODO: 6 phases + figure
+
+\subsubsection{Phase 1: Discovery}
+\label{subsubsec:init-discovery}
+
+% TODO: UDP beacon on port 10010
+
+\subsubsection{Phase 2: Authentication}
+\label{subsubsec:init-auth}
+
+% TODO: TCP 10010, 44-byte payload with copyright string, expect byte[9]=0x64
+
+\subsubsection{Phase 3: Control Channel}
+\label{subsubsec:init-control}
+
+% TODO: TCP 10100 with TCP_NODELAY, expect $N00,CLIENTCONNECTION
+
+\subsubsection{Phase 4: Firmware Query}
+\label{subsubsec:init-firmware}
+
+% TODO: $R96,,,,,,,\r\n, response stored in self.firmware
+
+\subsubsection{Phase 5: Register Dump}
+\label{subsubsec:init-registers}
+
+% TODO: ~184 $R commands covering registers 0x61-0xFF
+
+\subsubsection{Phase 6: Steady State}
+\label{subsubsec:init-steady}
+
+% TODO: Keepalives every 5-10s, heading reports at ~1Hz
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Command Reference}
+\label{sec:command-reference}
+
+% TODO: Complete command reference with corrected IDs verified against protocol.rs
+
+\subsection{TX State (\texttt{\$S69})}
+\label{subsec:cmd-tx}
+
+% TODO: state: 1=standby, 2=transmit; always accompanied by STC resets
+
+\subsection{Range (\texttt{\$S62})}
+\label{subsec:cmd-range}
+
+% TODO: wire_index mapping table (18 entries, 1/16 NM to 48 NM)
+
+\subsection{Gain (\texttt{\$S63})}
+\label{subsec:cmd-gain}
+
+% TODO: auto/manual mode, value 0-255, maxGain=80 hardcoded as 4th param
+
+\subsection{Sea Clutter (\texttt{\$S64})}
+\label{subsec:cmd-sea}
+
+% TODO: Basic (status, value) and full variant (sea_mode: 0=Advanced, 1=Coastal)
+
+\subsection{Rain Clutter (\texttt{\$S65})}
+\label{subsec:cmd-rain}
+
+% TODO: Basic and full variant (ftc_mode: 0=OFF, 1=FTC-1, 2=FTC-2; rain_mode)
+
+\subsection{Pulse Width (\texttt{\$S68})}
+\label{subsec:cmd-pulse}
+
+% TODO: pulse value 0-5 (S1/S2/M1/M2/M3/L) + range_index as second param
+
+\subsection{STC Near (\texttt{\$S85})}
+\label{subsec:cmd-stc-near}
+
+% TODO: value 0-4
+
+\subsection{STC Middle (\texttt{\$S86})}
+\label{subsec:cmd-stc-middle}
+
+% TODO: value 0-3
+
+\subsection{STC Far (\texttt{\$S87})}
+\label{subsec:cmd-stc-far}
+
+% TODO: value 0-2
+
+\subsection{Main Bang Suppression (\texttt{\$S83})}
+\label{subsec:cmd-main-bang}
+
+% TODO: value 0-255
+
+\subsection{Antenna Height (\texttt{\$S84})}
+\label{subsec:cmd-antenna-height}
+
+% TODO: meters above sea level
+
+\subsection{Antenna Revolution (\texttt{\$S89})}
+\label{subsec:cmd-antenna-revolution}
+
+% TODO: speed (0=LO, 1=HI, 2=AUTO) + hi_rpm flag
+
+\subsection{Interference Rejection (\texttt{\$S67}, param[2]=2)}
+\label{subsec:cmd-ir}
+
+% TODO: value: 0=off, 2=on
+
+\subsection{Noise Reduction (\texttt{\$S67}, param[2]=3)}
+\label{subsec:cmd-noise}
+
+% TODO: value: 0=off, 1=on
+
+\subsection{Rez Boost (\texttt{\$SEE})}
+\label{subsec:cmd-rezboost}
+
+% TODO: level 0-3
+
+\subsection{Bird Mode (\texttt{\$SED})}
+\label{subsec:cmd-bird}
+
+% TODO: level 0-3
+
+\subsection{Doppler / Target Analyzer (\texttt{\$SEF})}
+\label{subsec:cmd-doppler}
+
+% TODO: mode: 0=off, 1=target, 2=rain
+
+\subsection{No-Transmit Sectors (\texttt{\$S77})}
+\label{subsec:cmd-no-transmit}
+
+% TODO: 2 sectors, angles in degrees with 360-degree wrapping
+
+\subsection{Query Commands}
+\label{subsec:cmd-queries}
+
+% TODO: Full table of all $R query commands with IDs and expected response format
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Periodic Telemetry}
+\label{sec:telemetry}
+
+\subsection{Telemetry Message Table}
+\label{subsec:telemetry-table}
+
+% TODO: $NAF,256; $NF5; $NE0; $N83,100,1; $N68; $N00,CLIENTCONNECTION; keepalive
+
+\subsection{Telemetry Processing}
+\label{subsec:telemetry-processing}
+
+% TODO: How read_responses() categorizes incoming data via RadarResponse enum
+
+\subsection{Parsed vs Discarded Data}
+\label{subsec:telemetry-parsed}
+
+% TODO: Register values logged, keepalives acknowledged, unknown lines stored
+
+
+% ──────────────────────────────────────────────────────────────────────────────
+\newpage
+\section{Proprietary Library Reference}
+\label{sec:proprietary-lib}
+
+\subsection{Module Breakdown}
+\label{subsec:lib-modules}
+
+% TODO: libNAVNETDLL.so module breakdown table
+
+\subsection{Shared Command IDs}
+\label{subsec:lib-shared-ids}
+
+% TODO: $R67 controls multiple features via sub-parameter
+
+
+\end{document}

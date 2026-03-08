@@ -194,7 +194,7 @@ All CLI modes beyond `web` and `discover` (documented in Part I).
 
 ## Part IV — Network & Wire Protocol
 
-### IV.1 Network Architecture (existing section 2)
+### IV.1 Network Architecture
 - Topology + figure
 - Port Map table
 - Auto-Discovery and Network Configuration (existing, expanded):
