@@ -406,33 +406,56 @@ For pattern-based recordings, the snapshot additionally includes the \texttt{Pat
 \subsection{What Patterns Do}
 \label{subsec:pattern-overview}
 
-% TODO: Automated parameter sequences, each step held for N rotations
+Patterns automate sequences of radar parameter changes. A pattern consists of one or more \textit{steps}, each specifying a set of radar settings and a \textit{repeat count} that determines how many full antenna rotations that step is held before advancing to the next. When recording is active during pattern execution, each rotation produces a CSV and PNG file, allowing systematic data collection across parameter combinations.
 
 \subsection{Simple Pattern Format (7-Field)}
 \label{subsec:pattern-simple}
 
-% TODO: range,gain,pulse,rezboost,speed,interp,repeat — all fields required
+The simple format uses seven comma-separated fields per step. All fields are required and all values are set explicitly.
+
+\begin{lstlisting}
+range, gain, pulse, rezboost, speed, interp, repeat
+\end{lstlisting}
+
+For example, the step \texttt{4,50,0,3,2,1,5} sets range index 4 (1~NM), gain 50, pulse S1, RezBoost high, auto antenna speed, interpolation on, and holds for 5 rotations. Multiple steps are separated by semicolons.
+
+\begin{lstlisting}
+4,50,0,3,2,1,5; 8,50,2,3,2,1,5; 11,50,4,3,2,1,5
+\end{lstlisting}
 
 \subsection{Advanced Pattern Format (13-Field)}
 \label{subsec:pattern-advanced}
 
-% TODO: Adds sea_clutter,rain_clutter,main_bang,interference_rejection,bird_mode,doppler
-% TODO: Fields can be NaN to skip
+The advanced format extends the simple format with six additional fields for fine-grained signal processing control.
+
+\begin{lstlisting}
+range, gain, pulse, rezboost, speed, interp,
+    sea_clutter, rain_clutter, main_bang,
+    interference_rejection, bird_mode, doppler, repeat
+\end{lstlisting}
+
+Any of the 12 parameter fields (all except \texttt{repeat}) can be set to \texttt{NaN} to leave that setting unchanged from its current value. This is particularly useful when only a subset of parameters needs to vary across steps. For example, the step \texttt{4,NaN,0,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,3} changes only the range to index 4 and the pulse to S1, leaving all other settings at their current values and holding for 3 rotations.
 
 \subsection{Pattern Queue}
 \label{subsec:pattern-queue}
 
-% TODO: Load multiple patterns, each with repeat count and label; execute in order; stop mid-run
+Multiple patterns can be loaded into a queue and executed sequentially. Each queue entry has its own pattern data, repeat count, and optional label. The repeat count controls how many times the entire pattern is cycled ($-1$ for infinite looping). Patterns execute in the order they were added.
+
+During queue execution, each pattern item creates its own recording session with a separate timestamped directory (tagged with the sanitized pattern label if one was provided). The queue can be stopped at any time using the STOP button, which halts execution between steps. A RESET button clears the entire queue.
 
 \subsection{Loading Patterns}
 \label{subsec:pattern-loading}
 
-% TODO: File upload (.txt/.csv) or manual textarea input; steps separated by semicolons
+Patterns can be loaded in two ways. The first is file upload: clicking the ``Load file'' button opens a file picker that accepts \texttt{.txt} or \texttt{.csv} files. The file contents are parsed as semicolon-separated steps. The second is manual input: on the settings page, clicking ``Manual input'' reveals a text area where steps can be typed or pasted directly.
+
+After loading, the user sets a repeat count and an optional label, then clicks ``Add to queue'' to append the pattern to the queue list. Multiple patterns can be queued before pressing RUN.
 
 \subsection{NaN Override Behavior}
 \label{subsec:pattern-nan}
 
-% TODO: NaN fields remain unlocked for manual changes via web UI during execution
+When a pattern step uses \texttt{NaN} for a field, that setting remains \textit{unlocked} during execution. This means the user can manually change that parameter through the web UI while the pattern runs, and the change takes effect immediately. Conversely, parameters with explicit values in the current step are \textit{locked}---manual changes to locked parameters are rejected with an error message indicating that the setting is controlled by the active pattern.
+
+This mechanism allows hybrid operation where some parameters are swept by the pattern while others are adjusted interactively. For example, a pattern that sweeps range and pulse but sets all clutter fields to \texttt{NaN} lets the operator tune clutter rejection in real time while the automated sweep runs.
 
 
 % ══════════════════════════════════════════════════════════════════════════════
