@@ -149,23 +149,7 @@ This document is the complete technical reference for the Furuno DRS4D-NXT marin
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-    block/.style={draw, thick, minimum width=3.2cm, minimum height=1.4cm, align=center, fill=TenBlack, text=NinetyBlack},
-    netblock/.style={draw, thick, dashed, minimum width=2.4cm, minimum height=0.9cm, align=center, fill=white, text=SeventyBlack, font=\small},
-    arr/.style={-{Stealth[length=3mm]}, thick, Garnet},
-    darr/.style={{Stealth[length=3mm]}-{Stealth[length=3mm]}, thick, Garnet},
-]
-    \node[block] (radar) {DRS4D-NXT\\Radar Scanner};
-    \node[block, right=4cm of radar] (server) {\texttt{furuno-server}\\Rust Application};
-    \node[block, right=4cm of server] (browser) {Web Browser\\(Any Device)};
-
-    \draw[darr] (radar) -- node[above, font=\small, text=SeventyBlack] {Ethernet} node[below, font=\footnotesize, text=FiftyBlack] {172.31.0.0/16} (server);
-    \draw[darr] (server) -- node[above, font=\small, text=SeventyBlack] {HTTP} node[below, font=\footnotesize, text=FiftyBlack] {port 8080} (browser);
-
-    \node[netblock, below=0.6cm of radar] {TCP 10010, 10100\\UDP 10024};
-    \node[netblock, below=0.6cm of server] {Axum 0.7\\Tokio async};
-    \node[netblock, below=0.6cm of browser] {HTML/CSS/JS\\REST API};
-\end{tikzpicture}
+\includegraphics[width=0.95\textwidth]{figures/fig_system_overview.pdf}
 \caption{System overview. The radar scanner communicates with the Rust server over a dedicated Ethernet link. The server exposes a web interface accessible from any browser on the network.}
 \label{fig:system-overview}
 \end{figure}
@@ -186,7 +170,7 @@ The system consists of three software components.
 
 The \textit{web interface} is a set of static HTML, CSS, and JavaScript files served by the Rust application. It provides four pages: a controls dashboard for quick radar operation, a full-screen PPI display with history compositing, a detailed settings panel, and a system status view. The interface communicates with the server through a REST API and polls for updated radar images at 500\,ms intervals.
 
-The \textit{documentation} consists of this technical manual and inline source code comments. The manual is maintained as a single self-contained \LaTeX{} file with all diagrams rendered via TikZ.
+The \textit{documentation} consists of this technical manual and inline source code comments. The manual is maintained as a \LaTeX{} file with diagrams compiled as standalone PDFs from TikZ source files in the \texttt{figures/} directory.
 
 
 
@@ -473,29 +457,7 @@ Patterns automate sequences of radar parameter changes. A pattern consists of on
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-    proc/.style={draw, thick, minimum width=2.6cm, minimum height=1cm, align=center, fill=TenBlack, text=NinetyBlack, font=\small},
-    decision/.style={draw, thick, diamond, aspect=2, minimum width=2cm, align=center, fill=TenBlack, text=NinetyBlack, font=\small},
-    arr/.style={-{Stealth[length=2.5mm]}, thick, Garnet},
-    every node/.append style={rounded corners=0pt},
-]
-    \node[proc] (load) {Load Pattern\\(file or text)};
-    \node[proc, right=1.8cm of load] (queue) {Add to\\Queue};
-    \node[proc, right=1.8cm of queue] (apply) {Apply Step\\Settings};
-    \node[decision, right=1.8cm of apply] (wait) {$N$ rotations\\complete?};
-    \node[proc, below=1.2cm of wait] (next) {Next Step};
-    \node[decision, below=1.2cm of apply] (more) {More\\steps?};
-    \node[proc, below=1.2cm of load] (done) {Pattern\\Complete};
-
-    \draw[arr] (load) -- (queue);
-    \draw[arr] (queue) -- (apply);
-    \draw[arr] (apply) -- (wait);
-    \draw[arr] (wait.south) -- node[right, font=\footnotesize, text=SeventyBlack] {no} (next);
-    \draw[arr] (wait.east) -- ++(0.6,0) node[above, font=\footnotesize, text=SeventyBlack] {yes} |- (next.east);
-    \draw[arr] (next) -- (more);
-    \draw[arr] (more) -- node[above, font=\footnotesize, text=SeventyBlack] {no} (done);
-    \draw[arr] (more.west) -- ++(-0.8,0) node[below, font=\footnotesize, text=SeventyBlack] {yes} |- (apply.south west);
-\end{tikzpicture}
+\includegraphics[width=0.95\textwidth]{figures/fig_pattern_flow.pdf}
 \caption{Pattern execution flow. Each step is applied to the radar and held for the specified number of antenna rotations before advancing.}
 \label{fig:pattern-flow}
 \end{figure}
@@ -600,26 +562,7 @@ The following diagram shows the physical and network boundaries of the system. T
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-  box/.style={draw, thick, minimum width=3.2cm, minimum height=1.2cm, align=center, font=\small},
-  lbl/.style={font=\scriptsize, align=center},
-  >=stealth
-]
-  % Radar
-  \node[box, fill=Garnet!15] (radar) at (0,0) {DRS4D-NXT\\Radar};
-  % Server
-  \node[box, fill=Atlantic!15] (server) at (5.5,0) {Rust Server\\(\texttt{furuno-server})};
-  % Browser
-  \node[box, fill=Horseshoe!15] (browser) at (11,0) {Web Browser};
-
-  % Connections
-  \draw[->, thick] (radar.east) -- node[above, lbl] {TCP 10100\\(control)} (server.west);
-  \draw[<-, thick] (radar.east) ++ (0,-0.35) -- node[below, lbl] {UDP 10024\\(echo multicast)} ++ (5.5,0);
-  \draw[<->, thick] (server.east) -- node[above, lbl] {HTTP\\(port 8080)} (browser.west);
-
-  % Subnet label
-  \node[lbl, below=0.9cm of server] {172.31.x.x subnet};
-\end{tikzpicture}
+\includegraphics[width=0.85\textwidth]{figures/fig_system_blocks.pdf}
 \caption{System-level block diagram showing radar hardware, Rust server, and browser.}
 \label{fig:system-blocks}
 \end{figure}
@@ -629,39 +572,7 @@ The following diagram shows the physical and network boundaries of the system. T
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-  mod/.style={draw, thick, minimum width=2.4cm, minimum height=0.9cm, align=center, font=\footnotesize},
-  dep/.style={->, thick, >=stealth},
-  scale=0.95, transform shape
-]
-  % Modules
-  \node[mod, fill=Garnet!10] (main) at (0,4) {\texttt{main.rs}};
-  \node[mod, fill=Atlantic!10] (web) at (-3.5,2) {\texttt{web.rs}};
-  \node[mod, fill=Atlantic!10] (modes) at (3.5,2) {\texttt{modes.rs}};
-  \node[mod, fill=Horseshoe!10] (conn) at (-5,0) {\texttt{connection.rs}};
-  \node[mod, fill=Horseshoe!10] (proto) at (0,0) {\texttt{protocol.rs}};
-  \node[mod, fill=Horseshoe!10] (echo) at (5,0) {\texttt{echo.rs}};
-  \node[mod, fill=Honeycomb!20] (render) at (-2,-2) {\texttt{render.rs}};
-  \node[mod, fill=Rose!10] (testing) at (3.5,-2) {\texttt{testing.rs}};
-
-  % Dependencies
-  \draw[dep] (main) -- (web);
-  \draw[dep] (main) -- (modes);
-  \draw[dep] (main) -- (proto);
-  \draw[dep] (web) -- (conn);
-  \draw[dep] (web) -- (proto);
-  \draw[dep] (web) -- (render);
-  \draw[dep] (modes) -- (conn);
-  \draw[dep] (modes) -- (proto);
-  \draw[dep] (modes) -- (echo);
-  \draw[dep] (modes) -- (render);
-  \draw[dep] (conn) -- (proto);
-  \draw[dep] (echo) -- (proto);
-  \draw[dep] (testing) -- (proto);
-  \draw[dep] (testing) -- (conn);
-  \draw[dep] (testing) -- (echo);
-  \draw[dep] (testing) -- (render);
-\end{tikzpicture}
+\includegraphics[width=0.7\textwidth]{figures/fig_module_deps.pdf}
 \caption{Module dependency diagram. Arrows point from dependent module to dependency.}
 \label{fig:module-deps}
 \end{figure}
@@ -671,28 +582,7 @@ The following diagram shows the physical and network boundaries of the system. T
 
 \begin{figure}[H]
 \centering
-\begin{tikzpicture}[
-  proc/.style={draw, thick, minimum width=2.2cm, minimum height=0.7cm, align=center, font=\scriptsize},
-  data/.style={font=\scriptsize\itshape},
-  dep/.style={->, thick, >=stealth},
-  scale=0.95, transform shape
-]
-  \node[proc, fill=Garnet!10] (udp) at (0,0) {UDP Multicast\\239.255.0.2:10024};
-  \node[proc, fill=Atlantic!10] (decode) at (3.5,0) {\texttt{decode\_echo\_}\\  \texttt{packet()}};
-  \node[proc, fill=Horseshoe!10] (spokes) at (7,0) {\texttt{Vec<Spoke>}};
-  \node[proc, fill=Honeycomb!20] (render) at (10.5,0) {\texttt{render\_ppi()}};
-  \node[proc, fill=Rose!10] (png) at (13.5,0) {PNG bytes};
-
-  \node[proc, fill=TenBlack] (http) at (13.5,-1.5) {\texttt{/newest\_png}};
-  \node[proc, fill=TenBlack] (canvas) at (10.5,-1.5) {Browser\\Canvas};
-
-  \draw[dep] (udp) -- (decode);
-  \draw[dep] (decode) -- node[above, data] {decompressed} (spokes);
-  \draw[dep] (spokes) -- (render);
-  \draw[dep] (render) -- node[above, data] {RGBA pixels} (png);
-  \draw[dep] (png) -- (http);
-  \draw[dep] (http) -- (canvas);
-\end{tikzpicture}
+\includegraphics[width=0.95\textwidth]{figures/fig_dataflow.pdf}
 \caption{Echo data flow from UDP multicast to browser canvas.}
 \label{fig:dataflow}
 \end{figure}
@@ -783,40 +673,101 @@ Both functions encode as RGBA color type with 8-bit depth.
 \section{Web Server}
 \label{sec:web-server}
 
+The web server in \texttt{web.rs} is the primary interface for operating the radar. It serves both the static HTML/CSS/JS files and a REST API for controlling radar parameters and retrieving data.
+
 \subsection{Framework}
 \label{subsec:web-framework}
 
-% TODO: Axum 0.7 + Tokio async runtime
+The server is built on \textbf{Axum 0.7}, a Rust web framework that runs on the \textbf{Tokio} async runtime. The \texttt{start\_server()} function is annotated with \texttt{\#[tokio::main]} to create the async runtime. All HTTP handlers are async functions, with blocking radar I/O operations wrapped in \texttt{tokio::task::spawn\_blocking()} to prevent stalling the event loop.
+
+Key dependencies: \texttt{axum} for routing and extraction, \texttt{tower-http} for static file serving, \texttt{serde} for query parameter deserialization, and \texttt{serde\_json} for JSON responses.
 
 \subsection{Shared State}
 \label{subsec:appstate}
 
-% TODO: AppState struct — key fields and synchronization primitives
+All server state lives in a single \texttt{AppState} struct, wrapped in \texttt{Arc} and passed to every handler via Axum's \texttt{State} extractor. The key fields and their synchronization primitives are listed below.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{Field} & \textbf{Type} & \textbf{Purpose} \\
+\midrule
+\texttt{conn} & \texttt{Mutex<RadarConnection>} & Exclusive access to the TCP control channel \\
+\texttt{latest\_png} & \texttt{RwLock<Vec<u8>{}>} & Most recent PPI image (PNG-encoded bytes) \\
+\texttt{tx\_active} & \texttt{AtomicBool} & Whether the transmitter is currently on \\
+\texttt{connected} & \texttt{AtomicBool} & Whether the radar connection is established \\
+\texttt{recording} & \texttt{AtomicBool} & Whether CSV/PNG recording is active \\
+\texttt{record\_dir} & \texttt{RwLock<String>} & Current recording output directory path \\
+\texttt{rotation\_count} & \texttt{AtomicU64} & Total antenna rotations since server start \\
+\texttt{pattern\_stop} & \texttt{AtomicBool} & Signal to abort a running pattern \\
+\texttt{pattern\_running} & \texttt{AtomicBool} & Whether a pattern is currently executing \\
+\texttt{pattern\_status} & \texttt{RwLock<String>} & Human-readable pattern execution status \\
+\texttt{settings} & \texttt{RwLock<CurrentSettings>} & Current radar configuration for CSV metadata \\
+\texttt{setting\_history} & \texttt{RwLock<Vec<SettingChange>{}>} & Change log for recording snapshots \\
+\texttt{host\_ip} & \texttt{Ipv4Addr} & Host IP (used by echo socket) \\
+\texttt{start\_time} & \texttt{Instant} & Server start time (for uptime calculation) \\
+\bottomrule
+\end{tabularx}
+\caption{\texttt{AppState} fields and synchronization.}
+\label{tab:appstate}
+\end{table}
 
 \subsection{Route Registration}
 \label{subsec:route-registration}
 
-% TODO: How routes are wired in start_server()
+Routes are registered in \texttt{start\_server()} using Axum's \texttt{Router} builder. Each route maps a URL path to a handler function. All routes use the \texttt{GET} method except \texttt{/run\_pattern\_queue} which uses \texttt{POST} (for large JSON payloads). The router ends with a \texttt{fallback\_service(ServeDir::new(web\_dir))} that serves static files from the \texttt{web/} directory for any path that does not match a registered route.
+
+Several legacy aliases exist for backward compatibility: \texttt{/begin\_calibration} and \texttt{/run\_ramp\_pattern} both map to the same handler as \texttt{/run\_pattern}.
 
 \subsection{Handler Pattern}
 \label{subsec:handler-pattern}
 
-% TODO: async fn handler(State(state), Query(params)) -> impl IntoResponse
+All handlers follow a consistent pattern:
+
+\begin{lstlisting}[basicstyle=\small\ttfamily]
+async fn handle_set_range(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<RangeParams>,
+) -> String {
+    // Build command from params
+    // Send via spawn_blocking + send_cmd()
+    // Update settings, return status string
+}
+\end{lstlisting}
+
+The \texttt{State} extractor provides access to the shared \texttt{AppState}. The \texttt{Query} extractor deserializes URL query parameters into a typed struct. Handlers that modify radar settings also update the \texttt{CurrentSettings} in shared state and log a \texttt{SettingChange} entry for recording metadata.
+
+The helper function \texttt{send\_cmd()} wraps the blocking radar I/O pattern: it takes a command string and expected acknowledgment prefix, calls \texttt{send\_and\_read\_ack()} inside \texttt{spawn\_blocking()}, and returns a status message.
 
 \subsection{Echo Listener Thread}
 \label{subsec:echo-listener}
 
-% TODO: Dedicated std::thread, UDP multicast, decode spokes, render PPI, update latest_png
+A dedicated \texttt{std::thread} (spawned at server startup) runs the \texttt{echo\_listener()} function. This thread joins the UDP multicast group 239.255.0.2:10024 and continuously receives echo packets.
+
+The listener maintains a running buffer of spokes for the current rotation. When it detects a rotation wrap (azimuth drops by more than 1000 ticks from the previous spoke), it renders the accumulated spokes into a PPI image via \texttt{render\_ppi()}, encodes it to PNG via \texttt{encode\_png\_bytes()}, and stores the result in \texttt{latest\_png}. If recording is active, it also writes a CSV and PNG file to the recording directory.
+
+The listener sends keepalive packets every 5 seconds (via \texttt{try\_lock()} on the connection mutex) and drains pending control channel data. When TX is not active, it sleeps in 100\,ms intervals to avoid busy-waiting.
 
 \subsection{Static File Serving}
 \label{subsec:static-files}
 
-% TODO: ServeDir fallback for the web/ directory
+The \texttt{tower\_http::services::ServeDir} middleware serves the \texttt{web/} directory as a fallback for any path not matched by an explicit route. By default, the web directory is \texttt{../web} relative to the binary location. This can be overridden with the second positional argument to the \texttt{web} CLI mode.
+
+The static files include \texttt{index.html}, \texttt{radar.html}, \texttt{settings.html}, \texttt{status.html}, \texttt{styles.css}, and \texttt{script.js}. The JavaScript in \texttt{script.js} handles page-specific logic including polling \texttt{/newest\_png} every 500\,ms, sending API requests, and managing pattern queue state.
 
 \subsection{How to Add a New Endpoint}
 \label{subsec:add-endpoint}
 
-% TODO: Step-by-step: define params struct, write handler, register route
+To add a new endpoint, follow these steps.
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Define a parameter struct.} Create a \texttt{\#[derive(Deserialize)]} struct with fields matching the expected query parameters. Use \texttt{\#[serde(rename = "camelCase")]} for JavaScript-friendly names.
+
+\item \textbf{Write the handler.} Create an async function taking \texttt{State(state): State<Arc<AppState>{}>} and \texttt{Query(params): Query<YourParams>}. Use \texttt{send\_cmd()} for radar commands, or access shared state directly for read-only queries.
+
+\item \textbf{Register the route.} Add a \texttt{.route("/your\_endpoint", get(handle\_your\_endpoint))} line in the router chain in \texttt{start\_server()}.
+\end{enumerate}
 
 
 % ──────────────────────────────────────────────────────────────────────────────
@@ -824,42 +775,89 @@ Both functions encode as RGBA color type with 8-bit depth.
 \section{REST API Reference}
 \label{sec:rest-api}
 
-% TODO: All endpoints with correct parameter names (verified against code)
+All endpoints are verified against the source code in \texttt{web.rs}. Unless otherwise noted, all endpoints accept \texttt{GET} requests with URL query parameters and return plain text responses.
 
 \subsection{Power and Connection}
 \label{subsec:api-power}
 
-% TODO: /toggle_echo, /reconnect
+\begin{longtable}{l p{10cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Description} \\
+\midrule
+\texttt{/toggle\_echo?mode=on|off} & Turn the transmitter on or off. Accepts optional \texttt{radarNo} parameter (ignored). \\
+\texttt{/reconnect} & Drop the current connection and re-establish auth, control channel, and init. Resets TX state to off. \\
+\bottomrule
+\end{longtable}
 
 \subsection{Settings}
 \label{subsec:api-settings}
 
-% TODO: All GET settings endpoints with correct query params
+All settings endpoints accept \texttt{GET} requests with query parameters. During pattern execution, manual changes to pattern-controlled settings are rejected unless the pattern step uses \texttt{NaN} for that field.
+
+\begin{longtable}{l p{9cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Parameters} \\
+\midrule
+\texttt{/set\_range} & \texttt{rangeIndex} (0--17) \\
+\texttt{/set\_pulse\_width} & \texttt{pulse} (0--5: S1/S2/M1/M2/M3/L), optional \texttt{rangeIndex} \\
+\texttt{/set\_gain} & \texttt{status} (0=manual, 1=auto), \texttt{manualValue} (0--255), \texttt{autoValue} \\
+\texttt{/set\_acsea} & \texttt{status}, \texttt{manual} (0--255), \texttt{auto}, \texttt{mode} (0=Advanced, 1=Coastal) \\
+\texttt{/set\_acrain} & \texttt{status}, \texttt{manual} (0--255), \texttt{auto}, \texttt{ftcMode} (0/1/2), \texttt{rainMode} (0/1/2) \\
+\texttt{/set\_bearing\_resolution} & \texttt{mode} (0--3: Off/Low/Med/High) \\
+\texttt{/set\_antenna\_revolution} & \texttt{rollSpeed} (0=Lo, 1=Hi, 2=Auto), \texttt{hiRpm} (0/1) \\
+\texttt{/set\_near\_stc} & \texttt{value} (0--4) \\
+\texttt{/set\_middle\_stc} & \texttt{value} (0--3) \\
+\texttt{/set\_far\_stc} & \texttt{value} (0--2) \\
+\texttt{/set\_main\_bang} & \texttt{value} (0--255) \\
+\texttt{/set\_interference\_rejection} & \texttt{enabled} (0=off, 1=on) \\
+\texttt{/set\_bird\_mode} & \texttt{level} (0--3: Off/Low/Med/High) \\
+\texttt{/set\_doppler} & \texttt{mode} (0=Off, 1=Internal heading, 2=External heading) \\
+\bottomrule
+\end{longtable}
 
 \subsection{State Queries}
 \label{subsec:api-state}
 
-% TODO: /get_current, /get_system_info, /system_metrics
+\begin{longtable}{l p{9cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Description} \\
+\midrule
+\texttt{/get\_current} & Query a specific setting from the radar. \texttt{command} parameter selects the setting: \texttt{TX}, \texttt{RANGE}, \texttt{PULSE}, \texttt{GAIN}, \texttt{CLUTTER}, \texttt{ANTENNA}, \texttt{STC}, \texttt{MAINBANG}, \texttt{IR}, \texttt{BIRDMODE}, \texttt{DOPPLER}, \texttt{SWEEP}. Optional \texttt{format=json} for JSON response (STC only). \\
+\texttt{/get\_system\_info} & Returns JSON with full system state: connection status, TX state, firmware, IPs, recording state, rotation count, uptime, pattern status, current settings, memory and storage usage. \\
+\texttt{/system\_metrics} & Returns JSON with host system metrics: per-core CPU usage, load average, memory usage, storage usage, network throughput, and CPU temperature. \\
+\bottomrule
+\end{longtable}
 
 \subsection{Echo Image}
 \label{subsec:api-echo-image}
 
-% TODO: /newest_png
+\texttt{GET /newest\_png} returns the most recent PPI image as \texttt{image/png} with \texttt{Cache-Control: no-cache}. If no echo data has been received yet, returns a 1$\times$1 black pixel PNG as a placeholder. The browser JavaScript polls this endpoint every 500\,ms to update the radar display.
 
 \subsection{Recording}
 \label{subsec:api-recording}
 
-% TODO: /toggle_recording
+\texttt{GET /toggle\_recording?mode=start|stop} starts or stops recording. When started, creates a timestamped directory under \texttt{recordings/} with \texttt{csv/} and \texttt{png/} subdirectories, and writes a \texttt{settings.json} snapshot. Each completed rotation during recording produces a CSV and PNG file in the respective subdirectories.
 
 \subsection{Pattern Execution}
 \label{subsec:api-patterns}
 
-% TODO: /run_pattern, /run_pattern_queue, /stop_pattern, /pattern_status
+\begin{longtable}{l l p{7cm}}
+\toprule
+\textbf{Endpoint} & \textbf{Method} & \textbf{Description} \\
+\midrule
+\texttt{/run\_pattern} & GET & Execute a single pattern. \texttt{steps} (semicolon-separated), \texttt{repeat} count, optional \texttt{label}. \\
+\texttt{/run\_pattern\_queue} & POST & Execute a queue of patterns. JSON body with base64-encoded \texttt{payload} containing pattern items. \\
+\texttt{/stop\_pattern} & GET & Set the \texttt{pattern\_stop} flag to abort the current pattern. \\
+\texttt{/pattern\_status} & GET & Returns a JSON object with current pattern execution status, active step info, and queue progress. \\
+\bottomrule
+\end{longtable}
+
+Legacy aliases \texttt{/begin\_calibration} and \texttt{/run\_ramp\_pattern} both map to the same handler as \texttt{/run\_pattern}.
 
 \subsection{Stub Endpoints}
 \label{subsec:api-stubs}
 
-% TODO: /set_sweep_total and /set_interpolation — wired but return stub responses
+\texttt{/set\_sweep\_total} and \texttt{/set\_interpolation} are registered routes that return \texttt{"OK"} without performing any action. These exist for compatibility with the web interface JavaScript, which sends requests to these endpoints. The sweep total is fixed at the PPI resolution (640$\times$640) and interpolation is handled client-side.
 
 
 % ──────────────────────────────────────────────────────────────────────────────

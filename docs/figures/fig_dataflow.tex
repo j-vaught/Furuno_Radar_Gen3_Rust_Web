@@ -1,0 +1,36 @@
+\documentclass[border=5pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning}
+\usepackage{xcolor}
+
+\definecolor{Garnet}{HTML}{73000A}
+\definecolor{Atlantic}{HTML}{466A9F}
+\definecolor{Horseshoe}{HTML}{65780B}
+\definecolor{Honeycomb}{HTML}{A49137}
+\definecolor{Rose}{HTML}{CC2E40}
+\definecolor{TenBlack}{HTML}{ECECEC}
+
+\begin{document}
+\begin{tikzpicture}[
+  proc/.style={draw, thick, minimum width=2.2cm, minimum height=0.7cm, align=center, font=\scriptsize},
+  data/.style={font=\scriptsize\itshape},
+  dep/.style={->, thick, >=stealth},
+  scale=0.95, transform shape
+]
+  \node[proc, fill=Garnet!10] (udp) at (0,0) {UDP Multicast\\239.255.0.2:10024};
+  \node[proc, fill=Atlantic!10] (decode) at (3.5,0) {\texttt{decode\_echo\_}\\  \texttt{packet()}};
+  \node[proc, fill=Horseshoe!10] (spokes) at (7,0) {\texttt{Vec<Spoke>}};
+  \node[proc, fill=Honeycomb!20] (render) at (10.5,0) {\texttt{render\_ppi()}};
+  \node[proc, fill=Rose!10] (png) at (13.5,0) {PNG bytes};
+
+  \node[proc, fill=TenBlack] (http) at (13.5,-1.5) {\texttt{/newest\_png}};
+  \node[proc, fill=TenBlack] (canvas) at (10.5,-1.5) {Browser\\Canvas};
+
+  \draw[dep] (udp) -- (decode);
+  \draw[dep] (decode) -- node[above, data] {decompressed} (spokes);
+  \draw[dep] (spokes) -- (render);
+  \draw[dep] (render) -- node[above, data] {RGBA pixels} (png);
+  \draw[dep] (png) -- (http);
+  \draw[dep] (http) -- (canvas);
+\end{tikzpicture}
+\end{document}
