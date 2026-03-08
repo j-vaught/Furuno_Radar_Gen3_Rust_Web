@@ -565,32 +565,148 @@ This mechanism allows hybrid operation where some parameters are swept by the pa
 \section{System Architecture Overview}
 \label{sec:architecture}
 
-% TODO: High-level introduction only — points readers to detailed sections
+This section provides a high-level map of the codebase. Each subsystem is introduced briefly here and covered in depth in subsequent sections.
 
 \subsection{Module Summary}
 \label{subsec:module-summary}
 
-% TODO: Brief module list with one-line descriptions and cross-reference pointers
+The Rust server is organized into the following source modules, all compiled as a single binary via \texttt{main.rs}.
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{l l X}
+\toprule
+\textbf{File} & \textbf{Role} & \textbf{Details} \\
+\midrule
+\texttt{main.rs} & Entry point & CLI argument parsing, IP resolution, mode dispatch \\
+\texttt{protocol.rs} & Wire protocol & Packet encoding/decoding, command builders, echo decompression \\
+\texttt{connection.rs} & State machine & TCP auth, control channel, keepalives, response parsing (\S\ref{sec:connection-state-machine}) \\
+\texttt{web.rs} & Web server & Axum HTTP handlers, echo listener thread, recording, pattern engine (\S\ref{sec:web-server}--\S\ref{sec:pattern-engine}) \\
+\texttt{echo.rs} & Echo helpers & Rotation collection, CSV export, echo header parsing \\
+\texttt{render.rs} & PPI renderer & Polar-to-Cartesian projection, color mapping, PNG encoding (\S\ref{sec:ppi-rendering}) \\
+\texttt{modes.rs} & CLI modes & Standalone operations: handshake, TX control, dump, render-live (\S\ref{sec:cli-modes-dev}) \\
+\texttt{testing.rs} & Test harness & A/B command verification, 6-phase validation suite (\S\ref{sec:testing}) \\
+\texttt{tests.rs} & Unit tests & \texttt{\#[cfg(test)]} integration tests requiring live radar \\
+\bottomrule
+\end{tabularx}
+\caption{Source module summary.}
+\label{tab:modules}
+\end{table}
 
 \subsection{System-Level Block Diagram}
 \label{subsec:system-diagram}
 
-% TODO: Figure — radar hardware <-> Rust server <-> browser
+The following diagram shows the physical and network boundaries of the system. The radar hardware communicates with the Rust server over a dedicated Ethernet link, and the server exposes an HTTP interface to the browser.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  box/.style={draw, thick, minimum width=3.2cm, minimum height=1.2cm, align=center, font=\small},
+  lbl/.style={font=\scriptsize, align=center},
+  >=stealth
+]
+  % Radar
+  \node[box, fill=Garnet!15] (radar) at (0,0) {DRS4D-NXT\\Radar};
+  % Server
+  \node[box, fill=Atlantic!15] (server) at (5.5,0) {Rust Server\\(\texttt{furuno-server})};
+  % Browser
+  \node[box, fill=Horseshoe!15] (browser) at (11,0) {Web Browser};
+
+  % Connections
+  \draw[->, thick] (radar.east) -- node[above, lbl] {TCP 10100\\(control)} (server.west);
+  \draw[<-, thick] (radar.east) ++ (0,-0.35) -- node[below, lbl] {UDP 10024\\(echo multicast)} ++ (5.5,0);
+  \draw[<->, thick] (server.east) -- node[above, lbl] {HTTP\\(port 8080)} (browser.west);
+
+  % Subnet label
+  \node[lbl, below=0.9cm of server] {172.31.x.x subnet};
+\end{tikzpicture}
+\caption{System-level block diagram showing radar hardware, Rust server, and browser.}
+\label{fig:system-blocks}
+\end{figure}
 
 \subsection{Module-Level Diagram}
 \label{subsec:module-diagram}
 
-% TODO: Figure — how the .rs files relate to each other
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  mod/.style={draw, thick, minimum width=2.4cm, minimum height=0.9cm, align=center, font=\footnotesize},
+  dep/.style={->, thick, >=stealth},
+  scale=0.95, transform shape
+]
+  % Modules
+  \node[mod, fill=Garnet!10] (main) at (0,4) {\texttt{main.rs}};
+  \node[mod, fill=Atlantic!10] (web) at (-3.5,2) {\texttt{web.rs}};
+  \node[mod, fill=Atlantic!10] (modes) at (3.5,2) {\texttt{modes.rs}};
+  \node[mod, fill=Horseshoe!10] (conn) at (-5,0) {\texttt{connection.rs}};
+  \node[mod, fill=Horseshoe!10] (proto) at (0,0) {\texttt{protocol.rs}};
+  \node[mod, fill=Horseshoe!10] (echo) at (5,0) {\texttt{echo.rs}};
+  \node[mod, fill=Honeycomb!20] (render) at (-2,-2) {\texttt{render.rs}};
+  \node[mod, fill=Rose!10] (testing) at (3.5,-2) {\texttt{testing.rs}};
+
+  % Dependencies
+  \draw[dep] (main) -- (web);
+  \draw[dep] (main) -- (modes);
+  \draw[dep] (main) -- (proto);
+  \draw[dep] (web) -- (conn);
+  \draw[dep] (web) -- (proto);
+  \draw[dep] (web) -- (render);
+  \draw[dep] (modes) -- (conn);
+  \draw[dep] (modes) -- (proto);
+  \draw[dep] (modes) -- (echo);
+  \draw[dep] (modes) -- (render);
+  \draw[dep] (conn) -- (proto);
+  \draw[dep] (echo) -- (proto);
+  \draw[dep] (testing) -- (proto);
+  \draw[dep] (testing) -- (conn);
+  \draw[dep] (testing) -- (echo);
+  \draw[dep] (testing) -- (render);
+\end{tikzpicture}
+\caption{Module dependency diagram. Arrows point from dependent module to dependency.}
+\label{fig:module-deps}
+\end{figure}
 
 \subsection{Data Flow Diagram}
 \label{subsec:dataflow-diagram}
 
-% TODO: Figure — echo packet -> decode -> Spoke structs -> render_ppi() -> PNG -> browser
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  proc/.style={draw, thick, minimum width=2.2cm, minimum height=0.7cm, align=center, font=\scriptsize},
+  data/.style={font=\scriptsize\itshape},
+  dep/.style={->, thick, >=stealth},
+  scale=0.95, transform shape
+]
+  \node[proc, fill=Garnet!10] (udp) at (0,0) {UDP Multicast\\239.255.0.2:10024};
+  \node[proc, fill=Atlantic!10] (decode) at (3.5,0) {\texttt{decode\_echo\_}\\  \texttt{packet()}};
+  \node[proc, fill=Horseshoe!10] (spokes) at (7,0) {\texttt{Vec<Spoke>}};
+  \node[proc, fill=Honeycomb!20] (render) at (10.5,0) {\texttt{render\_ppi()}};
+  \node[proc, fill=Rose!10] (png) at (13.5,0) {PNG bytes};
+
+  \node[proc, fill=TenBlack] (http) at (13.5,-1.5) {\texttt{/newest\_png}};
+  \node[proc, fill=TenBlack] (canvas) at (10.5,-1.5) {Browser\\Canvas};
+
+  \draw[dep] (udp) -- (decode);
+  \draw[dep] (decode) -- node[above, data] {decompressed} (spokes);
+  \draw[dep] (spokes) -- (render);
+  \draw[dep] (render) -- node[above, data] {RGBA pixels} (png);
+  \draw[dep] (png) -- (http);
+  \draw[dep] (http) -- (canvas);
+\end{tikzpicture}
+\caption{Echo data flow from UDP multicast to browser canvas.}
+\label{fig:dataflow}
+\end{figure}
 
 \subsection{Concurrency Model}
 \label{subsec:concurrency}
 
-% TODO: Tokio async for HTTP, dedicated echo listener thread, Mutex<RadarConnection>
+The server uses a hybrid concurrency model combining Tokio async tasks with a dedicated OS thread.
+
+The \textbf{Tokio async runtime} handles all HTTP request processing. Each Axum handler runs as an async task on the Tokio thread pool. Blocking radar operations (sending commands, waiting for acknowledgments) are wrapped in \texttt{tokio::task::spawn\_blocking()} to avoid blocking the async executor.
+
+A single \textbf{dedicated \texttt{std::thread}} runs the echo listener loop. This thread receives UDP multicast packets, decodes spokes, renders the PPI image, and optionally writes CSV/PNG files during recording. It runs independently of the HTTP handlers and communicates with them through shared state.
+
+\textbf{Synchronization primitives} in the shared \texttt{AppState} struct coordinate access between the async handlers and the echo thread. \texttt{Mutex<RadarConnection>} provides exclusive access to the TCP control channel, ensuring only one thread sends commands at a time. \texttt{RwLock<Vec<u8>{}>} protects the latest PNG image, allowing the echo thread to write and multiple HTTP handlers to read concurrently. Several \texttt{AtomicBool} flags (\texttt{tx\_active}, \texttt{recording}, \texttt{pattern\_stop}) provide lock-free coordination for frequently checked boolean state.
 
 
 % ──────────────────────────────────────────────────────────────────────────────
@@ -598,32 +714,68 @@ This mechanism allows hybrid operation where some parameters are swept by the pa
 \section{PPI Rendering}
 \label{sec:ppi-rendering}
 
-% TODO: Most commonly modified subsystem
+The PPI (Plan Position Indicator) renderer in \texttt{render.rs} converts a vector of decoded \texttt{Spoke} structs into a $640 \times 640$ pixel RGBA image. This is the most commonly modified subsystem when changing visual appearance, image resolution, or overlay elements.
 
 \subsection{Coordinate Transformation}
 \label{subsec:coordinate-transform}
 
-% TODO: Compass bearing to math angle, range bin to pixel
+Each spoke has an \texttt{angle\_ticks} field representing a compass bearing (0 = north, increasing clockwise) in the range 0--8191 (8192 ticks per full rotation). The renderer converts this to a standard math angle (0 = east, increasing counter-clockwise) using the formula:
+\begin{align}
+\theta_{\text{rad}} &= \frac{\texttt{angle\_ticks}}{8192} \times 2\pi \\
+\theta_{\text{math}} &= \frac{\pi}{2} - \theta_{\text{rad}}
+\end{align}
+
+For each spoke, the renderer walks outward from the image center along the radial line defined by $\theta_{\text{math}}$, one pixel step at a time. At each step at radius $r$, the corresponding range bin index is calculated by linear interpolation:
+\begin{equation}
+\texttt{bin} = \left\lfloor \frac{r}{r_{\max}} \times N_{\text{bins}} \right\rfloor
+\end{equation}
+where $r_{\max} = 318$ pixels (center minus 2-pixel margin) and $N_{\text{bins}} = 868$ (the standard number of range bins per spoke). The pixel coordinates are:
+\begin{align}
+p_x &= \texttt{center} + r \cdot \cos(\theta_{\text{math}}) \\
+p_y &= \texttt{center} - r \cdot \sin(\theta_{\text{math}})
+\end{align}
 
 \subsection{Color Mapping}
 \label{subsec:color-mapping}
 
-% TODO: R = intensity, G = intensity * 180/255, B = intensity * 20/255
+Echo amplitudes arrive as 6-bit values (0--63) after the \texttt{wire >> 2} display conversion. The renderer scales these to 8-bit intensity and applies a warm-tinted color mapping:
+\begin{align}
+\texttt{intensity} &= \min\!\left(\frac{\texttt{amplitude} \times 255}{63},\; 255\right) \\[4pt]
+R &= \texttt{intensity} \\
+G &= \left\lfloor \texttt{intensity} \times \frac{180}{255} \right\rfloor \approx 0.706 \times \texttt{intensity} \\
+B &= \left\lfloor \texttt{intensity} \times \frac{20}{255} \right\rfloor \approx 0.078 \times \texttt{intensity}
+\end{align}
+
+This produces a warm amber/orange color for strong returns, fading to dark red/brown for weak returns. Zero-amplitude bins are left as the black background (RGBA 0,0,0,255).
 
 \subsection{Overlay Elements}
 \label{subsec:overlays}
 
-% TODO: Crosshairs (dark gray RGB 54,54,54), 4 equally-spaced range rings
+After all spokes are drawn, the renderer adds two overlay elements in dark gray (RGB 54, 54, 54).
+
+\textbf{Crosshairs} are drawn as a horizontal and vertical line passing through the image center, spanning the full image width and height.
+
+\textbf{Range rings} are drawn as four equally-spaced circles at radii $r_{\max}/4$, $r_{\max}/2$, $3r_{\max}/4$, and $r_{\max}$. Each ring is rasterized by stepping around its circumference with angular resolution proportional to its perimeter.
 
 \subsection{PNG Encoding}
 \label{subsec:png-encoding}
 
-% TODO: encode_png_bytes() for in-memory, write_png() for file output
+Two functions handle PNG output, both using the \texttt{png} crate.
+
+\texttt{encode\_png\_bytes(pixels, width, height)} encodes the RGBA pixel buffer into an in-memory \texttt{Vec<u8>} containing the complete PNG file. This is used by the echo listener thread to update the \texttt{latest\_png} shared state without touching the filesystem.
+
+\texttt{write\_png(path, pixels, width, height)} writes the PNG directly to a file via a buffered writer. This is used during recording (per-rotation PNG saves) and by CLI modes that produce output files.
+
+Both functions encode as RGBA color type with 8-bit depth.
 
 \subsection{How to Modify}
 \label{subsec:ppi-how-to-modify}
 
-% TODO: Changing image size, color palette, adding new overlays
+\textbf{Image size.} Change the \texttt{PPI\_SIZE} constant (currently 640). All geometry is computed relative to this value, so no other changes are needed. Larger sizes produce smoother radial lines at the cost of increased memory and PNG encoding time.
+
+\textbf{Color palette.} Modify the three lines in \texttt{render\_ppi()} that assign to \texttt{pixels[idx]}, \texttt{pixels[idx+1]}, and \texttt{pixels[idx+2]}. For a green phosphor look, use $R = 0$, $G = \texttt{intensity}$, $B = 0$. For a blue-white scheme, use $R = \texttt{intensity}/2$, $G = \texttt{intensity}/2$, $B = \texttt{intensity}$.
+
+\textbf{New overlays.} Add drawing code after the range ring loop in \texttt{render\_ppi()}. The pixel buffer is a flat \texttt{Vec<u8>} in row-major RGBA order. The index for pixel $(x, y)$ is $(y \times \texttt{size} + x) \times 4$, with offsets +0 for R, +1 for G, +2 for B, +3 for A.
 
 
 % ──────────────────────────────────────────────────────────────────────────────
