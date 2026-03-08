@@ -275,37 +275,65 @@ This is useful for determining the radar's IP address on an unfamiliar network o
 \subsection{Starting the Server}
 \label{subsec:starting-server}
 
-% TODO: Port config, static file path, graceful degradation if radar unreachable
+The web server starts when the application is launched in \texttt{web} mode (see \S\ref{subsec:cli-web}). By default it listens on port 8080 and serves static files from the \texttt{../web} directory relative to the binary. Both values can be overridden with positional arguments. The server starts even if the radar is not reachable, allowing the interface to load and wait for a connection. The \texttt{/reconnect} API endpoint triggers a fresh authentication and initialization attempt without restarting the server.
 
 \subsection{Page Tour}
 \label{subsec:page-tour}
 
-% TODO: Describe each of the 4 HTML pages
+The web interface consists of four HTML pages, all sharing a common header with navigation links, a consistent CSS stylesheet, and a single shared JavaScript file (\texttt{script.js}).
 
 \subsubsection{Controls (index.html)}
 \label{subsubsec:page-controls}
 
-% TODO: Quick controls — TX on/off, range, pulse, gain, RezBoost
+The controls page is the default landing page and provides the most commonly used radar operations. It is divided into two panels. The left panel displays a radar preview image (refreshed every 2 seconds) with a link to the full-screen radar view. The right panel contains quick controls for TX power (on/off), CSV recording (start/stop), range selection (17 scales from 0.0625 to 36~NM), pulse width (S1 through L), manual gain (0--100), and RezBoost level (off/low/medium/high). Each control has an apply button and a refresh button that queries the radar's current state.
+
+Below the quick controls is a pattern loader panel. Users can load a pattern file (\texttt{.txt} or \texttt{.csv}), set a repeat count ($-1$ for infinite looping), assign an optional label, and add the pattern to a queue. The queue is displayed as an ordered list, and patterns execute sequentially when the RUN button is pressed. A STOP button halts execution mid-pattern, and RESET clears the queue.
 
 \subsubsection{Radar View (radar.html)}
 \label{subsubsec:page-radar}
 
-% TODO: Full-screen PPI display
+The radar view page provides a full-screen PPI display. The primary display element is an HTML5 canvas (1024$\times$1024 pixels) that composites multiple frames of radar data to show target history. Below the canvas are controls for track length (1--50 frames), current frame color, and track history color, with a reset button to restore defaults. An \texttt{<img>} element behind the canvas serves as a fallback if canvas rendering is unavailable. The canvas is refreshed every 500\,ms by fetching the latest PPI image from the \texttt{/newest\_png} endpoint.
 
 \subsubsection{Settings (settings.html)}
 \label{subsubsec:page-settings}
 
-% TODO: Detailed parameter panels — clutter, STC, Doppler, antenna
+The settings page provides granular control over all radar parameters. It is organized into panels grouped by function.
+
+The \textit{connection panel} shows the current connection status and provides reconnect and refresh buttons. A small radar preview image is displayed alongside.
+
+The \textit{power control panel} provides TX on/off buttons and a refresh button to query the current transmitter state.
+
+The \textit{range and pulse panel} allows independent or combined adjustment of range and pulse width, with the same options available on the controls page.
+
+The \textit{gain panel} supports both manual and automatic gain modes. In manual mode, the user sets a value from 0 to 100. In auto mode, a bias offset (0--100) adjusts how aggressively the automatic gain control responds.
+
+The \textit{STC panel} exposes three sensitivity time control zones---near, mid, and far---each with an independent numeric input.
+
+The \textit{signal processing panel} groups main bang suppression (0--255), interference rejection (on/off), bird mode (off/low/medium/high), and Doppler target analysis (off, internal heading, external heading).
+
+The \textit{clutter panel} provides sea clutter (A/C SEA) and rain clutter (A/C RAIN) controls, each with manual and automatic modes. Manual mode sets a fixed rejection level; auto mode adjusts a bias for the radar's internal adaptive filter.
+
+The \textit{antenna speed panel} controls rotation speed (auto/low/high) and a high-RPM override toggle.
+
+The \textit{RezBoost and display panel} sets the resolution enhancement level and display parameters including sweep line count and interpolation mode.
+
+The \textit{pattern loader} on this page has the same functionality as the one on the controls page, with the addition of a manual text input option for entering pattern steps directly.
 
 \subsubsection{System Status (status.html)}
 \label{subsubsec:page-status}
 
-% TODO: System metrics, firmware, session stats
+The system status page displays live telemetry from both the radar and the host system, updated every 500\,ms.
+
+The \textit{radar connection} panel shows connection status, radar IP, host IP, TX state, and firmware version. The \textit{session} panel shows server uptime, total rotations received, recording state, the current recording directory, and pattern queue status. The \textit{active settings} panel displays a read-only summary of all current radar parameters: range, pulse, gain, RezBoost, antenna speed, Doppler, interference rejection, bird mode, main bang suppression, STC values, and clutter settings.
+
+The \textit{host resources} panels display CPU load (overall and per-core), memory usage, storage usage, network throughput, and CPU temperature. Each metric includes a progress bar and numeric label.
 
 \subsection{PPI Display}
 \label{subsec:ppi-display}
 
-% TODO: Live radar view with history compositing (track length, current/track color controls)
+The PPI (Plan Position Indicator) display renders radar echo data as a top-down circular image with the radar at the center. The server renders each complete antenna rotation into a 640$\times$640 pixel PNG image using the warm-tinted color mapping described in \S\ref{subsec:color-mapping}. The browser fetches the latest image via the \texttt{/newest\_png} endpoint.
+
+On the radar view page, the JavaScript composites multiple frames onto an HTML5 canvas to show target motion history. The \textit{track length} slider controls how many previous frames are retained (1--50). The \textit{current color} picker tints the most recent frame, and the \textit{track color} picker tints older frames. Older frames are drawn with decreasing opacity to produce a fading trail effect. This compositing runs entirely in the browser; the server delivers only single-frame PNG images.
 
 
 % ──────────────────────────────────────────────────────────────────────────────
