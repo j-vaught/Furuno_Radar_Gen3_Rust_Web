@@ -144,22 +144,32 @@
 \section{Introduction}
 \label{sec:introduction}
 
-% TODO: What this system does — one-paragraph summary
+This document is the complete technical reference for the Furuno DRS4D-NXT marine radar system as interfaced through the \texttt{furuno-server} Rust application. It covers radar operation via a browser-based web interface, the internal software architecture, echo data encoding and decoding, and the full wire protocol. The intended audiences are new users learning to operate the system, contributors modifying the codebase, and developers building their own applications on top of the radar hardware.
 
 \subsection{Hardware Overview}
 \label{subsec:hardware-overview}
 
-% TODO: DRS4D-NXT specs (X-band, 9.41 GHz, solid-state Doppler, radome enclosure)
+The Furuno DRS4D-NXT is a solid-state Doppler marine radar operating in the X-band at 9.41~GHz. The scanner unit contains the antenna, transmitter, and receiver in a single sealed radome enclosure. It connects to a host processor---in this deployment, a Raspberry Pi---via a standard Ethernet cable. The scanner is assigned a fixed IP address of \texttt{172.31.3.226} on a \texttt{172.31.0.0/16} subnet.
+
+The radar transmits at up to 25~watts using solid-state amplification rather than a traditional magnetron, which eliminates warm-up time and provides consistent performance across the operating temperature range. The antenna rotates at either 24 or 48~RPM depending on the selected speed mode. Echo data is delivered as radial spokes, with 8192 unique azimuth positions per full rotation and up to 868 range bins per spoke. The system supports six pulse width settings (S1, S2, M1, M2, M3, L), 18 range scales from 1/16~NM to 48~NM, and built-in Doppler target discrimination.
 
 \subsection{Software Components}
 \label{subsec:software-components}
 
-% TODO: furuno-server, web interface, docs
+The system consists of three software components.
+
+\textit{furuno-server} is a Rust binary that implements the complete Furuno wire protocol from scratch. It handles network discovery, authentication, control commands, echo data reception and decoding across four encoding types, PPI (Plan Position Indicator) rendering, and serves a web interface for browser-based operation. The application is built with Axum~0.7 for the HTTP server and Tokio for the async runtime. All radar communication---TCP control, UDP multicast echo reception, and subnet management---is handled natively without any Furuno proprietary libraries.
+
+The \textit{web interface} is a set of static HTML, CSS, and JavaScript files served by the Rust application. It provides four pages: a controls dashboard for quick radar operation, a full-screen PPI display with history compositing, a detailed settings panel, and a system status view. The interface communicates with the server through a REST API and polls for updated radar images at 500\,ms intervals.
+
+The \textit{documentation} consists of this technical manual and inline source code comments. The manual is maintained as a single self-contained \LaTeX{} file with all diagrams rendered via TikZ.
 
 \subsection{Reverse Engineering Context}
 \label{subsec:reverse-engineering}
 
-% TODO: Where the protocol knowledge came from
+All protocol knowledge in this document was obtained through reverse engineering. The primary source was the proprietary Furuno shared library \texttt{libNAVNETDLL.so}, which was analyzed through symbol table inspection, function call tracing, and behavioral observation. Live packet captures between the library and the radar hardware provided ground truth for the authentication handshake, control message format, and echo data encoding. The Rust implementation in \texttt{furuno-server} was built incrementally by reproducing each protocol phase and validating against the radar's actual responses.
+
+The original C++ application that used \texttt{libNAVNETDLL.so} directly served as a reference implementation during this process. Command IDs, parameter ranges, and encoding schemes documented here have been verified against both the disassembled library and live radar behavior. Where the proprietary library's behavior was ambiguous or undocumented, the values in this manual reflect what was observed to work reliably in practice.
 
 
 % ──────────────────────────────────────────────────────────────────────────────
