@@ -865,30 +865,42 @@ Legacy aliases \texttt{/begin\_calibration} and \texttt{/run\_ramp\_pattern} bot
 \section{Recording System Internals}
 \label{sec:recording-internals}
 
+This section describes how the recording system works internally. For user-facing recording instructions, see \S\ref{sec:recording}.
+
 \subsection{Echo Listener Integration}
 \label{subsec:recording-echo-listener}
 
-% TODO: Rotation detection triggers CSV + PNG write
+Recording is triggered by the echo listener thread, not by the HTTP handlers. When the \texttt{recording} flag is set to \texttt{true} and the echo listener detects a rotation wrap (azimuth drops by more than 1000 ticks), it writes the completed rotation's data to disk before clearing the spoke buffer.
+
+The echo listener checks \texttt{state.recording.load(Ordering::Relaxed)} on every rotation boundary. If recording is active and \texttt{record\_dir} is non-empty, it writes both a CSV file and a PNG file for that rotation. This tight coupling with the echo thread ensures every rotation is captured without gaps.
 
 \subsection{Directory Creation}
 \label{subsec:recording-directory-creation}
 
-% TODO: Timestamped folder with csv/ and png/ subdirectories
+When recording starts, a timestamped directory is created under \texttt{recordings/}. The directory name encodes the date and time (e.g., \texttt{recordings/20260307\_143022/}). Two subdirectories are created inside: \texttt{csv/} for spoke data files and \texttt{png/} for rendered PPI images. The path is stored in \texttt{state.record\_dir} so the echo listener thread can find it.
+
+If the recording was triggered by a pattern queue, the directory is created per-pattern-item, with each item getting its own timestamped directory and \texttt{settings.json} snapshot.
 
 \subsection{CSV Writing}
 \label{subsec:recording-csv-writing}
 
-% TODO: Metadata header generation from CurrentSettings, spoke-by-spoke output
+The \texttt{write\_echo\_csv()} function in \texttt{web.rs} writes a single rotation's data to a CSV file. Each file begins with \texttt{\#}-prefixed metadata lines containing the current radar settings at the time of capture. These metadata lines record every field from \texttt{CurrentSettings}: range index and label, gain mode and value, pulse width, sea clutter, rain clutter, RezBoost level, interference rejection state, bird mode, Doppler mode, antenna speed, main bang suppression, near/middle/far STC values.
+
+After the metadata header, a column header line defines the fields: \texttt{spoke\_index}, \texttt{angle\_ticks}, \texttt{angle\_deg}, \texttt{heading\_ticks}, \texttt{num\_bins}, followed by \texttt{bin\_0} through \texttt{bin\_867}. Each subsequent line contains one spoke's data. Spokes with fewer than the maximum number of bins are zero-padded.
 
 \subsection{Settings Snapshots}
 \label{subsec:recording-snapshots}
 
-% TODO: settings.json schema — ManualRecordingSettingsSnapshot vs PatternRecordingSettingsSnapshot
+A \texttt{settings.json} file is written to the recording directory when recording starts. The schema depends on how recording was initiated.
+
+\textbf{Manual recording} produces a \texttt{ManualRecordingSettingsSnapshot} containing the mode (\texttt{"manual"}), the recording directory path, the full \texttt{CurrentSettings} object, and the setting change history accumulated since the server started.
+
+\textbf{Pattern recording} produces a \texttt{PatternRecordingSettingsSnapshot} containing the mode (\texttt{"pattern"}), the recording directory, \texttt{CurrentSettings}, a \texttt{PatternInfo} object describing the active pattern (label, repeat count, step definitions, queue position), and the change history.
 
 \subsection{Setting Change History}
 \label{subsec:recording-history}
 
-% TODO: How SettingChange entries accumulate during a session
+Every time a radar setting is changed through the web API, a \texttt{SettingChange} entry is appended to the \texttt{setting\_history} vector. Each entry records a timestamp string, the setting name (e.g., \texttt{"range\_index"}, \texttt{"gain\_value"}), and the new value as a JSON value. This history accumulates for the entire server session and is included in every \texttt{settings.json} snapshot, providing a complete audit trail of all parameter changes.
 
 
 % ──────────────────────────────────────────────────────────────────────────────
@@ -896,35 +908,51 @@ Legacy aliases \texttt{/begin\_calibration} and \texttt{/run\_ramp\_pattern} bot
 \section{Pattern Execution Engine}
 \label{sec:pattern-engine}
 
+This section covers the internal mechanics of pattern execution. For user-facing pattern documentation, see \S\ref{sec:pattern-system}.
+
 \subsection{Step Parsing}
 \label{subsec:pattern-parsing}
 
-% TODO: parse_pattern_steps(): 7-field (simple) vs 13-field (advanced) format
+The \texttt{parse\_pattern\_steps()} function in \texttt{web.rs} converts a semicolon-separated string of pattern steps into a vector of \texttt{ControlStep} structs. Each step is split by commas, and the number of fields determines the format.
+
+Seven-field steps are parsed as the simple format: all fields are required integers for range, gain, pulse, RezBoost, speed, interpolation, and repeat count. Thirteen-field steps use the advanced format: the first six fields plus sea clutter, rain clutter, main bang, interference rejection, bird mode, doppler, and repeat. In the advanced format, any field except repeat can be \texttt{NaN} to leave that parameter unchanged.
+
+The parser validates field counts (must be exactly 7 or 13), checks numeric ranges, and returns descriptive error messages identifying the offending step and field.
 
 \subsection{Differential Command Generation}
 \label{subsec:pattern-diff-commands}
 
-% TODO: Only changed parameters sent to radar
+When a pattern step is applied, the engine compares each field of the new step against the current settings. Only parameters that differ from the current state are sent to the radar. This minimizes unnecessary command traffic and avoids redundant acknowledgment waits. The comparison uses the \texttt{CurrentSettings} struct, which tracks what the server believes the radar's current configuration to be.
+
+For \texttt{NaN} fields in the advanced format, no comparison or command is generated at all --- the parameter is simply skipped.
 
 \subsection{Single Pattern Execution}
 \label{subsec:pattern-single}
 
-% TODO: execute_pattern() loop: apply step, wait N rotations, advance
+The \texttt{execute\_pattern()} function runs a single pattern. For each step, it applies the settings via differential commands, then waits for the specified number of full antenna rotations by polling \texttt{state.rotation\_count}. Between rotation checks, it sleeps briefly to avoid busy-waiting.
+
+The function updates \texttt{pattern\_status} at each step transition with a human-readable message (e.g., \texttt{"Step 3/7: waiting for rotation 2/5"}). If the pattern has a positive repeat count, the entire sequence of steps is repeated that many times. A repeat count of $-1$ loops indefinitely until stopped.
 
 \subsection{Queue Execution}
 \label{subsec:pattern-queue-exec}
 
-% TODO: handle_run_pattern_queue(): base64 decode, iterate items, per-item recording sessions
+The \texttt{handle\_run\_pattern\_queue()} handler receives a POST request with a JSON body containing a base64-encoded payload. The payload is decoded into a list of pattern items, each with its own step data, repeat count, and label.
+
+The handler iterates through queue items sequentially. For each item, it starts a new recording session (creating a fresh timestamped directory), executes the pattern, and stops recording when the pattern completes. The active queue position is tracked in \texttt{pattern\_status} so the web interface can display progress (e.g., \texttt{"Queue item 2/5"}).
 
 \subsection{NaN Override Logic}
 \label{subsec:pattern-nan-logic}
 
-% TODO: pattern_step_allows_override(): fields set to NaN remain unlocked
+The \texttt{pattern\_step\_allows\_override()} function determines whether a manual setting change should be allowed during pattern execution. When a pattern is running, manual changes through the web API are normally rejected to prevent interference. However, if the currently active pattern step has \texttt{NaN} for a particular field, that field remains ``unlocked'' and can be changed manually.
+
+This allows operators to adjust parameters like gain or clutter during a pattern run without disrupting the automated sequence. The function checks the active step's \texttt{ControlStep} fields: if the field corresponding to the requested setting is \texttt{None} (parsed from \texttt{NaN}), the override is allowed.
 
 \subsection{Stop Mechanism}
 \label{subsec:pattern-stop}
 
-% TODO: pattern_stop: AtomicBool checked between steps and rotations
+The \texttt{pattern\_stop} \texttt{AtomicBool} flag is the sole mechanism for aborting a running pattern. It is checked at two points in the execution loop: between steps (before applying the next step's settings) and between rotation waits (before sleeping for the next rotation).
+
+The \texttt{/stop\_pattern} endpoint sets this flag to \texttt{true}. The pattern execution loop detects the flag, updates \texttt{pattern\_status} to indicate cancellation, resets the flag, and exits. The stop takes effect within one rotation period (typically 1.25--2.5 seconds depending on antenna speed).
 
 
 % ──────────────────────────────────────────────────────────────────────────────
@@ -932,52 +960,63 @@ Legacy aliases \texttt{/begin\_calibration} and \texttt{/run\_ramp\_pattern} bot
 \section{CLI Modes (All Other Modes)}
 \label{sec:cli-modes-dev}
 
-% TODO: All CLI modes beyond web and discover
+This section documents the CLI modes used for development, debugging, and testing. The \texttt{web} and \texttt{discover} modes are documented in Part~I (\S\ref{subsec:mode-web} and \S\ref{subsec:mode-discover}).
 
 \subsection{Handshake}
 \label{subsec:cli-handshake}
 
-% TODO: Authenticate and initialize, print firmware info (default if no mode given)
+\texttt{furuno-server handshake} is the default mode when no mode argument is provided. It performs the full connection sequence --- authentication, control channel establishment, and initialization --- then prints the firmware version string and exits. This is the primary tool for verifying that the radar is reachable and the protocol implementation is working.
 
 \subsection{TX On / TX Off}
 \label{subsec:cli-tx}
 
-% TODO: Enable or disable the transmitter from the command line
+\texttt{furuno-server tx-on} and \texttt{furuno-server tx-off} perform the full connection sequence and then send the transmitter on or off command. The TX ON command (\texttt{\$S69,2,...}) is always accompanied by STC reset commands (\texttt{\$S85,0}, \texttt{\$S86,0}, \texttt{\$S87,0}). After sending the command, echo data should start (or stop) flowing on the multicast group.
 
 \subsection{Full Cycle}
 \label{subsec:cli-full}
 
-% TODO: Init, TX ON, capture one rotation, TX OFF
+\texttt{furuno-server full} connects, enables TX, collects two full antenna rotations of echo data (using the second rotation to avoid partial data from the first), disables TX, and saves the captured data as both a CSV file and a rendered PPI PNG. Output files are named with timestamps (e.g., \texttt{radar\_20260307\_143022.csv}).
 
 \subsection{Render Live}
 \label{subsec:cli-render-live}
 
-% TODO: render-live [out.png] — capture one live rotation and render to PNG
+\texttt{furuno-server render-live [output.png]} captures one live rotation and renders it to a PNG file. The optional argument specifies the output path (default: \texttt{radar\_live.png}). A companion CSV file is also saved alongside the PNG. This mode is useful for quickly capturing a single radar image without starting the web server.
 
 \subsection{Echo Listen}
 \label{subsec:cli-echo}
 
-% TODO: Passively listen for multicast echo packets (no auth needed)
+\texttt{furuno-server echo} passively listens for multicast echo packets on 239.255.0.2:10024 without performing authentication or sending any commands. It prints packet headers (sequence number, azimuth, timestamp, flags, config) for the first 10 packets and every 100th packet thereafter. This mode does not require exclusive radar access and can run while another client is controlling the radar.
 
 \subsection{Command Test}
 \label{subsec:cli-command}
 
-% TODO: Send test commands and display acknowledgments
+\texttt{furuno-server command} connects to the radar and sends a predefined sequence of test commands (range change, gain change, STC adjustment, RezBoost toggle), printing the acknowledgment responses. The commands are sent in pairs: set a value, then restore the default. This mode is useful for verifying that individual commands produce the expected responses.
 
 \subsection{Dump Raw}
 \label{subsec:cli-dump-raw}
 
-% TODO: dump-raw [count] — dump raw echo packet headers and hex data
+\texttt{furuno-server dump-raw [count]} captures the specified number of raw echo packets (default: 5) and prints detailed hex dumps. For each packet, it shows the 18-byte header, identifies spoke section boundaries within the packet body, and attempts to decode each section's RLE structure, reporting the total bin count and RLE control bytes. This is the primary tool for debugging echo encoding issues.
 
 \subsection{Test Commands}
 \label{subsec:cli-test-commands}
 
-% TODO: A/B command verification with before/after PPI captures
+\texttt{furuno-server test-commands} runs the A/B command verification suite in \texttt{testing.rs}. For each of 18 radar parameters, it captures a ``before'' PPI image, sends a command to change the parameter, captures an ``after'' PPI image, then restores the original value. Results are saved to a \texttt{test\_output/} directory with before/after PNG pairs and a summary table showing whether each command was acknowledged and what echo statistics changed.
 
 \subsection{Validate}
 \label{subsec:cli-validate}
 
-% TODO: Run the 6-phase validation suite (27 integration tests)
+\texttt{furuno-server validate} runs the comprehensive 6-phase validation suite. This is the most thorough automated test of the system. Output goes to a timestamped directory.
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Connection \& Init} --- full handshake, firmware query.
+\item \textbf{TX ON} --- enable transmitter, verify echo data flows.
+\item \textbf{Settings A/B/A} --- for 14 parameters, set value A, read back, set value B, read back, set value A again. Checks that readbacks match and that A$\ne$B (anti-stale check).
+\item \textbf{Echo Impact (Gain)} --- compare mean echo amplitude at low gain (10) vs high gain (90).
+\item \textbf{Echo Impact (Range)} --- compare sweep parameters at 1/8~NM vs 8~NM.
+\item \textbf{Restore \& TX OFF} --- reset all settings to defaults and disable transmitter.
+\end{enumerate}
+
+A text report file summarizes PASS/FAIL/SKIP counts. CSV and PNG files are saved for the echo impact tests.
 
 
 % ──────────────────────────────────────────────────────────────────────────────
@@ -985,31 +1024,90 @@ Legacy aliases \texttt{/begin\_calibration} and \texttt{/run\_ramp\_pattern} bot
 \section{Connection State Machine}
 \label{sec:connection-state-machine}
 
+The \texttt{RadarConnection} struct in \texttt{connection.rs} implements a five-state machine that enforces correct sequencing of the connection protocol.
+
 \subsection{States and Transitions}
 \label{subsec:connection-states}
 
-% TODO: Disconnected, Authenticated, ControlConnected, Initialized, Transmitting
-% TODO: Figure — state transition diagram
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig_state_machine.pdf}
+\caption{Connection state machine. Each transition corresponds to a method call on \texttt{RadarConnection}.}
+\label{fig:state-machine}
+\end{figure}
+
+The five states are:
+
+\begin{enumerate}[leftmargin=2em]
+\item \textbf{Disconnected} --- initial state. No TCP connections exist.
+\item \textbf{Authenticated} --- the 44-byte auth payload has been sent to TCP port 10010 and the radar responded with status byte 0x64. The auth TCP connection is then closed.
+\item \textbf{ControlConnected} --- a TCP connection to port 10100 has been established with \texttt{TCP\_NODELAY} enabled, and the \texttt{\$N00,CLIENTCONNECTION} message has been received.
+\item \textbf{Initialized} --- the firmware query (\texttt{\$R96}) and all $\sim$184 init register reads have been sent and their responses received.
+\item \textbf{Transmitting} --- the TX ON command (\texttt{\$S69,2,...}) has been sent. Echo data is flowing on multicast.
+\end{enumerate}
+
+Transitions are enforced by state checks: \texttt{connect\_control()} requires at least \texttt{Authenticated}, \texttt{init()} requires \texttt{ControlConnected}, and \texttt{tx\_on()}/\texttt{tx\_off()} require \texttt{Initialized} or \texttt{Transmitting}. Calling a method in the wrong state returns \texttt{RadarError::InvalidState}.
 
 \subsection{RadarError Enum}
 \label{subsec:radar-error}
 
-% TODO: AuthFailed, ConnectionFailed, IoError, Timeout, InvalidState, ProtocolError
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{l X}
+\toprule
+\textbf{Variant} & \textbf{Meaning} \\
+\midrule
+\texttt{AuthFailed(String)} & Auth response was absent or had unexpected status byte \\
+\texttt{ConnectionFailed(String)} & TCP connection to radar could not be established \\
+\texttt{IoError(std::io::Error)} & Low-level I/O error (read/write failure) \\
+\texttt{Timeout} & Operation exceeded its deadline \\
+\texttt{InvalidState\{expected, actual\}} & Method called in wrong connection state \\
+\texttt{ProtocolError(String)} & Malformed response or unexpected protocol behavior \\
+\bottomrule
+\end{tabularx}
+\caption{\texttt{RadarError} variants.}
+\label{tab:radar-error}
+\end{table}
 
 \subsection{Timeout Values}
 \label{subsec:timeouts}
 
-% TODO: auth: 5s, control: 5s, init registers: 3s, command ack: 3s, keepalive: 5-10s
+\begin{table}[H]
+\centering
+\begin{tabular}{l r l}
+\toprule
+\textbf{Operation} & \textbf{Timeout} & \textbf{Notes} \\
+\midrule
+Authentication TCP connect & 5\,s & \texttt{TcpStream::connect\_timeout} \\
+Auth response read & 3\,s & Socket read timeout \\
+Control channel TCP connect & 5\,s & \texttt{TcpStream::connect\_timeout} \\
+Initial message read & 2\,s & Waiting for \texttt{\$N00,CLIENTCONNECTION} \\
+Init register responses & 3\,s & Bulk read after sending $\sim$184 queries \\
+Command acknowledgment & 3\,s & \texttt{send\_and\_read\_ack} default \\
+Subsequent read (within burst) & 200\,ms & Short timeout for trailing messages \\
+Keepalive interval & 5\,s & Echo thread sends if elapsed \\
+Echo socket read & 500\,ms & UDP receive timeout \\
+\bottomrule
+\end{tabular}
+\caption{Timeout values used throughout the connection lifecycle.}
+\label{tab:timeouts}
+\end{table}
 
 \subsection{Graceful Degradation}
 \label{subsec:graceful-degradation}
 
-% TODO: Web server starts even if radar unreachable, /reconnect endpoint for retry
+The web server starts even if the initial radar connection fails. In \texttt{start\_server()}, if \texttt{connect\_full()} returns an error, the \texttt{connected} flag is set to \texttt{false} and a warning is printed. The HTTP server still binds its port and serves the web interface. All API endpoints that require a radar connection check the \texttt{connected} flag and return an error message directing the user to the \texttt{/reconnect} endpoint.
+
+The \texttt{/reconnect} endpoint creates a fresh \texttt{RadarConnection}, drops the old one, and attempts \texttt{connect\_full()} again. On success, it updates the \texttt{connected} flag and resets \texttt{tx\_active} to false.
 
 \subsection{Keepalive Handling}
 \label{subsec:keepalive-handling}
 
-% TODO: Echo thread sends keepalives every 5s, drain_control() consumes pending responses
+The radar expects periodic keepalive packets on the control channel. If keepalives stop, the radar drops the client connection after approximately 30 seconds.
+
+In web mode, the echo listener thread handles keepalives. Every 5 seconds (checked via \texttt{last\_keepalive.elapsed()}), it acquires the connection mutex via \texttt{try\_lock()} (non-blocking to avoid deadlocking with HTTP handlers), sends the 8-byte binary keepalive packet, and calls \texttt{drain\_control()} to discard any pending control channel data.
+
+In CLI modes, keepalives are sent explicitly by calling \texttt{conn.send\_keepalive()} inside the echo collection loop. The \texttt{drain\_control()} call prevents the TCP receive buffer from filling up with unsolicited telemetry messages.
 
 
 % ──────────────────────────────────────────────────────────────────────────────
@@ -1017,50 +1115,61 @@ Legacy aliases \texttt{/begin\_calibration} and \texttt{/run\_ramp\_pattern} bot
 \section{Testing \& Validation}
 \label{sec:testing}
 
+All tests require a live radar connected to the host. There is no mock or simulation mode.
+
 \subsection{Running Tests}
 \label{subsec:running-tests}
 
-% TODO: cargo test -- --test-threads=1, requires live radar, sequential only
+\begin{lstlisting}[language=bash]
+cd furuno-server
+cargo test -- --test-threads=1
+\end{lstlisting}
+
+The \texttt{--test-threads=1} flag is required because all tests share a single radar connection, and the radar supports only one authenticated client at a time. Running tests in parallel causes connection conflicts.
 
 \subsection{Test Categories}
 \label{subsec:test-categories}
 
-% TODO: Connection (6), TX (3), Settings (14), Echo Impact (2), Render Integration (1)
+The test suite in \texttt{tests.rs} contains 26 integration tests organized into five categories.
 
-\subsubsection{Connection Tests}
+\subsubsection{Connection Tests (6)}
 \label{subsubsec:test-connection}
 
-% TODO: Auth, control channel, init, firmware, keepalive, echo socket
+These verify the connection state machine: authentication succeeds with status 0x64, the control channel receives \texttt{\$N00,CLIENTCONNECTION}, initialization completes with firmware data, keepalives are sent and acknowledged, and the echo multicast socket can be created and joined.
 
-\subsubsection{TX Tests}
+\subsubsection{TX Tests (3)}
 \label{subsubsec:test-tx}
 
-% TODO: TX on/off cycling, echo reception, full rotation collection
+TX on/off cycling verifies that \texttt{tx\_on()} transitions to the \texttt{Transmitting} state and \texttt{tx\_off()} returns to \texttt{Initialized}. Echo reception verifies that multicast packets arrive after TX ON. Full rotation collection verifies that the rotation wrap detection correctly identifies a complete $360°$ sweep.
 
-\subsubsection{Settings Tests}
+\subsubsection{Settings Tests (14)}
 \label{subsubsec:test-settings}
 
-% TODO: Set-and-read verification for each parameter
+Each settings test follows a set-and-read pattern: send a \texttt{\$S} command to change a parameter, then send the corresponding \texttt{\$R} query and verify the response contains the expected value. Parameters tested include range, gain, pulse width, sea clutter, rain clutter, RezBoost, antenna revolution, near/middle/far STC, main bang, interference rejection, bird mode, and Doppler.
 
-\subsubsection{Echo Impact Tests}
+\subsubsection{Echo Impact Tests (2)}
 \label{subsubsec:test-echo-impact}
 
-% TODO: Gain and range changes produce measurable echo differences
+These tests verify that parameter changes produce measurable differences in echo data. The gain impact test compares mean echo amplitude at low vs high gain. The range impact test compares sweep parameters (sweep length, spoke count) at short vs long range. These are environment-dependent and may produce SKIP/WARN results if the radar is not receiving returns.
 
-\subsubsection{Render Integration Test}
+\subsubsection{Render Integration Test (1)}
 \label{subsubsec:test-render}
 
-% TODO: Full pipeline: UDP -> decode -> render -> PNG
+The render integration test exercises the complete pipeline: receive UDP echo packets, decode them into \texttt{Spoke} structs, render via \texttt{render\_ppi()}, encode to PNG via \texttt{encode\_png\_bytes()}, and verify the result is a valid PNG with non-zero size.
 
 \subsection{A/B Command Testing}
 \label{subsec:ab-testing}
 
-% TODO: testing.rs methodology: capture PPI before, send command, capture PPI after, compare
+The \texttt{test-commands} CLI mode (\texttt{testing.rs}) provides a more visual form of testing. For each of 18 parameters, it captures a full rotation PPI image before and after applying a command, then saves both as PNG files. An operator can visually compare the before/after pairs to verify command effects.
+
+Each test follows a setup--before--apply--after--restore sequence. The setup command establishes a known baseline. The ``before'' capture collects one rotation at the baseline. The ``apply'' command changes the parameter. The ``after'' capture collects one rotation with the new setting. The restore command returns to the baseline.
+
+Results are saved to \texttt{test\_output/} with filenames like \texttt{01\_range\_2nm\_BEFORE.png} and \texttt{01\_range\_2nm\_AFTER.png}. A summary table at the end shows ACK status and echo statistics for each test.
 
 \subsection{Validation Suite}
 \label{subsec:validation-suite}
 
-% TODO: validate mode — 6-phase automated verification
+The \texttt{validate} CLI mode runs the comprehensive 6-phase test described in \S\ref{subsec:cli-validate}. It produces a timestamped output directory containing CSV files, PNG captures, and a \texttt{report.txt} with PASS/FAIL/SKIP counts and detailed per-test output. The validation suite tests 14 parameters in A/B/A fashion (3 checks each = 42 assertions), plus connection, TX, and echo impact tests, for a total of approximately 47 individual assertions.
 
 
 % ══════════════════════════════════════════════════════════════════════════════
