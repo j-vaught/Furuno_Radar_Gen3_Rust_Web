@@ -20,6 +20,7 @@
 \usepackage{enumitem}
 \usepackage{float}
 \usepackage{caption}
+\usepackage{graphicx}
 
 % ── Brand Colors ──────────────────────────────────────────────────────────────
 % Primary
@@ -145,6 +146,29 @@
 \label{sec:introduction}
 
 This document is the complete technical reference for the Furuno DRS4D-NXT marine radar system as interfaced through the \texttt{furuno-server} Rust application. It covers radar operation via a browser-based web interface, the internal software architecture, echo data encoding and decoding, and the full wire protocol. The intended audiences are new users learning to operate the system, contributors modifying the codebase, and developers building their own applications on top of the radar hardware.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    block/.style={draw, thick, minimum width=3.2cm, minimum height=1.4cm, align=center, fill=TenBlack, text=NinetyBlack},
+    netblock/.style={draw, thick, dashed, minimum width=2.4cm, minimum height=0.9cm, align=center, fill=white, text=SeventyBlack, font=\small},
+    arr/.style={-{Stealth[length=3mm]}, thick, Garnet},
+    darr/.style={{Stealth[length=3mm]}-{Stealth[length=3mm]}, thick, Garnet},
+]
+    \node[block] (radar) {DRS4D-NXT\\Radar Scanner};
+    \node[block, right=4cm of radar] (server) {\texttt{furuno-server}\\Rust Application};
+    \node[block, right=4cm of server] (browser) {Web Browser\\(Any Device)};
+
+    \draw[darr] (radar) -- node[above, font=\small, text=SeventyBlack] {Ethernet} node[below, font=\footnotesize, text=FiftyBlack] {172.31.0.0/16} (server);
+    \draw[darr] (server) -- node[above, font=\small, text=SeventyBlack] {HTTP} node[below, font=\footnotesize, text=FiftyBlack] {port 8080} (browser);
+
+    \node[netblock, below=0.6cm of radar] {TCP 10010, 10100\\UDP 10024};
+    \node[netblock, below=0.6cm of server] {Axum 0.7\\Tokio async};
+    \node[netblock, below=0.6cm of browser] {HTML/CSS/JS\\REST API};
+\end{tikzpicture}
+\caption{System overview. The radar scanner communicates with the Rust server over a dedicated Ethernet link. The server exposes a web interface accessible from any browser on the network.}
+\label{fig:system-overview}
+\end{figure}
 
 \subsection{Hardware Overview}
 \label{subsec:hardware-overview}
@@ -283,10 +307,27 @@ The controls page is the default landing page and provides the most commonly use
 
 Below the quick controls is a pattern loader panel. Users can load a pattern file (\texttt{.txt} or \texttt{.csv}), set a repeat count ($-1$ for infinite looping), assign an optional label, and add the pattern to a queue. The queue is displayed as an ordered list, and patterns execute sequentially when the RUN button is pressed. A STOP button halts execution mid-pattern, and RESET clears the queue.
 
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/screenshot_controls.png}
+\caption{Controls page (\texttt{index.html}). The radar preview is shown at top, with quick controls and the pattern loader below.}
+\label{fig:page-controls}
+\end{figure}
+
 \subsubsection{Radar View (radar.html)}
 \label{subsubsec:page-radar}
 
 The radar view page provides a full-screen PPI display. The primary display element is an HTML5 canvas (1024$\times$1024 pixels) that composites multiple frames of radar data to show target history. Below the canvas are controls for track length (1--50 frames), current frame color, and track history color, with a reset button to restore defaults. An \texttt{<img>} element behind the canvas serves as a fallback if canvas rendering is unavailable. The canvas is refreshed every 500\,ms by fetching the latest PPI image from the \texttt{/newest\_png} endpoint.
+
+% To add this screenshot: save as figures/screenshot_radar.png
+\IfFileExists{figures/screenshot_radar.png}{
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/screenshot_radar.png}
+\caption{Radar view page (\texttt{radar.html}). The PPI display with history compositing and track color controls.}
+\label{fig:page-radar}
+\end{figure}
+}{}
 
 \subsubsection{Settings (settings.html)}
 \label{subsubsec:page-settings}
@@ -313,6 +354,16 @@ The \textit{RezBoost and display panel} sets the resolution enhancement level an
 
 The \textit{pattern loader} on this page has the same functionality as the one on the controls page, with the addition of a manual text input option for entering pattern steps directly.
 
+% To add this screenshot: save as figures/screenshot_settings.png
+\IfFileExists{figures/screenshot_settings.png}{
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/screenshot_settings.png}
+\caption{Settings page (\texttt{settings.html}). Detailed parameter panels for all radar settings.}
+\label{fig:page-settings}
+\end{figure}
+}{}
+
 \subsubsection{System Status (status.html)}
 \label{subsubsec:page-status}
 
@@ -321,6 +372,16 @@ The system status page displays live telemetry from both the radar and the host 
 The \textit{radar connection} panel shows connection status, radar IP, host IP, TX state, and firmware version. The \textit{session} panel shows server uptime, total rotations received, recording state, the current recording directory, and pattern queue status. The \textit{active settings} panel displays a read-only summary of all current radar parameters: range, pulse, gain, RezBoost, antenna speed, Doppler, interference rejection, bird mode, main bang suppression, STC values, and clutter settings.
 
 The \textit{host resources} panels display CPU load (overall and per-core), memory usage, storage usage, network throughput, and CPU temperature. Each metric includes a progress bar and numeric label.
+
+% To add this screenshot: save as figures/screenshot_status.png
+\IfFileExists{figures/screenshot_status.png}{
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/screenshot_status.png}
+\caption{System status page (\texttt{status.html}). Live telemetry from the radar and host system.}
+\label{fig:page-status}
+\end{figure}
+}{}
 
 \subsection{PPI Display}
 \label{subsec:ppi-display}
@@ -401,6 +462,35 @@ For pattern-based recordings, the snapshot additionally includes the \texttt{Pat
 \label{subsec:pattern-overview}
 
 Patterns automate sequences of radar parameter changes. A pattern consists of one or more \textit{steps}, each specifying a set of radar settings and a \textit{repeat count} that determines how many full antenna rotations that step is held before advancing to the next. When recording is active during pattern execution, each rotation produces a CSV and PNG file, allowing systematic data collection across parameter combinations.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    proc/.style={draw, thick, minimum width=2.6cm, minimum height=1cm, align=center, fill=TenBlack, text=NinetyBlack, font=\small},
+    decision/.style={draw, thick, diamond, aspect=2, minimum width=2cm, align=center, fill=TenBlack, text=NinetyBlack, font=\small},
+    arr/.style={-{Stealth[length=2.5mm]}, thick, Garnet},
+    every node/.append style={rounded corners=0pt},
+]
+    \node[proc] (load) {Load Pattern\\(file or text)};
+    \node[proc, right=1.8cm of load] (queue) {Add to\\Queue};
+    \node[proc, right=1.8cm of queue] (apply) {Apply Step\\Settings};
+    \node[decision, right=1.8cm of apply] (wait) {$N$ rotations\\complete?};
+    \node[proc, below=1.2cm of wait] (next) {Next Step};
+    \node[decision, below=1.2cm of apply] (more) {More\\steps?};
+    \node[proc, below=1.2cm of load] (done) {Pattern\\Complete};
+
+    \draw[arr] (load) -- (queue);
+    \draw[arr] (queue) -- (apply);
+    \draw[arr] (apply) -- (wait);
+    \draw[arr] (wait.south) -- node[right, font=\footnotesize, text=SeventyBlack] {no} (next);
+    \draw[arr] (wait.east) -- ++(0.6,0) node[above, font=\footnotesize, text=SeventyBlack] {yes} |- (next.east);
+    \draw[arr] (next) -- (more);
+    \draw[arr] (more) -- node[above, font=\footnotesize, text=SeventyBlack] {no} (done);
+    \draw[arr] (more.west) -- ++(-0.8,0) node[below, font=\footnotesize, text=SeventyBlack] {yes} |- (apply.south west);
+\end{tikzpicture}
+\caption{Pattern execution flow. Each step is applied to the radar and held for the specified number of antenna rotations before advancing.}
+\label{fig:pattern-flow}
+\end{figure}
 
 \subsection{Simple Pattern Format (7-Field)}
 \label{subsec:pattern-simple}
