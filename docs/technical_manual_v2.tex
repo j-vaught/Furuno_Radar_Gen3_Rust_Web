@@ -180,22 +180,52 @@ The original C++ application that used \texttt{libNAVNETDLL.so} directly served 
 \subsection{Prerequisites}
 \label{subsec:prerequisites}
 
-% TODO: Rust toolchain, platform notes
+The Rust toolchain is required to build the application. Install it via \texttt{rustup} if it is not already present.
+
+\begin{lstlisting}[language=bash]
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+\end{lstlisting}
+
+The application builds and runs on Linux (x86\_64 and aarch64), macOS, and Windows. The primary deployment target is a Raspberry Pi running Debian, connected to the radar via its Ethernet port. No external C libraries or Furuno SDKs are required.
 
 \subsection{Building}
 \label{subsec:building}
 
-% TODO: cargo build --release
+From the repository root, build the release binary.
+
+\begin{lstlisting}[language=bash]
+cd furuno-server
+cargo build --release
+\end{lstlisting}
+
+The compiled binary is located at \texttt{furuno-server/target/release/furuno-server}. A release build is recommended for deployment as it enables compiler optimizations that significantly improve echo decoding and PPI rendering throughput.
 
 \subsection{First Run}
 \label{subsec:first-run}
 
-% TODO: cargo run --release -- web, open browser at http://localhost:8080
+Start the web server with the \texttt{web} mode.
+
+\begin{lstlisting}[language=bash]
+cargo run --release -- web
+\end{lstlisting}
+
+The web interface is then available at \texttt{http://localhost:8080} in any browser. On startup, the application attempts to discover the radar automatically (see below). If the radar is not reachable, the web server starts anyway and serves a degraded interface. The \texttt{/reconnect} endpoint can be used to retry the connection later.
 
 \subsection{Auto-Discovery}
 \label{subsec:auto-discovery-quickstart}
 
-% TODO: What happens on startup, manual IP override (--radar-ip, --host-ip)
+The application resolves the radar and host IP addresses through a three-stage fallback process.
+
+First, it checks for explicit command-line flags. If \texttt{-{}-radar-ip} is provided, that address is used directly. The \texttt{-{}-host-ip} flag is optional; if omitted, the application determines a suitable host address on the radar's subnet automatically.
+
+\begin{lstlisting}[language=bash]
+cargo run --release -- --radar-ip 172.31.3.226 web
+\end{lstlisting}
+
+Second, if no flags are provided, the application broadcasts UDP discovery beacons on port 10010 across all detected network interfaces and listens for 3 seconds. If the radar responds, both the radar and host addresses are extracted from the response.
+
+Third, if discovery fails, the application falls back to the default addresses: \texttt{172.31.3.226} for the radar and \texttt{172.31.1.100} for the host. If the host does not already have an interface on the \texttt{172.31.0.0/16} subnet, a secondary IP alias is added to the physical Ethernet interface automatically. On Linux this uses \texttt{ip addr add}; on macOS, \texttt{ifconfig alias}.
 
 
 % ──────────────────────────────────────────────────────────────────────────────
