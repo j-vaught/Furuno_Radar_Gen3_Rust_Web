@@ -201,29 +201,87 @@ All CLI modes beyond `web` and `discover` (documented in Part I).
   - Platform-specific alias commands (Linux: `ip addr add`, macOS: `ifconfig alias`, Windows: placeholder only)
   - Three-stage fallback logic in detail
 
-### IV.2 Control Protocol (existing section 3)
-- Message Format — `$S`, `$R`, `$N` prefixes
-- Binary Keepalive + figure
-- Initialization Sequence — 6 phases + figure
-- **NEW: Keepalive in the Echo Listener** — echo thread sends keepalives every 5s even when TX is off, plus `drain_control()` to consume pending responses
+### IV.2 Control Protocol
+- Message Format — `$S` (set), `$R` (read), `$N` (notify) prefixes, comma-separated params, `\r\n` terminated
+- Binary Keepalive — 8-byte packet `\x00\x00\x00\x08\x00\x00\x00\x00`, sent every 5s + figure
+- Binary vs ASCII disambiguation — exact 8-byte match for keepalive, not just "check first byte"
+- Response Types (`RadarResponse` enum):
+  - `ClientConnection` — special `$N00` with "CLIENTCONNECTION" string
+  - `Keepalive` — binary 8-byte packet
+  - `RegisterValue { id, values }` — parsed `$N<id>,<val1>,<val2>...`
+  - `Unknown(String)` — unparsed lines
+- Response parsing pipeline:
+  - `read_responses()` — reads with timeout (first read = full duration, subsequent = 200ms)
+  - Partial line buffering via `line_buf` — handles TCP fragmentation across reads
+  - `parse_response_line()` dispatches to enum variants
+- `send_and_read_ack()` — deadline-based waiting for a specific response prefix
+- `drain_control()` — flushes pending control data without parsing (used before operations)
+- Initialization Sequence — 6 phases + figure:
+  1. Discovery — UDP beacon on port 10010
+  2. Authentication — TCP 10010, 44-byte payload with copyright string, expect byte[9]=0x64
+  3. Control channel — TCP 10100 with TCP_NODELAY, expect `$N00,CLIENTCONNECTION`
+  4. Firmware query — `$R96,,,,,,,\r\n`, response stored in `self.firmware`
+  5. Register dump — ~184 `$R` commands covering registers 0x61–0xFF (full list from `INIT_COMMANDS` constant)
+  6. Steady state — keepalives every 5-10s, heading reports at ~1Hz
 
-### IV.3 Command Reference (existing section 4)
-- All existing commands retained
-- **Corrections needed:**
-  - STC commands (current manual shows `$S85`/`$S86`/`$S87` for both STC AND sea/rain clutter — confusing, needs clarification)
-  - Pulse width range: manual says 0-3, code supports 0-5 (S1/S2/M1/M2/M3/L)
-  - Interference rejection command ID: manual says `$S88`, code uses `$S67` — verify against protocol.rs
+### IV.3 Command Reference
+Complete command reference with **corrected** IDs verified against `protocol.rs`.
 
-### IV.4 Periodic Telemetry (existing section 5, unchanged)
-- Telemetry message table
+**Major corrections from current manual:**
+- Sea clutter is `$S64` (not `$S85`)
+- Rain clutter is `$S65` (not `$S87`)
+- Pulse width is `$S68` (not `$S65`)
+- STC near/mid/far are `$S85`/`$S86`/`$S87` (these were confused with clutter in current manual)
+- Interference rejection is `$S67` with param[2]=2 (not `$S88`)
+- Noise reduction is also `$S67` with param[2]=3 (shared command ID, different sub-parameter)
+- Antenna height is `$S84` (not `$S82`)
+- No-transmit sectors is `$S77` (not `$S67`)
+- Bird mode is `$SED` (not `$SBD`)
+- Pulse width range: 0-5 (S1/S2/M1/M2/M3/L), not 0-3
 
-### IV.5 Proprietary Library Reference (existing section 15, unchanged)
+**Commands to document (all with correct params from code):**
+- TX State (`$S69`) — state: 1=standby, 2=transmit; always accompanied by STC resets
+- Range (`$S62`) — wire_index mapping table (18 entries, 1/16 NM to 48 NM)
+- Gain (`$S63`) — auto/manual mode, value 0-255, maxGain=80 hardcoded
+- Sea Clutter (`$S64`) — basic (status, value) and full variant (status, manual, auto_val, sea_mode: 0=Advanced, 1=Coastal)
+- Rain Clutter (`$S65`) — basic and full variant (ftc_mode: 0=OFF, 1=FTC-1, 2=FTC-2; rain_mode: 0=Calm, 1=Moderate, 2=Rough)
+- Pulse Width (`$S68`) — pulse value + range_index as second param
+- STC Near (`$S85`) — value 0-4
+- STC Middle (`$S86`) — value 0-3
+- STC Far (`$S87`) — value 0-2
+- Main Bang Suppression (`$S83`) — value 0-255
+- Antenna Height (`$S84`) — meters above sea level
+- Antenna Revolution (`$S89`) — speed (0=LO, 1=HI, 2=AUTO) + hi_rpm flag
+- Interference Rejection (`$S67`, param[2]=2) — value: 0=off, 2=on
+- Noise Reduction (`$S67`, param[2]=3) — value: 0=off, 1=on
+- Rez Boost (`$SEE`) — level 0-3
+- Bird Mode (`$SED`) — level 0-3
+- Doppler / Target Analyzer (`$SEF`) — mode: 0=off, 1=target, 2=rain
+- No-Transmit Sectors (`$S77`) — 2 sectors, angles in degrees with 360° wrapping
+
+**Query commands:**
+- Full table of all `$R` query commands with their IDs and expected response format
+
+### IV.4 Periodic Telemetry
+- Telemetry message table (expanded):
+  - `$NAF,256` — antenna heading/rotation indicator (~1Hz)
+  - `$NF5,...` — radar spoke/scan telemetry (~1Hz)
+  - `$NE0,...` — extended status (8 fields)
+  - `$N83,100,1` — gain/threshold report
+  - `$N68,...` — status with negative values
+  - `$N00,CLIENTCONNECTION` — connection established (once)
+  - Binary keepalive — 8 bytes every 5-10s
+- How telemetry is processed — `read_responses()` categorizes all incoming data via `RadarResponse` enum
+- What gets parsed vs discarded — register values are logged, keepalives acknowledged, unknown lines stored
+
+### IV.5 Proprietary Library Reference
 - libNAVNETDLL.so module breakdown table
+- Key insight: `$R67` controls multiple features via sub-parameter (interference rejection AND noise reduction share the same command ID)
 
 ## Key Corrections to Make During Rewrite
 
-1. **Pulse width range**: manual says 0-3, code supports 0-5
-2. **Color mapping**: manual says "green-channel intensity", actual is warm-tinted (R=full, G=70%, B=8%)
-3. **STC vs clutter command IDs**: current manual reuses $S85/$S86/$S87 for both — needs disambiguation
+1. **Command ID corrections** — 9 commands have wrong IDs in current manual (see IV.3 above)
+2. **Pulse width range**: manual says 0-3, code supports 0-5 (S1/S2/M1/M2/M3/L)
+3. **Color mapping**: manual says "green-channel intensity", actual is warm-tinted (R=full, G=70%, B=8%)
 4. **Web API parameter names**: several endpoints have different query param names than documented
-5. **Interference rejection command ID**: verify $S88 vs $S67 against protocol.rs
+5. **Shared command IDs**: `$S67` controls both interference rejection (param[2]=2) and noise reduction (param[2]=3)
