@@ -344,22 +344,58 @@ On the radar view page, the JavaScript composites multiple frames onto an HTML5 
 \subsection{Starting and Stopping Recording}
 \label{subsec:recording-toggle}
 
-% TODO: Toggle via web UI or API, automatic directory creation
+Recording is toggled through the web interface or by calling the \texttt{/toggle\_recording} API endpoint with a \texttt{state} parameter of \texttt{start} or \texttt{stop}. When recording starts, the server creates a new timestamped directory under \texttt{recordings/} with \texttt{csv/} and \texttt{png/} subdirectories. If a directory with the same timestamp already exists, a numeric suffix is appended (e.g., \texttt{\_01}, \texttt{\_02}). Each complete antenna rotation produces one CSV file and one PNG file, written automatically by the echo listener thread. When recording is stopped, a \texttt{settings.json} snapshot is written to the recording directory.
 
 \subsection{Output Directory Structure}
 \label{subsec:recording-directory}
 
-% TODO: recordings/<timestamp>/{csv/, png/, settings.json}
+Each recording session produces the following directory structure.
+
+\begin{lstlisting}
+recordings/<timestamp>/
+  csv/rotation_<ts>.csv
+  png/rotation_<ts>.png
+  settings.json
+\end{lstlisting}
+
+The top-level directory is named with a compact timestamp (e.g., \texttt{20260307\_143022}). For pattern-based recordings, the sanitized pattern label is appended (e.g., \texttt{20260307\_143022\_sweep1}). The \texttt{csv/} and \texttt{png/} subdirectories are created on demand when the first rotation is written.
 
 \subsection{CSV Format}
 \label{subsec:csv-format}
 
-% TODO: Metadata header (#-prefixed lines), columnar spoke data
+Each CSV file represents one complete antenna rotation. The file begins with a metadata header of \texttt{\#}-prefixed comment lines that capture all radar settings at the time of recording.
+
+\begin{lstlisting}
+# range_index,4
+# gain_auto,false
+# gain_value,50
+# pulse_width,0
+# sea_clutter,0
+# rain_clutter,0
+# rezboost,0
+# interference_rejection,false
+# bird_mode,0
+# doppler,0
+# antenna_speed,0
+# main_bang,0
+# near_stc,0
+# middle_stc,0
+# far_stc,0
+Status	Scale	Range	Gain	Angle	EchoValues
+0	4	4	19	0	12,14,8,...
+0	4	4	19	1	10,11,9,...
+\end{lstlisting}
+
+After the header, the column line and data rows are tab-separated. Each row represents one spoke and contains a status field (always 0), the range scale index, the range index, the gain percentage (mapped from the 0--255 wire range to 0--100), the azimuth angle in ticks (0--8191), and the echo bin values as a comma-separated list of integers.
 
 \subsection{Settings Snapshot}
 \label{subsec:settings-snapshot}
 
-% TODO: settings.json schema — CurrentSettings fields, SettingChange history array
+When a recording session ends, the server writes a \texttt{settings.json} file to the recording directory. The snapshot format depends on how the recording was initiated.
+
+For manual recordings, the snapshot contains the mode (\texttt{"manual"}), the recording directory path, the full \texttt{CurrentSettings} object, and a \texttt{history} array of \texttt{SettingChange} entries. Each history entry records a timestamp, the setting name, and the new value, capturing every parameter change made during the recording session.
+
+For pattern-based recordings, the snapshot additionally includes the \texttt{PatternInfo} object describing the pattern that was executing, including all pattern steps with their parameter values and repeat counts.
 
 
 % ──────────────────────────────────────────────────────────────────────────────
