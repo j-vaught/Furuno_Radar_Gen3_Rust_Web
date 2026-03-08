@@ -230,45 +230,6 @@ Third, if discovery fails, the application falls back to the default addresses: 
 
 % ──────────────────────────────────────────────────────────────────────────────
 \newpage
-\section{CLI Modes}
-\label{sec:cli-modes-user}
-
-\subsection{General Syntax}
-\label{subsec:cli-syntax}
-
-The application accepts optional IP flags followed by a mode name and mode-specific arguments.
-
-\begin{lstlisting}[language=bash]
-furuno-server [--radar-ip IP] [--host-ip IP] <mode> [args...]
-\end{lstlisting}
-
-The two user-facing modes are \texttt{web} and \texttt{discover}. Additional developer-oriented modes (\texttt{handshake}, \texttt{tx-on}, \texttt{tx-off}, \texttt{echo}, \texttt{full}, \texttt{render-live}, \texttt{dump-raw}, \texttt{test-commands}, \texttt{validate}) are documented in \S\ref{sec:cli-modes-dev}. If no mode is given, the application defaults to \texttt{handshake}.
-
-\subsection{Web Server Mode}
-\label{subsec:cli-web}
-
-The \texttt{web} mode starts the HTTP server and is the primary way to operate the radar.
-
-\begin{lstlisting}[language=bash]
-furuno-server web [port] [webdir]
-\end{lstlisting}
-
-The optional \texttt{port} argument sets the listening port (default 8080). The optional \texttt{webdir} argument specifies the path to the static web files (default \texttt{../web} relative to the binary). On startup, the server attempts to authenticate with the radar and initialize the control channel. If the radar is unreachable, the server starts anyway with degraded functionality---the PPI display shows a blank image and setting changes are queued until a connection is established via the \texttt{/reconnect} endpoint.
-
-\subsection{Discover Mode}
-\label{subsec:cli-discover}
-
-The \texttt{discover} mode broadcasts UDP beacons on port 10010 across all network interfaces and prints any radar responses it receives.
-
-\begin{lstlisting}[language=bash]
-furuno-server discover
-\end{lstlisting}
-
-This is useful for determining the radar's IP address on an unfamiliar network or verifying that the radar is powered on and reachable. The mode runs until a response is received or the timeout expires.
-
-
-% ──────────────────────────────────────────────────────────────────────────────
-\newpage
 \section{Web Interface}
 \label{sec:web-interface}
 
