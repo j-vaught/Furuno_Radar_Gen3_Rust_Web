@@ -20,7 +20,6 @@
 \usepackage{float}
 \usepackage{caption}
 \usepackage{graphicx}
-% bytefield used only in standalone figures, not needed here
 
 % ── Brand Colors ──────────────────────────────────────────────────────────────
 % Primary
@@ -116,7 +115,7 @@
 \vspace{1.5cm}
 {\Huge\bfseries\color{Garnet} Furuno DRS4D-NXT}\\[0.8cm]
 {\LARGE\color{NinetyBlack} Echo Packet Encoding Guide}\\[0.4cm]
-{\large\color{SeventyBlack} Bit-Level Protocol Analysis and Radar Comparison}
+{\large\color{SeventyBlack} Bit-Level Protocol Analysis}
 
 \vspace{1.5cm}
 {\color{Atlantic}\rule{\linewidth}{0.5pt}}\\[4pt]
@@ -135,283 +134,394 @@
 
 
 %==============================================================================
-\section{Introduction}
-\label{sec:intro}
+\section{Echo Packet Overview}
+\label{sec:overview}
 %==============================================================================
 
-This document provides a detailed, bit-level analysis of how the Furuno DRS4D-NXT solid-state marine radar encodes echo data in its UDP multicast packets. The radar uses a proprietary binary protocol to stream echo amplitude data from the antenna unit to a connected host, employing four progressively sophisticated compression schemes to minimize bandwidth while preserving full range bin resolution.
+The Furuno DRS4D-NXT is a solid-state marine radar that streams echo data over a wired Ethernet connection. The radar transmits echo data as UDP datagrams on multicast group \texttt{239.255.0.2}, port \texttt{10024}. Each datagram constitutes one echo packet.
 
-The encoding system is notable among consumer marine radars for its adaptive compression, dual-pulse interleaving, and native Doppler support integrated at the byte level. This guide breaks down each encoding scheme with worked examples, explains the Doppler and dual-pulse mechanisms, and compares the Furuno approach to competing marine radar protocols from Navico, Garmin, and Raymarine.
-
-All protocol details in this document are derived from reverse-engineering the radar's binary data stream and the proprietary \texttt{libNAVNETDLL.so} library. Field names and interpretations have been validated against observed packet behavior but are not based on official Furuno documentation.
-
-
-%==============================================================================
-\section{Echo Packet Structure}
-\label{sec:packet}
-%==============================================================================
-
-\subsection{Packet Overview}
-\label{subsec:packet-overview}
-
-Each echo packet arrives as a UDP datagram on multicast group \texttt{239.255.0.2} port \texttt{10024}. The packet begins with a fixed 16-byte header, followed by one or more spoke data blocks. Each spoke block consists of a 4-byte sub-header (azimuth and heading) followed by variable-length encoded echo amplitude data. The number of spokes packed into a single UDP packet is determined by the \texttt{sweep\_count} field in the header.
+An echo packet contains a fixed 16-byte header followed by one or more spokes of data. A spoke is a single radial line of echo measurements, representing what the radar detects at a specific azimuth angle. As the antenna rotates, the radar produces spokes at incremental angles, packing several consecutive spokes into each UDP packet.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/fig_echo_header_bits.pdf}
-\caption{Echo packet header layout and metadata bit fields in bytes 9--11.}
-\label{fig:header_bits}
+\includegraphics[width=\textwidth]{figures/new_figs/fig_sweep_structure.pdf}
+\caption{Echo packet structure. A 16-byte header is followed by one or more spokes, each containing an angle sub-header and variable-length echo data.}
+\label{fig:sweep}
 \end{figure}
 
+The radar completes 8{,}192 spokes per full $360\degree$ rotation. A single packet does not contain an entire rotation. Instead, spokes arrive across many packets over the course of one antenna revolution. The host software detects that a full rotation has completed when the azimuth value of a newly received spoke drops by more than 1{,}000 ticks compared to the previous spoke, indicating a wrap-around past zero.
 
-\subsection{Header Field Breakdown}
-\label{subsec:header-fields}
+After decoding, every spoke produces a fixed-length array of range bins. Each range bin represents the echo intensity at a specific distance from the radar along that spoke's azimuth. The number of range bins per spoke is typically 868, though this value varies with the radar's range setting and is specified in the packet header.
 
-The 16-byte header uses big-endian byte ordering for all multi-byte fields.
+
+%==============================================================================
+\section{Header}
+\label{sec:header}
+%==============================================================================
+
+Every echo packet begins with a 16-byte header. The header contains packet sequencing information, a timestamp, and metadata fields that the decoder needs to interpret the spoke data that follows.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/new_figs/fig_header_fields.pdf}
+\caption{The six fields of the 16-byte echo packet header.}
+\label{fig:header}
+\end{figure}
+
+All multi-byte fields in the header use big-endian byte ordering. This is in contrast to the spoke sub-headers, which use little-endian ordering (see Section~\ref{sec:spoke}).
 
 \begin{table}[H]
 \centering
 \caption{Echo packet header fields.}
 \label{tab:header}
-\begin{tabular}{@{}rrlp{6.5cm}@{}}
+\begin{tabular}{@{}rrlp{7cm}@{}}
 \toprule
-\textbf{Offset} & \textbf{Width} & \textbf{Field} & \textbf{Description} \\
+\textbf{Offset} & \textbf{Size} & \textbf{Field} & \textbf{Description} \\
 \midrule
-0 & 2 bytes & Sequence & Spoke counter (u16 BE), increments per packet \\
-2 & 2 bytes & Version & Protocol version, always \texttt{0x0001} \\
-4 & 4 bytes & Reserved & Always \texttt{0x00000000} \\
-8 & 4 bytes & Timestamp & Radar clock timestamp (u32 BE) \\
-12 & 2 bytes & Flags & Configuration flags, observed as \texttt{0x1500} \\
-14 & 2 bytes & Config & Configuration word, observed as \texttt{0xF009} \\
+0--1   & 2 bytes & Sequence  & Packet counter (u16 BE). Increments with each packet. Used for ordering and detecting packet loss. \\
+2--3   & 2 bytes & Version   & Protocol version (u16 BE). Always \texttt{0x0001}. \\
+4--7   & 4 bytes & Reserved  & Always \texttt{0x00000000}. Unused padding. \\
+8--11  & 4 bytes & Timestamp \& Metadata & Radar clock timestamp (u32 BE). Also contains three metadata fields packed at the bit level (see Section~\ref{sec:metadata}). \\
+12--13 & 2 bytes & Flags     & Always \texttt{0x1500}. Purpose not fully determined. \\
+14--15 & 2 bytes & Config    & Always \texttt{0xF009}. Purpose not fully determined. \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+Most header fields are static across all observed packets. The Sequence and Timestamp fields are the only values that change per packet. The Version, Reserved, Flags, and Config fields have been observed at fixed values across all range settings, scan speeds, and operating modes.
 
-\subsection{Metadata Extraction}
-\label{subsec:metadata}
+The minimum valid packet size is 20 bytes: the 16-byte header plus at least one 4-byte spoke sub-header. The critical information for decoding echo data is contained in bytes 8--11, described in the next section.
 
-Three critical parameters are extracted from the header using bit manipulation on bytes 9 through 11. The \texttt{sweep\_count} field occupies the upper 7 bits of byte 9, yielding the number of spokes packed into this packet. The \texttt{sweep\_len} field is an 11-bit value split across bytes 10 and 11, indicating the number of range bins per spoke after decoding. The \texttt{encoding} field occupies bits 4:3 of byte 11, selecting one of four compression schemes.
+
+%==============================================================================
+\section{Metadata (Bytes 8--11)}
+\label{sec:metadata}
+%==============================================================================
+
+Bytes 8 through 11 of the header serve a dual purpose. The echo header parser reads them as a single 32-bit big-endian timestamp representing the radar's internal clock value. Simultaneously, the metadata parser inspects bytes 9, 10, and 11 individually to extract three fields that control how the spoke data is decoded.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/new_figs/fig_metadata_bytes.pdf}
+\caption{The four bytes of the timestamp and metadata region. Each byte carries a specific metadata field.}
+\label{fig:metadata}
+\end{figure}
+
+\subsection{Byte 8: Timestamp}
+
+Byte 8 is the high byte of the 32-bit radar clock timestamp. It contains no metadata fields. Its value changes with each packet as the radar clock advances.
+
+\subsection{Byte 9: Sweep Count}
+
+Byte 9 encodes the sweep count, which specifies how many spokes are packed into this packet. The sweep count occupies the upper 7 bits of the byte (bits 7 through 1). Bit 0 is unused.
 
 \begin{align}
-\texttt{sweep\_count} &= \texttt{data[9]} \gg 1 \label{eq:sweep_count} \\
-\texttt{sweep\_len} &= ((\texttt{data[11]} \mathbin{\&} \texttt{0x07}) \ll 8) \mathbin{|} \texttt{data[10]} \label{eq:sweep_len} \\
-\texttt{encoding} &= (\texttt{data[11]} \mathbin{\&} \texttt{0x18}) \gg 3 \label{eq:encoding}
+\texttt{sweep\_count} &= \texttt{data[9]} \gg 1
 \end{align}
 
-The sweep length is typically 868 range bins, though this varies with the radar's range setting. The theoretical maximum is 2047 (the largest value representable in 11 bits). The encoding field selects values 0 through 3, corresponding to the four encoding schemes described in Section~\ref{sec:encoding}.
+The sweep count can range from 0 to 127, though typical values vary with the radar's scan speed and range setting. The decoder uses this value to know how many spoke sub-headers and echo data blocks to expect after the header.
 
+\subsection{Byte 10: Sweep Length (Low Byte)}
 
-\subsection{Spoke Sub-Header}
-\label{subsec:spoke-subheader}
+Byte 10 contains the low 8 bits of the sweep length. The sweep length specifies how many range bins each spoke will contain after decoding. This is the first half of an 11-bit value; the remaining 3 bits are in byte 11.
 
-Each spoke begins with a 4-byte sub-header containing the azimuth angle and compass heading, both encoded as unsigned 16-bit little-endian tick values. The radar uses 8{,}192 ticks per full rotation ($360\degree$), yielding an angular resolution of approximately $0.0439\degree$ per tick.
+\subsection{Byte 11: Sweep Length (High Bits) and Encoding}
+
+Byte 11 contains three fields packed into a single byte. This is the most densely packed byte in the header.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/new_figs/fig_byte11_zoom.pdf}
+\caption{Bit-level layout of byte 11, showing three packed fields.}
+\label{fig:byte11}
+\end{figure}
+
+The three fields are extracted as follows.
+
+\textit{Bits 7:5} (top 3 bits) are unused. They have been observed as zero across all captured packets.
+
+\textit{Bits 4:3} (middle 2 bits) specify the echo encoding type. This 2-bit field selects one of four compression schemes that the radar has applied to the echo data in this packet. The four encoding types are described in detail in Section~\ref{sec:encoding}.
 
 \begin{align}
-\theta_{\text{deg}} &= \frac{\texttt{angle\_ticks}}{8192} \times 360\degree
+\texttt{encoding} &= (\texttt{data[11]} \mathbin{\&} \texttt{0x18}) \gg 3
 \end{align}
 
-The azimuth field tracks the antenna's rotational position. The heading field independently tracks compass bearing and is updated per-spoke by the radar's internal compass. Both fields use the same 8{,}192-tick quantization.
+\textit{Bits 2:0} (bottom 3 bits) are the high 3 bits of the sweep length. Combined with byte 10, they form the complete 11-bit sweep length value.
 
+\begin{align}
+\texttt{sweep\_len} &= ((\texttt{data[11]} \mathbin{\&} \texttt{0x07}) \ll 8) \mathbin{|} \texttt{data[10]}
+\end{align}
 
-\subsection{Multi-Spoke Packing}
-\label{subsec:multispoke}
+The sweep length is an 11-bit unsigned integer with a theoretical range of 0 to 2{,}047. The typical observed value is 868 range bins, though this varies with the radar's range setting.
 
-A single UDP packet can contain multiple spokes, packed sequentially after the 16-byte header. For each of the \texttt{sweep\_count} spokes, the structure is as follows. First, a 4-byte sub-header provides the azimuth and heading for that spoke. Then, the encoded echo data follows, consuming a variable number of bytes depending on the encoding type and data content. After decoding each spoke's echo data, the consumed byte count is rounded up to the next 4-byte boundary using the formula $\texttt{used} = (\texttt{n} + 3) \mathbin{\&} \lnot 3$. This alignment ensures that each subsequent spoke sub-header begins on a 4-byte boundary within the packet.
+\subsection{Worked Example}
 
-The decoder maintains a \texttt{prev\_spoke} buffer that persists across spokes within the same packet and across consecutive packets. This persistent state is essential for encoding types 2 and 3, which reference the previously decoded spoke's range bin values.
+Consider bytes 8--11 with values \texttt{[0xAB, 0x0A, 0x64, 0x0B]}.
+
+Byte 9 is \texttt{0x0A}. The sweep count is $\texttt{0x0A} \gg 1 = 5$, so this packet contains 5 spokes.
+
+Byte 10 is \texttt{0x64}, which is 100 in decimal. This is the low byte of the sweep length.
+
+Byte 11 is \texttt{0x0B} (\texttt{0b00001011}). The encoding field is $(\texttt{0x0B} \mathbin{\&} \texttt{0x18}) \gg 3 = (\texttt{0x08}) \gg 3 = 1$, selecting Encoding 1 (repeating). The sweep length high bits are $\texttt{0x0B} \mathbin{\&} \texttt{0x07} = 3$. The full sweep length is $(3 \ll 8) \mathbin{|} 100 = 768 + 100 = 868$ range bins.
+
+This packet therefore contains 5 spokes, each decoding to 868 range bins, compressed using Encoding 1.
 
 
 %==============================================================================
-\section{Encoding Schemes}
-\label{sec:encoding}
+\section{Spoke Data}
+\label{sec:spoke}
 %==============================================================================
 
-\subsection{Overview}
-\label{subsec:encoding-overview}
-
-The Furuno DRS4D-NXT employs four echo encoding schemes, selected adaptively by the radar hardware on a per-packet basis. The encoding type is stored in bits 4:3 of header byte 11 (see Equation~\ref{eq:encoding}). The schemes form a progression from no compression to increasingly sophisticated run-length encoding with temporal references.
+After the 16-byte header, the packet contains a sequence of spokes. The number of spokes is given by the sweep count field (Section~\ref{sec:metadata}). Each spoke consists of a fixed 4-byte angle sub-header followed by a variable-length block of encoded echo data.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/fig_encoding_comparison.pdf}
-\caption{Progression of echo encoding complexity across the four schemes.}
-\label{fig:encoding_comparison}
+\includegraphics[width=0.7\textwidth]{figures/new_figs/fig_spoke_layout.pdf}
+\caption{Structure of a single spoke: a 4-byte angle sub-header followed by variable-length echo data.}
+\label{fig:spoke}
 \end{figure}
 
-All four encodings produce a fixed-length array of range bins (determined by \texttt{sweep\_len}). After decoding, wire values are right-shifted by 2 bits for display purposes: $\texttt{display} = \texttt{wire} \gg 2$. This shift is applied uniformly regardless of encoding type and has the convenient property of stripping the control bits used by encodings 1, 2, and 3 (see Section~\ref{sec:display}).
+\subsection{Angle Sub-Header}
 
-The radar selects encoding type adaptively based on the echo data characteristics at the time of transmission. The selection algorithm is implemented in the radar's firmware and is not documented. In practice, encoding 0 appears during sparse conditions, encoding 1 during moderate activity, and encodings 2 and 3 during sustained target returns where consecutive spokes share significant overlap.
+The first 4 bytes of each spoke encode two angular measurements. Unlike the packet header, these fields use little-endian byte ordering.
 
-
-\subsection{Encoding 0: Raw Uncompressed}
-\label{subsec:enc0}
-
-Encoding 0 is the simplest scheme. Each wire byte maps directly to one range bin with no compression. The first \texttt{sweep\_len} bytes of the payload are copied directly to form the spoke, zero-padded if the available data is shorter than \texttt{sweep\_len}. The consumed byte count is then rounded up to the next 4-byte boundary.
-
-\begin{figure}[H]
+\begin{table}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/fig_encoding_0_raw.pdf}
-\caption{Encoding 0: direct 1:1 mapping from wire bytes to range bins.}
-\label{fig:enc0}
-\end{figure}
+\caption{Spoke angle sub-header fields.}
+\label{tab:spoke}
+\begin{tabular}{@{}rrlp{7cm}@{}}
+\toprule
+\textbf{Offset} & \textbf{Size} & \textbf{Field} & \textbf{Description} \\
+\midrule
+0--1 & 2 bytes & Azimuth & Antenna rotational position (u16 LE). Measured in ticks. \\
+2--3 & 2 bytes & Heading & Compass bearing (u16 LE). Measured in ticks. \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-This encoding provides no compression benefit but guarantees exact representation of every range bin value. The wire value range is 0--255 (full 8-bit), and after the display shift ($\gg 2$), the effective range is 0--63.
+Both fields use the same quantization: 8{,}192 ticks per full $360\degree$ rotation. This gives an angular resolution of $360 / 8{,}192 \approx 0.0439\degree$ per tick. The conversion from ticks to degrees is:
 
+\begin{align}
+\theta_{\text{deg}} &= \frac{\texttt{ticks}}{8{,}192} \times 360\degree
+\end{align}
 
-\subsection{Encoding 1: RLE with Repeat Marker}
-\label{subsec:enc1}
+The azimuth field tracks the antenna's rotational position as it sweeps around. Azimuth values increment with each successive spoke and wrap from approximately 8{,}191 back toward 0 at the start of each new rotation.
 
-Encoding 1 introduces single-byte run-length encoding using the least significant bit (LSB) as a control flag. When the LSB is 0, the byte is a \textit{literal} echo amplitude value. When the LSB is 1, the byte is a \textit{repeat marker} that instructs the decoder to repeat the most recently decoded amplitude value.
+The heading field independently tracks the compass bearing from the radar's internal compass sensor. This value is updated per spoke and allows the host to convert radar-relative azimuth angles to true geographic bearings.
 
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/fig_encoding_1_rle.pdf}
-\caption{Encoding 1: RLE using the LSB as a literal/repeat control bit.}
-\label{fig:enc1}
-\end{figure}
+\subsection{Echo Data}
 
-For literal bytes (LSB = 0), the entire 8-bit value is stored as the echo amplitude. Because the LSB is always 0 for literals, the effective amplitude values are always \textit{even}: 0, 2, 4, \ldots, 252. This provides 127 distinct non-zero intensity levels.
+The echo data block follows the 4-byte angle sub-header and contains the encoded echo amplitudes for this spoke. The length of this block on the wire is variable --- it depends on the encoding type and the data content. A spoke with many repeated values compresses to very few bytes, while a spoke with highly varied data may use nearly as many wire bytes as there are range bins.
 
-For repeat markers (LSB = 1), the repeat count is extracted by right-shifting the byte by 1 bit: $\texttt{count} = \texttt{byte} \gg 1$. The special case where the count field is 0 encodes a repeat of 128. The maximum explicitly encoded count is 127 (wire byte \texttt{0xFF}). The repeated value is the most recently decoded literal, referred to as the ``previous cell.'' This means the repeat always references the last amplitude set by a literal byte, regardless of how many range bins have been filled since.
+After decoding, every spoke produces exactly \texttt{sweep\_len} range bins, regardless of how many wire bytes were consumed. Each decoded range bin is a single byte representing echo intensity.
 
-\subsubsection{Worked Example}
+After each spoke's echo data is consumed, the byte count is padded to the next 4-byte boundary:
 
-Consider the wire byte sequence \texttt{[0x3C, 0x07, 0x50, 0x05, 0x00]}.
+\begin{align}
+\texttt{consumed} &= (\texttt{n} + 3) \mathbin{\&} \lnot 3
+\end{align}
 
-\texttt{0x3C} has LSB = 0, so it is a literal with amplitude 60. The decoder stores 60 as the current strength and writes bin 0 = 60.
+This alignment ensures that each subsequent spoke's angle sub-header begins on a clean 4-byte boundary within the packet.
 
-\texttt{0x07} has LSB = 1, so it is a repeat marker. Count = $\texttt{0x07} \gg 1 = 3$. The decoder writes the current strength (60) into bins 1, 2, and 3.
+\subsection{Previous Spoke Buffer}
 
-\texttt{0x50} has LSB = 0, so it is a literal with amplitude 80. The decoder updates strength to 80 and writes bin 4 = 80.
+The decoder maintains a buffer called \texttt{prev\_spoke} that stores the most recently decoded spoke's raw (pre-display-conversion) values. This buffer is updated after every spoke and persists across both spokes within the same packet and across consecutive UDP packets. The previous spoke buffer is essential for Encoding 2 and Encoding 3, which reference the previous spoke's range bins during decoding (see Sections~\ref{subsec:enc2} and~\ref{subsec:enc3}).
 
-\texttt{0x05} has LSB = 1, count = $\texttt{0x05} \gg 1 = 2$. The decoder writes 80 into bins 5 and 6.
+\subsection{Display Conversion}
 
-\texttt{0x00} has LSB = 0, literal amplitude 0. Bin 7 = 0.
-
-The decoded spoke is \texttt{[60, 60, 60, 60, 80, 80, 80, 0]}, produced from 5 wire bytes. The compression ratio in this example is 5:8.
-
-
-\subsection{Encoding 2: Delta RLE with Previous Spoke Reference}
-\label{subsec:enc2}
-
-Encoding 2 replaces the ``repeat previous cell'' operation with a ``copy from previous spoke'' operation. The LSB control bit works identically to Encoding 1: LSB = 0 marks a literal value, and LSB = 1 marks a copy operation. The difference is that the copy operation reads from the \textit{previously decoded spoke} at the \textit{same range bin index}, rather than repeating the last literal value.
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/fig_encoding_2_delta.pdf}
-\caption{Encoding 2: delta RLE referencing the previous spoke's range bins.}
-\label{fig:enc2}
-\end{figure}
-
-This temporal reference exploits the fact that consecutive radar spokes often share similar echo patterns, particularly in areas with stationary targets or consistent sea clutter. By encoding only the differences, the radar achieves significant compression for slowly-changing scenes.
-
-The count formula is the same as Encoding 1: $\texttt{count} = \texttt{byte} \gg 1$, with 0 meaning 128. However, instead of repeating a single amplitude, the decoder copies \texttt{count} consecutive range bins from the previous spoke, starting at the current output index.
-
-A critical implementation detail is that the first spoke in a packet (\texttt{sweep\_idx == 0}) cannot use previous-spoke references because no prior spoke is available in the current decode context. The decoder handles this by falling back to Encoding 1 (self-referencing RLE) for the first spoke, then switching to full Encoding 2 for subsequent spokes. The \texttt{prev\_spoke} buffer is updated after each spoke is decoded, and this buffer persists across UDP packets, meaning the first spoke of a new packet can still reference the last spoke of the previous packet.
-
-\subsubsection{Worked Example}
-
-Suppose the previous spoke contains \texttt{[60, 60, 80, 80, 40, 40, 20, 20]} and the wire bytes for the current spoke are \texttt{[0x50, 0x05, 0x3C, 0x07]}.
-
-\texttt{0x50} (LSB = 0): literal 80 $\rightarrow$ bin 0 = 80.
-
-\texttt{0x05} (LSB = 1): copy 2 from previous spoke at bins 1--2 $\rightarrow$ bins 1--2 = \texttt{[60, 80]}.
-
-\texttt{0x3C} (LSB = 0): literal 60 $\rightarrow$ bin 3 = 60.
-
-\texttt{0x07} (LSB = 1): copy 3 from previous spoke at bins 4--6 $\rightarrow$ bins 4--6 = \texttt{[40, 40, 20]}.
-
-The decoded spoke is \texttt{[80, 60, 80, 60, 40, 40, 20]}, mixing new literal values with temporally-referenced copies.
-
-
-\subsection{Encoding 3: 2-Bit RLE with Dual Reference}
-\label{subsec:enc3}
-
-Encoding 3 is the most sophisticated scheme, using two control bits instead of one. This provides three distinct operations within a single encoding: literal values, repeat-previous-cell, and copy-from-previous-spoke. The two least significant bits (\texttt{bits[1:0]}) determine the operation.
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/fig_encoding_3_dual.pdf}
-\caption{Encoding 3: dual-reference RLE with 2-bit control field.}
-\label{fig:enc3}
-\end{figure}
-
-When $\texttt{bits}[1{:}0] = 00$, the byte is a literal amplitude value. Because the bottom 2 bits are always zero for literals, the effective amplitude values are multiples of 4: 0, 4, 8, \ldots, 252. This provides 64 distinct intensity levels, which maps perfectly to the 6-bit display range after the $\gg 2$ conversion.
-
-When $\texttt{bit}[0] = 1$ (i.e., $\texttt{bits}[1{:}0] = 01$ or $11$), the decoder repeats the most recently decoded amplitude (``previous cell'') for a count of $\texttt{byte} \gg 2$. When the count field is 0, the actual repeat count is 64. The maximum explicit count is 63 (6-bit field).
-
-When $\texttt{bits}[1{:}0] = 10$, the decoder copies from the previous spoke at the same range bin index. The count formula is the same: $\texttt{byte} \gg 2$, with 0 meaning 64. During the copy operation, the internal \texttt{strength} variable is updated to the copied value, so subsequent repeat-previous-cell operations will use the last copied amplitude.
-
-This hybrid approach combines the strengths of Encodings 1 and 2 in a single scheme. The trade-off is reduced count resolution (6 bits, maximum 63/64) compared to Encodings 1 and 2 (7 bits, maximum 127/128), and reduced literal amplitude resolution (multiples of 4 rather than multiples of 2).
-
-\subsubsection{Worked Example}
-
-Previous spoke: \texttt{[40, 40, 80, 80, 60, 60]}. Wire bytes: \texttt{[0x3C, 0x09, 0x0A, 0x50]}.
-
-\texttt{0x3C}: $\texttt{bits}[1{:}0] = 00$, literal. Amplitude = $\texttt{0x3C} = 60$. Bin 0 = 60.
-
-\texttt{0x09}: $\texttt{bits}[1{:}0] = 01$, bit[0] = 1 $\rightarrow$ repeat previous cell. Count = $\texttt{0x09} \gg 2 = 2$. Bins 1--2 = \texttt{[60, 60]}.
-
-\texttt{0x0A}: $\texttt{bits}[1{:}0] = 10$, bit[0] = 0 $\rightarrow$ copy from previous spoke. Count = $\texttt{0x0A} \gg 2 = 2$. Copy prev spoke bins 3--4 $\rightarrow$ bins 3--4 = \texttt{[80, 60]}.
-
-\texttt{0x50}: $\texttt{bits}[1{:}0] = 00$, literal. Amplitude = $\texttt{0x50} = 80$. Bin 5 = 80.
-
-Decoded spoke: \texttt{[60, 60, 60, 80, 60, 80]}. The encoding combined all three operations in 4 wire bytes to produce 6 range bins.
-
-
-\subsection{Encoding Selection and Adaptive Behavior}
-\label{subsec:enc-selection}
-
-The radar's firmware selects the encoding type on a per-packet basis. The selection algorithm is not exposed in any accessible interface and appears to be determined by the radar's internal signal processing pipeline. Based on observed behavior, the encoding type correlates with the following conditions.
-
-Encoding 0 (raw) appears primarily at very short range settings where the number of range bins is small and compression overhead would exceed the savings. Encoding 1 (RLE) appears during moderate conditions with some spatial redundancy along range bins. Encoding 2 (delta RLE) appears when consecutive spokes exhibit high temporal correlation, such as when scanning stationary targets or calm sea surfaces. Encoding 3 (2-bit dual) appears during mixed conditions where both spatial and temporal redundancy are present.
-
-The encoding type is consistent across all spokes within a single packet. Different packets in the same rotation may use different encoding types if conditions change. The decoder must support all four types and switch based on the encoding field in each packet's header.
-
-
-%==============================================================================
-\section{Display Value Conversion}
-\label{sec:display}
-%==============================================================================
-
-After decoding, every wire value undergoes a right-shift by 2 bits before storage in the spoke's output buffer.
+After decoding, every wire value undergoes a right-shift by 2 bits:
 
 \begin{align}
 \texttt{display} &= \texttt{wire} \gg 2
 \end{align}
 
-This conversion serves two purposes. First, it reduces the dynamic range from 8-bit wire values (0--252) to 6-bit display values (0--63), providing a more manageable intensity scale for rendering. Second, it conveniently strips the control bits used by the encoding schemes. In Encoding 1 and 2, the LSB is a control flag that is always 0 for literal values, so wire amplitudes are multiples of 2. In Encoding 3, the two LSBs are control bits, so wire amplitudes are multiples of 4. The $\gg 2$ shift cleanly removes these artifacts in all cases, mapping each encoding's literal values to a uniform 0--63 range.
-
-The display values are then mapped to RGBA pixels for PPI (Plan Position Indicator) rendering using a warm amber color palette.
-
-\begin{align}
-R &= \min\!\left(\frac{\texttt{amplitude} \times 255}{63},\; 255\right) \\[4pt]
-G &= \min\!\left(\frac{\texttt{amplitude} \times 180}{63},\; 255\right) \\[4pt]
-B &= \min\!\left(\frac{\texttt{amplitude} \times 20}{63},\; 255\right)
-\end{align}
-
-This produces a color gradient from black (amplitude 0) through deep red to bright amber (amplitude 63), optimized for visibility on dark backgrounds.
+This converts 8-bit wire values (0--252) to 6-bit display values (0--63). The shift is applied uniformly regardless of encoding type. As discussed in Section~\ref{sec:encoding}, this shift has the convenient property of stripping the encoding control bits from the low bits of raw data values, producing a clean 0--63 intensity range for all four encodings.
 
 
 %==============================================================================
-\section{Normal vs Doppler Mode}
-\label{sec:doppler}
+\section{Echo Encoding}
+\label{sec:encoding}
 %==============================================================================
 
-\subsection{Status Field Encoding}
-\label{subsec:doppler-status}
+The radar applies one of four compression schemes to the echo data in each packet. The encoding type is specified by the 2-bit field in byte 11 of the header (see Section~\ref{sec:metadata}). All spokes within a single packet use the same encoding, but different packets within the same rotation may use different encodings.
 
-The radar supports Doppler target analysis, which repurposes the most significant bit of each echo byte to encode target motion information. The Doppler mode is controlled via the \texttt{\$SEF} command (register \texttt{0xEF}) and is indicated per-spoke through a status field.
+The radar selects the encoding type adaptively based on the characteristics of the echo data at the time of transmission. The selection algorithm is implemented in the radar's firmware and has not been documented. In practice, Encoding 0 appears during sparse conditions, Encoding 1 during moderate spatial redundancy, and Encodings 2 and 3 during conditions where consecutive spokes share significant overlap.
+
+All four encodings produce the same output: a fixed-length array of \texttt{sweep\_len} range bins. After decoding, the $\gg 2$ display conversion is applied uniformly. The control bits used by Encodings 1, 2, and 3 occupy the lowest 1 or 2 bits of each byte, which are exactly the bits discarded by the display shift. This is almost certainly by design.
+
+\subsection{Encoding 0: No Compression}
+\label{subsec:enc0}
+
+Encoding 0 is the simplest scheme. Every byte in the echo data maps directly to one range bin with no compression.
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figures/fig_doppler_layout.pdf}
-\caption{Echo byte layout in normal vs Doppler mode, with status field encoding.}
+\includegraphics[width=0.6\textwidth]{figures/new_figs/fig_encoding0.pdf}
+\caption{Encoding 0 byte layout. All 8 bits carry intensity data.}
+\label{fig:enc0}
+\end{figure}
+
+The first \texttt{sweep\_len} bytes of the echo data are copied directly to form the decoded spoke. If fewer bytes are available than \texttt{sweep\_len}, the remaining bins are zero-padded. The consumed byte count is rounded up to the next 4-byte boundary.
+
+Wire values span the full 0--252 range with no restrictions. After the $\gg 2$ display shift, this produces 64 distinct display levels (0--63). Encoding 0 provides no compression benefit but guarantees exact representation of every range bin.
+
+\subsection{Encoding 1: Repeating}
+\label{subsec:enc1}
+
+Encoding 1 introduces run-length compression using a single control bit. Bit 0 (the least significant bit) of each byte determines whether the byte carries raw intensity data or a repeat instruction.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{figures/new_figs/fig_encoding1.pdf}
+\caption{Encoding 1 byte layout. Bit 0 selects between raw data and repeating.}
+\label{fig:enc1}
+\end{figure}
+
+When bit 0 is 0, the byte is a raw intensity value. The full byte is stored as the echo amplitude for the current range bin, and the decoder remembers this value as the ``current strength.'' Because bit 0 is always 0 for raw data bytes, the effective intensity values are restricted to even numbers: 0, 2, 4, \ldots, 252. This provides 127 distinct non-zero levels.
+
+When bit 0 is 1, the byte is a repeat instruction. The decoder repeats the current strength value for a number of consecutive range bins. The repeat count is extracted from the upper 7 bits: $\texttt{count} = \texttt{byte} \gg 1$. A count value of 0 is treated as 128, allowing a single byte to fill up to 128 bins. The maximum explicitly encoded count is 127 (wire byte \texttt{0xFF}).
+
+The current strength always refers to the most recently decoded raw data value, regardless of how many bins have been filled since it was set. Repeat instructions reference only this single value, making Encoding 1 a purely spatial compression scheme --- it exploits runs of identical intensity values along the spoke.
+
+\subsubsection{Worked Example}
+
+Consider the wire byte sequence \texttt{[0x3C, 0x07, 0x50, 0x05, 0x00]}.
+
+\texttt{0x3C} has bit 0 = 0, so it is raw data with intensity 60. The current strength becomes 60. Bin 0 = 60.
+
+\texttt{0x07} has bit 0 = 1, so it is a repeat. Count $= \texttt{0x07} \gg 1 = 3$. The current strength (60) is written into bins 1, 2, and 3.
+
+\texttt{0x50} has bit 0 = 0, raw data with intensity 80. The current strength becomes 80. Bin 4 = 80.
+
+\texttt{0x05} has bit 0 = 1, repeat. Count $= \texttt{0x05} \gg 1 = 2$. Bins 5 and 6 = 80.
+
+\texttt{0x00} has bit 0 = 0, raw data with intensity 0. Bin 7 = 0.
+
+The decoded spoke is \texttt{[60, 60, 60, 60, 80, 80, 80, 0]}, produced from 5 wire bytes --- a compression ratio of 5:8 in this example.
+
+\subsection{Encoding 2: Copying from Previous Spoke}
+\label{subsec:enc2}
+
+Encoding 2 uses the same 1-bit control flag as Encoding 1, but the meaning of the repeat instruction changes. Instead of repeating the current strength, the decoder copies values from the previously decoded spoke at the corresponding range bin positions.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{figures/new_figs/fig_encoding2.pdf}
+\caption{Encoding 2 byte layout. Bit 0 selects between raw data and copying from the previous spoke.}
+\label{fig:enc2}
+\end{figure}
+
+When bit 0 is 0, the byte is raw data, identical to Encoding 1.
+
+When bit 0 is 1, the decoder copies a number of consecutive range bins from the previous spoke. The copy starts at the current output index and reads from the same index in the previous spoke's data. The count formula is the same as Encoding 1: $\texttt{count} = \texttt{byte} \gg 1$, with 0 meaning 128.
+
+This scheme exploits temporal redundancy. Consecutive radar spokes often observe similar echo patterns, particularly for stationary targets, coastlines, and consistent sea clutter. By encoding only the values that differ from the previous spoke, the radar can achieve significant compression for slowly-changing scenes.
+
+The first spoke in a packet (\texttt{sweep\_idx == 0}) cannot use previous-spoke references because no prior spoke has been decoded in the current packet context. The decoder handles this by falling back to Encoding 1 behavior (repeating the current strength) for the first spoke, then using full Encoding 2 for subsequent spokes. The \texttt{prev\_spoke} buffer persists across UDP packets, so the temporal reference chain is maintained across packet boundaries.
+
+\subsubsection{Worked Example}
+
+Suppose the previous spoke contains \texttt{[60, 60, 80, 80, 40, 40, 20, 20]} and the wire bytes for the current spoke are \texttt{[0x50, 0x05, 0x3C, 0x07]}.
+
+\texttt{0x50} has bit 0 = 0, raw data with intensity 80. Bin 0 = 80.
+
+\texttt{0x05} has bit 0 = 1, copy from previous spoke. Count $= \texttt{0x05} \gg 1 = 2$. Copy bins 1 and 2 from the previous spoke: bin 1 = 60, bin 2 = 80.
+
+\texttt{0x3C} has bit 0 = 0, raw data with intensity 60. Bin 3 = 60.
+
+\texttt{0x07} has bit 0 = 1, copy from previous spoke. Count $= \texttt{0x07} \gg 1 = 3$. Copy bins 4, 5, and 6 from the previous spoke: bin 4 = 40, bin 5 = 40, bin 6 = 20.
+
+The decoded spoke is \texttt{[80, 60, 80, 60, 40, 40, 20]}, mixing new raw values with temporally-referenced copies from the previous rotation.
+
+\subsection{Encoding 3: Combined Repeating and Copying}
+\label{subsec:enc3}
+
+Encoding 3 is the most sophisticated scheme. It uses two control bits (bits 1:0) instead of one, providing three distinct operations within a single encoding. This combines the spatial compression of Encoding 1 with the temporal compression of Encoding 2.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{figures/new_figs/fig_encoding3.pdf}
+\caption{Encoding 3 byte layout. Bits 1:0 select between raw data, repeating, and copying from the previous spoke.}
+\label{fig:enc3}
+\end{figure}
+
+When bits 1:0 are \texttt{00}, the byte is raw data. Since the bottom 2 bits are always zero for raw data bytes, the effective intensity values are restricted to multiples of 4: 0, 4, 8, \ldots, 252. This provides 64 distinct intensity levels, which maps exactly to the 0--63 display range after the $\gg 2$ conversion.
+
+When bit 0 is 1 (bits 1:0 are \texttt{01} or \texttt{11}), the decoder repeats the current strength value, identical to Encoding 1. The count is extracted from the upper 6 bits: $\texttt{count} = \texttt{byte} \gg 2$. A count of 0 means 64. The maximum explicit count is 63.
+
+When bits 1:0 are \texttt{10}, the decoder copies from the previous spoke at the corresponding range bin positions, identical to Encoding 2. The count formula is the same: $\texttt{count} = \texttt{byte} \gg 2$, with 0 meaning 64. During a copy operation, the internal strength variable is updated to the last copied value, so a subsequent repeat instruction will use the copied value rather than the previous raw data value.
+
+The trade-off for combining both modes is reduced resolution. Only 6 bits remain for the count field (maximum 63, vs 127 in Encodings 1 and 2), and raw data values lose their bottom 2 bits (64 distinct levels, vs 127 in Encodings 1 and 2). However, the ability to mix spatial and temporal references within a single spoke provides the highest compression ratios for mixed scenes.
+
+\subsubsection{Worked Example}
+
+Suppose the previous spoke contains \texttt{[40, 40, 80, 80, 60, 60]} and the wire bytes are \texttt{[0x3C, 0x09, 0x0A, 0x50]}.
+
+\texttt{0x3C} has bits 1:0 = \texttt{00}, raw data. Intensity $= \texttt{0x3C} = 60$. The current strength becomes 60. Bin 0 = 60.
+
+\texttt{0x09} has bits 1:0 = \texttt{01}, bit 0 is 1, so this is a repeat. Count $= \texttt{0x09} \gg 2 = 2$. The current strength (60) is written into bins 1 and 2.
+
+\texttt{0x0A} has bits 1:0 = \texttt{10}, copy from previous spoke. Count $= \texttt{0x0A} \gg 2 = 2$. Copy bins 3 and 4 from the previous spoke: bin 3 = 80, bin 4 = 60.
+
+\texttt{0x50} has bits 1:0 = \texttt{00}, raw data. Intensity $= \texttt{0x50} = 80$. Bin 5 = 80.
+
+The decoded spoke is \texttt{[60, 60, 60, 80, 60, 80]}, demonstrating all three operations in 4 wire bytes producing 6 range bins.
+
+\subsection{Encoding Comparison}
+
+\begin{table}[H]
+\centering
+\caption{Comparison of the four echo encoding schemes.}
+\label{tab:encoding}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Property} & \textbf{Enc 0} & \textbf{Enc 1} & \textbf{Enc 2} & \textbf{Enc 3} \\
+\midrule
+Control bits        & 0             & 1 (bit 0)      & 1 (bit 0)      & 2 (bits 1:0) \\
+Intensity bits      & 8             & 7              & 7              & 6 \\
+Raw data values     & 0--252        & even only      & even only      & multiples of 4 \\
+Distinct levels     & 127           & 127            & 127            & 64 \\
+Repeat last value   & ---           & yes            & ---            & yes \\
+Copy from prev spoke & ---          & ---            & yes            & yes \\
+Max count           & ---           & 128            & 128            & 64 \\
+Compression type    & none          & spatial         & temporal       & both \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The $\gg 2$ display shift applied after decoding discards the bottom 2 bits of every wire value. This means the intensity restrictions imposed by the encoding control bits (even-only for Encodings 1 and 2, multiples-of-4 for Encoding 3) have no effect on the final display values. All four encodings produce the same 64-level (0--63) display range.
+
+
+%==============================================================================
+\section{Doppler Mode}
+\label{sec:doppler}
+%==============================================================================
+
+The radar supports an optional Doppler target analysis mode that repurposes the most significant bit of each echo byte to indicate whether a target is moving. Doppler mode is activated via the \texttt{\$SEF} command (register \texttt{0xEF}) and can be set to one of three states: off (0), target analyzer (1), or rain mode (2).
+
+\subsection{Echo Byte Layout}
+
+When Doppler mode is active, the interpretation of each echo byte changes. In normal mode, all 8 bits encode intensity. In Doppler mode, bit 7 becomes a motion flag and the remaining 7 bits encode a reduced-range intensity value.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{figures/new_figs/fig_doppler_byte.pdf}
+\caption{Echo byte layout in normal mode vs Doppler mode.}
 \label{fig:doppler}
 \end{figure}
 
-The status field carries the Doppler active flag in bit 8 (\texttt{0x100}). When this bit is 0, the spoke carries normal echo data. When it is 1, the echo bytes use the Doppler-modified layout. Bits 2:0 of the status field independently encode the pulse type: 1 indicates a long/coarse pulse, and 4 indicates a short/fine pulse.
+In normal mode, the full byte represents echo intensity spanning 0 to 252. In Doppler mode, bit 7 serves as the D flag: 0 indicates a stationary target and 1 indicates a moving target. Bits 6 through 0 encode intensity compressed to 7 bits, spanning 0 to 126. The extraction operations are:
+
+\begin{align}
+D &= \texttt{byte} \mathbin{\&} \texttt{0x80} \\
+\texttt{intensity} &= \texttt{byte} \mathbin{\&} \texttt{0x7F}
+\end{align}
+
+For example, the wire byte \texttt{0xC7} in Doppler mode decodes to $D = 1$ (moving target) with intensity $\texttt{0x47} = 71$.
+
+\subsection{Status Field}
+
+The Doppler mode status is communicated per spoke through a status field. Bit 8 of the status field (\texttt{0x100}) indicates whether Doppler data is present in the echo bytes. Bits 2:0 independently encode the pulse type.
 
 \begin{table}[H]
 \centering
@@ -421,141 +531,43 @@ The status field carries the Doppler active flag in bit 8 (\texttt{0x100}). When
 \toprule
 \textbf{Status} & \textbf{Binary} & \textbf{Meaning} \\
 \midrule
-1 (0x01) & \texttt{0\_0000\_0001} & Normal echo, long pulse \\
-4 (0x04) & \texttt{0\_0000\_0100} & Normal echo, short pulse \\
+1 (0x01)   & \texttt{0\_0000\_0001} & Normal echo, long pulse \\
+4 (0x04)   & \texttt{0\_0000\_0100} & Normal echo, short pulse \\
 257 (0x101) & \texttt{1\_0000\_0001} & Doppler echo, long pulse \\
 260 (0x104) & \texttt{1\_0000\_0100} & Doppler echo, short pulse \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\subsection{Interaction with Encoding}
 
-\subsection{Normal Mode Byte Layout}
-\label{subsec:normal-mode}
+Doppler packing is applied by the radar hardware before the echo data is compressed. The encoding schemes described in Section~\ref{sec:encoding} operate on the raw 8-bit bytes without any knowledge of whether bit 7 carries a D flag or intensity data. The encoding control bits (bit 0 for Encodings 1 and 2, bits 1:0 for Encoding 3) occupy the low end of the byte and do not interfere with the D flag in bit 7.
 
-When Doppler is disabled (status bit 8 = 0), the full 8-bit range of each echo byte is used for intensity, spanning 0 to 252. In normal operation, approximately 26\% of echo bytes have bit 7 set, meaning values above 127 are common for strong returns. This full-range usage provides the maximum dynamic range for amplitude-only displays.
+This means the D flag passes through the entire encode/decode pipeline untouched. However, the current software implementation does not extract the D flag after decoding. The uniform $\gg 2$ display shift causes the D flag to bleed from bit 7 into bit 5 of the display value, adding 32 to the display intensity of moving targets. This produces a visual effect where moving targets appear brighter, but it is not an intentional Doppler visualization.
 
+\subsection{Effective Bit Depths}
 
-\subsection{Doppler Mode Byte Layout}
-\label{subsec:doppler-mode}
+The combination of Doppler mode and encoding type determines the effective number of intensity bits available.
 
-When Doppler is enabled (status bit 8 = 1), each echo byte is split into two fields. Bit 7 serves as the Doppler direction flag (D flag): a value of 0 indicates a stationary target, and 1 indicates a moving target. Bits 6:0 encode echo intensity compressed to 7 bits, spanning 0 to 126.
-
-The extraction operations are straightforward.
-
-\begin{align}
-D &= \texttt{byte} \mathbin{\&} \texttt{0x80} \\
-\texttt{intensity} &= \texttt{byte} \mathbin{\&} \texttt{0x7F}
-\end{align}
-
-This halves the intensity dynamic range (7 bits vs 8 bits) in exchange for per-bin motion detection. For example, the wire byte \texttt{0xC7} decodes to $D = 1$ (moving target) with intensity $\texttt{0x47} = 71$.
-
-
-\subsection{Downstream Processing}
-\label{subsec:doppler-downstream}
-
-After decoding, the D flag can be used to apply a distinct color overlay on the PPI display, rendering moving targets in a contrasting color (typically blue or green against the amber echo palette). The flag can also be logged as metadata alongside amplitude values for post-processing analysis. The Doppler mode integrates naturally with the encoding schemes described in Section~\ref{sec:encoding}, as the compression operates on the raw echo bytes before any D-flag extraction occurs.
-
-
-%==============================================================================
-\section{Dual-Pulse Interleaving}
-\label{sec:dualpulse}
-%==============================================================================
-
-\subsection{Pulse Types}
-\label{subsec:pulse-types}
-
-The DRS4D-NXT alternates between long and short transmitter pulses on consecutive spokes. This is a hardware characteristic of the radar's solid-state transmitter, not a software-controlled feature.
-
-\begin{figure}[H]
+\begin{table}[H]
 \centering
-\includegraphics[width=0.85\textwidth]{figures/fig_dual_pulse.pdf}
-\caption{Quantization characteristics of long-pulse vs short-pulse spokes.}
-\label{fig:dual_pulse}
-\end{figure}
+\caption{Effective intensity resolution across modes and encodings.}
+\label{tab:bitdepth}
+\begin{tabular}{@{}llcc@{}}
+\toprule
+\textbf{Mode} & \textbf{Encoding} & \textbf{Wire Intensity Bits} & \textbf{Display Levels} \\
+\midrule
+Normal  & 0       & 8 & 64 \\
+Normal  & 1 / 2   & 7 & 64 \\
+Normal  & 3       & 6 & 64 \\
+Doppler & 0       & 7 & 32 (+32 if moving) \\
+Doppler & 1 / 2   & 6 & 32 (+32 if moving) \\
+Doppler & 3       & 5 & 32 (+32 if moving) \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-Long-pulse spokes (status bits 2:0 = 1) produce \textit{coarse} quantization with only 17 discrete intensity levels. These levels are not linearly spaced. The exact values observed are:
-
-\begin{lstlisting}
-0, 8, 20, 28, 36, 44, 56, 64, 76, 88, 104, 120, 140, 164, 188, 220, 252
-\end{lstlisting}
-
-The gaps between levels grow with amplitude: the spacing between the lowest two non-zero levels is 12 (from 8 to 20), while the spacing between the highest two is 32 (from 220 to 252). This non-linear distribution provides finer resolution at low amplitudes where target discrimination is most critical. With only 17 levels, the effective bit depth is approximately 4 bits ($\log_2 17 \approx 4.09$).
-
-Short-pulse spokes (status bits 2:0 = 4) produce \textit{fine} quantization with 130 to 240 unique intensity values, depending on the Rez Boost setting. This provides near-continuous coverage of the 0--252 wire range, yielding an effective bit depth approaching 8 bits.
-
-
-\subsection{Range Dependence}
-\label{subsec:range-dependence}
-
-The ratio of short-pulse to long-pulse spokes varies with the radar's range setting. At short ranges (e.g., 1/8 NM to 1 NM), short-pulse spokes dominate, providing high-resolution intensity data appropriate for close-range navigation. At longer ranges (e.g., 12 NM to 48 NM), long-pulse spokes become more prevalent, as the longer transmit duration provides the additional energy needed to detect targets at greater distances.
-
-The interleaving pattern is determined by the radar hardware and cannot be directly controlled by the host software. However, the \texttt{pulse\_width} command (\texttt{\$S68}) allows selection among six predefined pulse length presets (S1, S2, M1, M2, M3, L), which influence the interleaving ratio.
-
-
-\subsection{Rez Boost Effect}
-\label{subsec:rezboost}
-
-Rez Boost (bearing resolution enhancement, register \texttt{\$SEE}) provides four levels: off, low, medium, and high. Increasing the Rez Boost level shifts the pulse interleaving ratio toward more short-pulse spokes, increasing effective angular and amplitude resolution at the cost of maximum detection range. At Rez Boost high, the majority of spokes use short pulses, providing the finest quantization across the full scan.
-
-The Rez Boost setting also affects the number of unique intensity levels in short-pulse spokes. At Rez Boost off, short pulses produce approximately 130 unique values. At Rez Boost high, this increases to approximately 240 unique values, approaching the theoretical maximum for 8-bit encoding.
-
-
-%==============================================================================
-\section{Comparison to Other Marine Radar Systems}
-\label{sec:comparison}
-%==============================================================================
-
-The Furuno DRS4D-NXT's echo encoding can be better understood in the context of competing marine radar systems. Each manufacturer has developed its own proprietary protocol for streaming echo data from the antenna unit to the display processor. The following comparison is based on community reverse-engineering efforts, primarily from the OpenCPN radar plugin project and SignalK marine data platform. Competitor specifications should be considered approximate, as they are derived from observed behavior rather than official documentation.
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figures/fig_radar_comparison.pdf}
-\caption{Marine radar echo protocol comparison across four major manufacturers.}
-\label{fig:comparison}
-\end{figure}
-
-
-\subsection{Navico (Simrad, Lowrance, B\&G)}
-\label{subsec:navico}
-
-Navico produces both magnetron (BR24 series) and solid-state (HALO series) marine radars. The BR24 protocol uses UDP unicast over Ethernet with a spoke-based data format. Each rotation produces approximately 4{,}096 spokes with 512 range bins per spoke. The echo data uses 4-bit samples (16 intensity levels), packed two samples per byte. Compression is minimal, consisting of basic run-length encoding for consecutive zero bins.
-
-The HALO series upgraded to 8-bit samples with approximately 2{,}048 spokes per rotation and up to 1{,}024 range bins. The HALO also introduced VelocityTrack, Navico's Doppler implementation, which uses a separate data channel rather than embedding motion flags in the echo bytes.
-
-Compared to the Furuno DRS4D-NXT, the Navico radars use simpler encoding with fewer compression options. The BR24's 4-bit samples provide significantly less dynamic range than Furuno's 8-bit wire values, though the HALO's 8-bit samples are comparable. Neither Navico radar uses the adaptive multi-scheme compression that the Furuno employs.
-
-
-\subsection{Garmin (xHD, GMR)}
-\label{subsec:garmin}
-
-Garmin marine radars use a proprietary binary protocol over Ethernet. The xHD and GMR series typically produce 360 to 720 spokes per rotation, yielding angular resolution between $0.5\degree$ and $1.0\degree$. Range bins per spoke vary from 250 to 750 depending on the model and range setting.
-
-The Garmin encoding uses 8-bit samples with a proprietary compression scheme. Limited public documentation exists for the Garmin protocol, and the compression details have not been fully reverse-engineered by the community. No Doppler or dual-pulse capability has been identified in the Garmin product line.
-
-The lower spoke count of Garmin radars compared to Furuno's 8{,}192 ticks means significantly coarser angular resolution. The Furuno's $0.044\degree$ resolution is approximately 10 to 20 times finer than typical Garmin systems.
-
-
-\subsection{Raymarine (Quantum)}
-\label{subsec:raymarine}
-
-The Raymarine Quantum series is distinctive for using Wi-Fi (802.11) rather than Ethernet for the radar data link. This design simplifies installation by eliminating the need for a wired connection between the antenna unit and the display processor. The Quantum uses CHIRP (Compressed High-Intensity Radar Pulse) and FMCW (Frequency-Modulated Continuous Wave) transmission rather than traditional pulsed magnetron or simple solid-state designs.
-
-Echo data is transmitted using a lossy compression scheme similar to JPEG block encoding. This provides good compression ratios but introduces quantization artifacts not present in the lossless schemes used by Furuno and Navico. The Quantum produces approximately 250 to 500 spokes per rotation with 250 to 500 range bins, yielding angular resolution between $0.72\degree$ and $1.44\degree$.
-
-The Wi-Fi transport introduces latency and bandwidth constraints not present in wired Ethernet systems. The Quantum compensates with aggressive compression, but at the cost of some fidelity in the echo amplitude data.
-
-
-\subsection{Comparative Analysis}
-\label{subsec:comparative}
-
-The Furuno DRS4D-NXT distinguishes itself in several dimensions. Its 8{,}192-tick azimuth quantization provides the finest angular resolution among consumer marine radars, at $0.044\degree$ per tick. This is approximately 4 times finer than the Navico HALO and 10 to 20 times finer than Garmin or Raymarine systems. The four adaptive encoding schemes provide a uniquely flexible compression system that can optimize for different echo conditions within a single scan. No other consumer marine radar is known to use more than one or two encoding modes.
-
-The native Doppler integration at the byte level (bit 7 = D flag) is more tightly coupled than Navico's VelocityTrack, which uses a separate data channel. This integration means Doppler information is available at every range bin without additional bandwidth, though at the cost of halving the intensity dynamic range when Doppler is active.
-
-The dual-pulse interleaving is another distinctive feature. While other radar systems use a single pulse type per spoke, the Furuno alternates long and short pulses to provide both extended range detection and fine-grained intensity resolution within the same scan. This approach requires more sophisticated decoding and display logic but provides a richer data set for target analysis.
-
-The primary trade-off in the Furuno system is protocol complexity. The four encoding schemes, dual-pulse interleaving, and Doppler byte packing create a significantly more complex decode pipeline than the simpler protocols used by competitors. For third-party integration, this complexity presents a higher implementation barrier but rewards the effort with richer data.
+In Doppler mode with Encoding 3, only 5 bits of intensity information remain in the wire byte. After the display shift, this yields 32 distinct intensity levels for stationary targets and a separate 32 levels (offset by +32) for moving targets.
 
 
 %==============================================================================
