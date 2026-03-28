@@ -16,7 +16,7 @@
 \begin{tikzpicture}
 
 % ── Literal ──
-\node[font=\normalsize\bfseries] at (4.8, 4.6) {Literal (LSB = 0)};
+\node[font=\normalsize\bfseries] at (4.8, 4.6) {Raw Data};
 
 \foreach \i/\v in {0/7, 1/6, 2/5, 3/4, 4/3, 5/2, 6/1, 7/0} {
     \node[font=\scriptsize, color=SeventyBlack] at (0.6 + \i*1.2, 4.2) {bit \v};
@@ -40,13 +40,13 @@
 
 % Braces below
 \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
-    (0, 2.85) -- (8.4, 2.85) node[midway, below=5pt, font=\scriptsize\bfseries] {Amplitude};
+    (0, 2.85) -- (8.4, 2.85) node[midway, below=5pt, font=\scriptsize\bfseries] {Intensity};
 \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
     (8.4, 2.85) -- (9.6, 2.85) node[midway, below=5pt, font=\scriptsize\bfseries] {0};
 
 
 % ── Repeat ──
-\node[font=\normalsize\bfseries] at (4.8, 1.4) {Repeat (LSB = 1)};
+\node[font=\normalsize\bfseries] at (4.8, 1.4) {Repeating};
 
 \foreach \i/\v in {0/7, 1/6, 2/5, 3/4, 4/3, 5/2, 6/1, 7/0} {
     \node[font=\scriptsize, color=SeventyBlack] at (0.6 + \i*1.2, 1.0) {bit \v};
@@ -70,7 +70,7 @@
 
 % Braces below
 \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
-    (0, -0.35) -- (8.4, -0.35) node[midway, below=5pt, font=\scriptsize\bfseries] {Count};
+    (0, -0.35) -- (8.4, -0.35) node[midway, below=5pt, font=\scriptsize\bfseries] {\# of Repeats};
 \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
     (8.4, -0.35) -- (9.6, -0.35) node[midway, below=5pt, font=\scriptsize\bfseries] {1};
 
