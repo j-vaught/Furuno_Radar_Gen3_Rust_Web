@@ -2,6 +2,11 @@
 \usepackage{tikz}
 \usepackage{xcolor}
 
+\definecolor{Garnet}{HTML}{73000A}
+\definecolor{NinetyBlack}{HTML}{363636}
+\definecolor{SeventyBlack}{HTML}{5C5C5C}
+\definecolor{FiftyBlack}{HTML}{A2A2A2}
+
 \tikzset{every node/.append style={rounded corners=0pt}}
 
 \begin{document}
@@ -11,7 +16,7 @@
 
 \node[block, minimum width=3.0cm] at (0, 0) {\textbf{Azimuth}\\[-2pt]2 bytes};
 \node[block, minimum width=3.0cm] at (3.0, 0) {\textbf{Heading}\\[-2pt]2 bytes};
-\node[block, minimum width=5.0cm, fill=Garnet!15] at (6.0, 0) {\textbf{Echo Data}\\[-2pt](variable)};
+\node[block, minimum width=5.0cm, fill=Garnet!8] at (6.0, 0) {\textbf{Echo Data}\\[-2pt](variable)};
 
 \end{tikzpicture}
 \end{document}
