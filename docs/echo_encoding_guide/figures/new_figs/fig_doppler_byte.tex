@@ -16,7 +16,7 @@
 \begin{tikzpicture}
 
 % ── Normal Mode ──
-\node[font=\scriptsize\bfseries, anchor=east] at (-0.3, 3.5) {Normal Mode:};
+\node[font=\normalsize\bfseries] at (4.8, 5.0) {Normal Mode};
 
 % Bit position labels
 \foreach \i/\v in {0/7, 1/6, 2/5, 3/4, 4/3, 5/2, 6/1, 7/0} {
@@ -34,33 +34,33 @@
 
 
 % ── Doppler Mode ──
-\node[font=\scriptsize\bfseries, anchor=east] at (-0.3, 0.5) {Doppler Mode:};
+\node[font=\normalsize\bfseries] at (4.8, 1.8) {Doppler Mode};
 
-% Bit position labels for Doppler row
+% Bit position labels
 \foreach \i/\v in {0/7, 1/6, 2/5, 3/4, 4/3, 5/2, 6/1, 7/0} {
-    \node[font=\scriptsize, color=SeventyBlack] at (0.6 + \i*1.2, 1.2) {bit \v};
+    \node[font=\scriptsize, color=SeventyBlack] at (0.6 + \i*1.2, 1.0) {bit \v};
 }
 
 % 8 cells
 \foreach \i in {0,...,7} {
-    \draw[thick] (0 + \i*1.2, 0.0) rectangle (1.2 + \i*1.2, 1.0);
+    \draw[thick] (0 + \i*1.2, -0.2) rectangle (1.2 + \i*1.2, 0.8);
 }
 
 % D flag fill — bit 7
-\fill[Garnet!15] (0, 0.0) rectangle (1.2, 1.0);
-\draw[thick] (0, 0.0) rectangle (1.2, 1.0);
+\fill[Garnet!15] (0, -0.2) rectangle (1.2, 0.8);
+\draw[thick] (0, -0.2) rectangle (1.2, 0.8);
 
 % Intensity fill — bits 6:0
-\fill[Atlantic!10] (1.2, 0.0) rectangle (9.6, 1.0);
+\fill[Atlantic!10] (1.2, -0.2) rectangle (9.6, 0.8);
 \foreach \i in {1,...,7} {
-    \draw[thick] (0 + \i*1.2, 0.0) rectangle (1.2 + \i*1.2, 1.0);
+    \draw[thick] (0 + \i*1.2, -0.2) rectangle (1.2 + \i*1.2, 0.8);
 }
 
 % Braces below
 \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
-    (0, -0.15) -- (1.2, -0.15) node[midway, below=5pt, font=\scriptsize\bfseries] {D};
+    (0, -0.35) -- (1.2, -0.35) node[midway, below=5pt, font=\scriptsize\bfseries] {D};
 \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
-    (1.2, -0.15) -- (9.6, -0.15) node[midway, below=5pt, font=\scriptsize\bfseries] {Intensity};
+    (1.2, -0.35) -- (9.6, -0.35) node[midway, below=5pt, font=\scriptsize\bfseries] {Intensity};
 
 \end{tikzpicture}
 \end{document}
