@@ -1,0 +1,61 @@
+\documentclass[border=5pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{decorations.pathreplacing}
+\usepackage{xcolor}
+
+\definecolor{Garnet}{HTML}{73000A}
+\definecolor{NinetyBlack}{HTML}{363636}
+\definecolor{SeventyBlack}{HTML}{5C5C5C}
+\definecolor{FiftyBlack}{HTML}{A2A2A2}
+\definecolor{ThirtyBlack}{HTML}{C7C7C7}
+\definecolor{Atlantic}{HTML}{466A9F}
+
+\tikzset{every node/.append style={rounded corners=0pt}}
+
+\begin{document}
+\begin{tikzpicture}
+
+% ── Normal Mode ──
+\node[font=\scriptsize\bfseries, anchor=east] at (-0.3, 3.5) {Normal Mode:};
+
+% Bit position labels
+\foreach \i/\v in {0/7, 1/6, 2/5, 3/4, 4/3, 5/2, 6/1, 7/0} {
+    \node[font=\scriptsize, color=SeventyBlack] at (0.6 + \i*1.2, 4.2) {bit \v};
+}
+
+% 8 cells — all intensity
+\foreach \i in {0,...,7} {
+    \draw[thick] (0 + \i*1.2, 3.0) rectangle (1.2 + \i*1.2, 4.0);
+}
+
+% Brace below
+\draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
+    (0, 2.85) -- (9.6, 2.85) node[midway, below=5pt, font=\scriptsize\bfseries] {Intensity};
+
+
+% ── Doppler Mode ──
+\node[font=\scriptsize\bfseries, anchor=east] at (-0.3, 0.5) {Doppler Mode:};
+
+% 8 cells
+\foreach \i in {0,...,7} {
+    \draw[thick] (0 + \i*1.2, 0.0) rectangle (1.2 + \i*1.2, 1.0);
+}
+
+% D flag fill — bit 7
+\fill[Garnet!15] (0, 0.0) rectangle (1.2, 1.0);
+\draw[thick] (0, 0.0) rectangle (1.2, 1.0);
+
+% Intensity fill — bits 6:0
+\fill[Atlantic!10] (1.2, 0.0) rectangle (9.6, 1.0);
+\foreach \i in {1,...,7} {
+    \draw[thick] (0 + \i*1.2, 0.0) rectangle (1.2 + \i*1.2, 1.0);
+}
+
+% Braces below
+\draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
+    (0, -0.15) -- (1.2, -0.15) node[midway, below=5pt, font=\scriptsize\bfseries] {D};
+\draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
+    (1.2, -0.15) -- (9.6, -0.15) node[midway, below=5pt, font=\scriptsize\bfseries] {Intensity};
+
+\end{tikzpicture}
+\end{document}
