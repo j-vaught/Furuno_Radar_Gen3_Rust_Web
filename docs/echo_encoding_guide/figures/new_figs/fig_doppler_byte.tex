@@ -36,6 +36,11 @@
 % ── Doppler Mode ──
 \node[font=\scriptsize\bfseries, anchor=east] at (-0.3, 0.5) {Doppler Mode:};
 
+% Bit position labels for Doppler row
+\foreach \i/\v in {0/7, 1/6, 2/5, 3/4, 4/3, 5/2, 6/1, 7/0} {
+    \node[font=\scriptsize, color=SeventyBlack] at (0.6 + \i*1.2, 1.2) {bit \v};
+}
+
 % 8 cells
 \foreach \i in {0,...,7} {
     \draw[thick] (0 + \i*1.2, 0.0) rectangle (1.2 + \i*1.2, 1.0);
