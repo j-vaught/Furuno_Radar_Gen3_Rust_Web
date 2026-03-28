@@ -1,0 +1,563 @@
+% echo_encoding_guide.tex — Furuno DRS4D-NXT Echo Packet Encoding Guide
+% Author: J.C. Vaught
+
+\documentclass[11pt,letterpaper]{article}
+
+% ── Geometry ──────────────────────────────────────────────────────────────────
+\usepackage[margin=1in]{geometry}
+
+% ── Packages ──────────────────────────────────────────────────────────────────
+\usepackage{tikz}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{fancyhdr}
+\usepackage{amsmath,amssymb}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{graphicx}
+\usepackage{bytefield}
+
+% ── Brand Colors ──────────────────────────────────────────────────────────────
+% Primary
+\definecolor{Garnet}{HTML}{73000A}
+\definecolor{Black}{HTML}{000000}
+\definecolor{White}{HTML}{FFFFFF}
+% Neutral
+\definecolor{NinetyBlack}{HTML}{363636}
+\definecolor{SeventyBlack}{HTML}{5C5C5C}
+\definecolor{FiftyBlack}{HTML}{A2A2A2}
+\definecolor{ThirtyBlack}{HTML}{C7C7C7}
+\definecolor{TenBlack}{HTML}{ECECEC}
+\definecolor{WarmGrey}{HTML}{676156}
+\definecolor{Sandstorm}{HTML}{FFF2E3}
+% Accent
+\definecolor{Rose}{HTML}{CC2E40}
+\definecolor{Atlantic}{HTML}{466A9F}
+\definecolor{Congaree}{HTML}{1F414D}
+\definecolor{Horseshoe}{HTML}{65780B}
+\definecolor{Grass}{HTML}{CED318}
+\definecolor{Honeycomb}{HTML}{A49137}
+
+% ── Hyperref Setup ────────────────────────────────────────────────────────────
+\hypersetup{
+    colorlinks=true,
+    linkcolor=Garnet,
+    urlcolor=Atlantic,
+    citecolor=Congaree,
+    pdftitle={Furuno DRS4D-NXT --- Echo Packet Encoding Guide},
+    pdfauthor={J.C. Vaught},
+}
+
+% ── Section Heading Colors ────────────────────────────────────────────────────
+\usepackage{titlesec}
+\titleformat{\section}
+    {\normalfont\Large\bfseries\color{Garnet}}{\thesection}{1em}{}
+\titleformat{\subsection}
+    {\normalfont\large\bfseries\color{NinetyBlack}}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}
+    {\normalfont\normalsize\bfseries\color{SeventyBlack}}{\thesubsubsection}{1em}{}
+
+% ── Header / Footer ──────────────────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{SeventyBlack}Furuno DRS4D-NXT}
+\fancyhead[R]{\small\color{SeventyBlack}Echo Encoding Guide}
+\fancyfoot[C]{\small\color{FiftyBlack}\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% ── Code Listing Style ───────────────────────────────────────────────────────
+\lstdefinestyle{code}{
+    backgroundcolor=\color{TenBlack},
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{Garnet}\bfseries,
+    stringstyle=\color{Atlantic},
+    commentstyle=\color{FiftyBlack}\itshape,
+    frame=single,
+    framerule=0.4pt,
+    rulecolor=\color{ThirtyBlack},
+    framesep=6pt,
+    xleftmargin=6pt,
+    xrightmargin=6pt,
+    breaklines=true,
+    showstringspaces=false,
+    tabsize=4,
+}
+\lstset{style=code}
+
+% ── TikZ Libraries ───────────────────────────────────────────────────────────
+\usetikzlibrary{arrows.meta, positioning, calc, shapes.geometric}
+
+% ── Paragraph Spacing (no indent, half-line skip) ────────────────────────────
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5\baselineskip}
+
+% ── No rounded corners globally ──────────────────────────────────────────────
+\tikzset{every node/.append style={rounded corners=0pt}}
+
+
+%==============================================================================
+\begin{document}
+%==============================================================================
+
+% ── Title Page ───────────────────────────────────────────────────────────────
+\begin{titlepage}
+\centering
+\vspace*{3cm}
+
+{\color{Garnet}\rule{\linewidth}{2pt}}\\[4pt]
+{\color{Atlantic}\rule{\linewidth}{0.5pt}}
+
+\vspace{1.5cm}
+{\Huge\bfseries\color{Garnet} Furuno DRS4D-NXT}\\[0.8cm]
+{\LARGE\color{NinetyBlack} Echo Packet Encoding Guide}\\[0.4cm]
+{\large\color{SeventyBlack} Bit-Level Protocol Analysis and Radar Comparison}
+
+\vspace{1.5cm}
+{\color{Atlantic}\rule{\linewidth}{0.5pt}}\\[4pt]
+{\color{Garnet}\rule{\linewidth}{2pt}}
+
+\vspace{2cm}
+{\large J.C. Vaught}\\[0.3cm]
+{\color{SeventyBlack} March 2026}
+
+\vfill
+{\small\color{FiftyBlack} Based on reverse-engineered protocol analysis of the Furuno DRS4D-NXT solid-state marine radar.}
+\end{titlepage}
+
+\tableofcontents
+\clearpage
+
+
+%==============================================================================
+\section{Introduction}
+\label{sec:intro}
+%==============================================================================
+
+This document provides a detailed, bit-level analysis of how the Furuno DRS4D-NXT solid-state marine radar encodes echo data in its UDP multicast packets. The radar uses a proprietary binary protocol to stream echo amplitude data from the antenna unit to a connected host, employing four progressively sophisticated compression schemes to minimize bandwidth while preserving full range bin resolution.
+
+The encoding system is notable among consumer marine radars for its adaptive compression, dual-pulse interleaving, and native Doppler support integrated at the byte level. This guide breaks down each encoding scheme with worked examples, explains the Doppler and dual-pulse mechanisms, and compares the Furuno approach to competing marine radar protocols from Navico, Garmin, and Raymarine.
+
+All protocol details in this document are derived from reverse-engineering the radar's binary data stream and the proprietary \texttt{libNAVNETDLL.so} library. Field names and interpretations have been validated against observed packet behavior but are not based on official Furuno documentation.
+
+
+%==============================================================================
+\section{Echo Packet Structure}
+\label{sec:packet}
+%==============================================================================
+
+\subsection{Packet Overview}
+\label{subsec:packet-overview}
+
+Each echo packet arrives as a UDP datagram on multicast group \texttt{239.255.0.2} port \texttt{10024}. The packet begins with a fixed 16-byte header, followed by one or more spoke data blocks. Each spoke block consists of a 4-byte sub-header (azimuth and heading) followed by variable-length encoded echo amplitude data. The number of spokes packed into a single UDP packet is determined by the \texttt{sweep\_count} field in the header.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_echo_header_bits.pdf}
+\caption{Echo packet header layout and metadata bit fields in bytes 9--11.}
+\label{fig:header_bits}
+\end{figure}
+
+
+\subsection{Header Field Breakdown}
+\label{subsec:header-fields}
+
+The 16-byte header uses big-endian byte ordering for all multi-byte fields.
+
+\begin{table}[H]
+\centering
+\caption{Echo packet header fields.}
+\label{tab:header}
+\begin{tabular}{@{}rrlp{6.5cm}@{}}
+\toprule
+\textbf{Offset} & \textbf{Width} & \textbf{Field} & \textbf{Description} \\
+\midrule
+0 & 2 bytes & Sequence & Spoke counter (u16 BE), increments per packet \\
+2 & 2 bytes & Version & Protocol version, always \texttt{0x0001} \\
+4 & 4 bytes & Reserved & Always \texttt{0x00000000} \\
+8 & 4 bytes & Timestamp & Radar clock timestamp (u32 BE) \\
+12 & 2 bytes & Flags & Configuration flags, observed as \texttt{0x1500} \\
+14 & 2 bytes & Config & Configuration word, observed as \texttt{0xF009} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{Metadata Extraction}
+\label{subsec:metadata}
+
+Three critical parameters are extracted from the header using bit manipulation on bytes 9 through 11. The \texttt{sweep\_count} field occupies the upper 7 bits of byte 9, yielding the number of spokes packed into this packet. The \texttt{sweep\_len} field is an 11-bit value split across bytes 10 and 11, indicating the number of range bins per spoke after decoding. The \texttt{encoding} field occupies bits 4:3 of byte 11, selecting one of four compression schemes.
+
+\begin{align}
+\texttt{sweep\_count} &= \texttt{data[9]} \gg 1 \label{eq:sweep_count} \\
+\texttt{sweep\_len} &= ((\texttt{data[11]} \mathbin{\&} \texttt{0x07}) \ll 8) \mathbin{|} \texttt{data[10]} \label{eq:sweep_len} \\
+\texttt{encoding} &= (\texttt{data[11]} \mathbin{\&} \texttt{0x18}) \gg 3 \label{eq:encoding}
+\end{align}
+
+The sweep length is typically 868 range bins, though this varies with the radar's range setting. The theoretical maximum is 2047 (the largest value representable in 11 bits). The encoding field selects values 0 through 3, corresponding to the four encoding schemes described in Section~\ref{sec:encoding}.
+
+
+\subsection{Spoke Sub-Header}
+\label{subsec:spoke-subheader}
+
+Each spoke begins with a 4-byte sub-header containing the azimuth angle and compass heading, both encoded as unsigned 16-bit little-endian tick values. The radar uses 8{,}192 ticks per full rotation ($360\degree$), yielding an angular resolution of approximately $0.0439\degree$ per tick.
+
+\begin{align}
+\theta_{\text{deg}} &= \frac{\texttt{angle\_ticks}}{8192} \times 360\degree
+\end{align}
+
+The azimuth field tracks the antenna's rotational position. The heading field independently tracks compass bearing and is updated per-spoke by the radar's internal compass. Both fields use the same 8{,}192-tick quantization.
+
+
+\subsection{Multi-Spoke Packing}
+\label{subsec:multispoke}
+
+A single UDP packet can contain multiple spokes, packed sequentially after the 16-byte header. For each of the \texttt{sweep\_count} spokes, the structure is as follows. First, a 4-byte sub-header provides the azimuth and heading for that spoke. Then, the encoded echo data follows, consuming a variable number of bytes depending on the encoding type and data content. After decoding each spoke's echo data, the consumed byte count is rounded up to the next 4-byte boundary using the formula $\texttt{used} = (\texttt{n} + 3) \mathbin{\&} \lnot 3$. This alignment ensures that each subsequent spoke sub-header begins on a 4-byte boundary within the packet.
+
+The decoder maintains a \texttt{prev\_spoke} buffer that persists across spokes within the same packet and across consecutive packets. This persistent state is essential for encoding types 2 and 3, which reference the previously decoded spoke's range bin values.
+
+
+%==============================================================================
+\section{Encoding Schemes}
+\label{sec:encoding}
+%==============================================================================
+
+\subsection{Overview}
+\label{subsec:encoding-overview}
+
+The Furuno DRS4D-NXT employs four echo encoding schemes, selected adaptively by the radar hardware on a per-packet basis. The encoding type is stored in bits 4:3 of header byte 11 (see Equation~\ref{eq:encoding}). The schemes form a progression from no compression to increasingly sophisticated run-length encoding with temporal references.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_encoding_comparison.pdf}
+\caption{Progression of echo encoding complexity across the four schemes.}
+\label{fig:encoding_comparison}
+\end{figure}
+
+All four encodings produce a fixed-length array of range bins (determined by \texttt{sweep\_len}). After decoding, wire values are right-shifted by 2 bits for display purposes: $\texttt{display} = \texttt{wire} \gg 2$. This shift is applied uniformly regardless of encoding type and has the convenient property of stripping the control bits used by encodings 1, 2, and 3 (see Section~\ref{sec:display}).
+
+The radar selects encoding type adaptively based on the echo data characteristics at the time of transmission. The selection algorithm is implemented in the radar's firmware and is not documented. In practice, encoding 0 appears during sparse conditions, encoding 1 during moderate activity, and encodings 2 and 3 during sustained target returns where consecutive spokes share significant overlap.
+
+
+\subsection{Encoding 0: Raw Uncompressed}
+\label{subsec:enc0}
+
+Encoding 0 is the simplest scheme. Each wire byte maps directly to one range bin with no compression. The first \texttt{sweep\_len} bytes of the payload are copied directly to form the spoke, zero-padded if the available data is shorter than \texttt{sweep\_len}. The consumed byte count is then rounded up to the next 4-byte boundary.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_encoding_0_raw.pdf}
+\caption{Encoding 0: direct 1:1 mapping from wire bytes to range bins.}
+\label{fig:enc0}
+\end{figure}
+
+This encoding provides no compression benefit but guarantees exact representation of every range bin value. The wire value range is 0--255 (full 8-bit), and after the display shift ($\gg 2$), the effective range is 0--63.
+
+
+\subsection{Encoding 1: RLE with Repeat Marker}
+\label{subsec:enc1}
+
+Encoding 1 introduces single-byte run-length encoding using the least significant bit (LSB) as a control flag. When the LSB is 0, the byte is a \textit{literal} echo amplitude value. When the LSB is 1, the byte is a \textit{repeat marker} that instructs the decoder to repeat the most recently decoded amplitude value.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_encoding_1_rle.pdf}
+\caption{Encoding 1: RLE using the LSB as a literal/repeat control bit.}
+\label{fig:enc1}
+\end{figure}
+
+For literal bytes (LSB = 0), the entire 8-bit value is stored as the echo amplitude. Because the LSB is always 0 for literals, the effective amplitude values are always \textit{even}: 0, 2, 4, \ldots, 252. This provides 127 distinct non-zero intensity levels.
+
+For repeat markers (LSB = 1), the repeat count is extracted by right-shifting the byte by 1 bit: $\texttt{count} = \texttt{byte} \gg 1$. The special case where the count field is 0 encodes a repeat of 128. The maximum explicitly encoded count is 127 (wire byte \texttt{0xFF}). The repeated value is the most recently decoded literal, referred to as the ``previous cell.'' This means the repeat always references the last amplitude set by a literal byte, regardless of how many range bins have been filled since.
+
+\subsubsection{Worked Example}
+
+Consider the wire byte sequence \texttt{[0x3C, 0x07, 0x50, 0x05, 0x00]}.
+
+\texttt{0x3C} has LSB = 0, so it is a literal with amplitude 60. The decoder stores 60 as the current strength and writes bin 0 = 60.
+
+\texttt{0x07} has LSB = 1, so it is a repeat marker. Count = $\texttt{0x07} \gg 1 = 3$. The decoder writes the current strength (60) into bins 1, 2, and 3.
+
+\texttt{0x50} has LSB = 0, so it is a literal with amplitude 80. The decoder updates strength to 80 and writes bin 4 = 80.
+
+\texttt{0x05} has LSB = 1, count = $\texttt{0x05} \gg 1 = 2$. The decoder writes 80 into bins 5 and 6.
+
+\texttt{0x00} has LSB = 0, literal amplitude 0. Bin 7 = 0.
+
+The decoded spoke is \texttt{[60, 60, 60, 60, 80, 80, 80, 0]}, produced from 5 wire bytes. The compression ratio in this example is 5:8.
+
+
+\subsection{Encoding 2: Delta RLE with Previous Spoke Reference}
+\label{subsec:enc2}
+
+Encoding 2 replaces the ``repeat previous cell'' operation with a ``copy from previous spoke'' operation. The LSB control bit works identically to Encoding 1: LSB = 0 marks a literal value, and LSB = 1 marks a copy operation. The difference is that the copy operation reads from the \textit{previously decoded spoke} at the \textit{same range bin index}, rather than repeating the last literal value.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_encoding_2_delta.pdf}
+\caption{Encoding 2: delta RLE referencing the previous spoke's range bins.}
+\label{fig:enc2}
+\end{figure}
+
+This temporal reference exploits the fact that consecutive radar spokes often share similar echo patterns, particularly in areas with stationary targets or consistent sea clutter. By encoding only the differences, the radar achieves significant compression for slowly-changing scenes.
+
+The count formula is the same as Encoding 1: $\texttt{count} = \texttt{byte} \gg 1$, with 0 meaning 128. However, instead of repeating a single amplitude, the decoder copies \texttt{count} consecutive range bins from the previous spoke, starting at the current output index.
+
+A critical implementation detail is that the first spoke in a packet (\texttt{sweep\_idx == 0}) cannot use previous-spoke references because no prior spoke is available in the current decode context. The decoder handles this by falling back to Encoding 1 (self-referencing RLE) for the first spoke, then switching to full Encoding 2 for subsequent spokes. The \texttt{prev\_spoke} buffer is updated after each spoke is decoded, and this buffer persists across UDP packets, meaning the first spoke of a new packet can still reference the last spoke of the previous packet.
+
+\subsubsection{Worked Example}
+
+Suppose the previous spoke contains \texttt{[60, 60, 80, 80, 40, 40, 20, 20]} and the wire bytes for the current spoke are \texttt{[0x50, 0x05, 0x3C, 0x07]}.
+
+\texttt{0x50} (LSB = 0): literal 80 $\rightarrow$ bin 0 = 80.
+
+\texttt{0x05} (LSB = 1): copy 2 from previous spoke at bins 1--2 $\rightarrow$ bins 1--2 = \texttt{[60, 80]}.
+
+\texttt{0x3C} (LSB = 0): literal 60 $\rightarrow$ bin 3 = 60.
+
+\texttt{0x07} (LSB = 1): copy 3 from previous spoke at bins 4--6 $\rightarrow$ bins 4--6 = \texttt{[40, 40, 20]}.
+
+The decoded spoke is \texttt{[80, 60, 80, 60, 40, 40, 20]}, mixing new literal values with temporally-referenced copies.
+
+
+\subsection{Encoding 3: 2-Bit RLE with Dual Reference}
+\label{subsec:enc3}
+
+Encoding 3 is the most sophisticated scheme, using two control bits instead of one. This provides three distinct operations within a single encoding: literal values, repeat-previous-cell, and copy-from-previous-spoke. The two least significant bits (\texttt{bits[1:0]}) determine the operation.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_encoding_3_dual.pdf}
+\caption{Encoding 3: dual-reference RLE with 2-bit control field.}
+\label{fig:enc3}
+\end{figure}
+
+When $\texttt{bits}[1{:}0] = 00$, the byte is a literal amplitude value. Because the bottom 2 bits are always zero for literals, the effective amplitude values are multiples of 4: 0, 4, 8, \ldots, 252. This provides 64 distinct intensity levels, which maps perfectly to the 6-bit display range after the $\gg 2$ conversion.
+
+When $\texttt{bit}[0] = 1$ (i.e., $\texttt{bits}[1{:}0] = 01$ or $11$), the decoder repeats the most recently decoded amplitude (``previous cell'') for a count of $\texttt{byte} \gg 2$. When the count field is 0, the actual repeat count is 64. The maximum explicit count is 63 (6-bit field).
+
+When $\texttt{bits}[1{:}0] = 10$, the decoder copies from the previous spoke at the same range bin index. The count formula is the same: $\texttt{byte} \gg 2$, with 0 meaning 64. During the copy operation, the internal \texttt{strength} variable is updated to the copied value, so subsequent repeat-previous-cell operations will use the last copied amplitude.
+
+This hybrid approach combines the strengths of Encodings 1 and 2 in a single scheme. The trade-off is reduced count resolution (6 bits, maximum 63/64) compared to Encodings 1 and 2 (7 bits, maximum 127/128), and reduced literal amplitude resolution (multiples of 4 rather than multiples of 2).
+
+\subsubsection{Worked Example}
+
+Previous spoke: \texttt{[40, 40, 80, 80, 60, 60]}. Wire bytes: \texttt{[0x3C, 0x09, 0x0A, 0x50]}.
+
+\texttt{0x3C}: $\texttt{bits}[1{:}0] = 00$, literal. Amplitude = $\texttt{0x3C} = 60$. Bin 0 = 60.
+
+\texttt{0x09}: $\texttt{bits}[1{:}0] = 01$, bit[0] = 1 $\rightarrow$ repeat previous cell. Count = $\texttt{0x09} \gg 2 = 2$. Bins 1--2 = \texttt{[60, 60]}.
+
+\texttt{0x0A}: $\texttt{bits}[1{:}0] = 10$, bit[0] = 0 $\rightarrow$ copy from previous spoke. Count = $\texttt{0x0A} \gg 2 = 2$. Copy prev spoke bins 3--4 $\rightarrow$ bins 3--4 = \texttt{[80, 60]}.
+
+\texttt{0x50}: $\texttt{bits}[1{:}0] = 00$, literal. Amplitude = $\texttt{0x50} = 80$. Bin 5 = 80.
+
+Decoded spoke: \texttt{[60, 60, 60, 80, 60, 80]}. The encoding combined all three operations in 4 wire bytes to produce 6 range bins.
+
+
+\subsection{Encoding Selection and Adaptive Behavior}
+\label{subsec:enc-selection}
+
+The radar's firmware selects the encoding type on a per-packet basis. The selection algorithm is not exposed in any accessible interface and appears to be determined by the radar's internal signal processing pipeline. Based on observed behavior, the encoding type correlates with the following conditions.
+
+Encoding 0 (raw) appears primarily at very short range settings where the number of range bins is small and compression overhead would exceed the savings. Encoding 1 (RLE) appears during moderate conditions with some spatial redundancy along range bins. Encoding 2 (delta RLE) appears when consecutive spokes exhibit high temporal correlation, such as when scanning stationary targets or calm sea surfaces. Encoding 3 (2-bit dual) appears during mixed conditions where both spatial and temporal redundancy are present.
+
+The encoding type is consistent across all spokes within a single packet. Different packets in the same rotation may use different encoding types if conditions change. The decoder must support all four types and switch based on the encoding field in each packet's header.
+
+
+%==============================================================================
+\section{Display Value Conversion}
+\label{sec:display}
+%==============================================================================
+
+After decoding, every wire value undergoes a right-shift by 2 bits before storage in the spoke's output buffer.
+
+\begin{align}
+\texttt{display} &= \texttt{wire} \gg 2
+\end{align}
+
+This conversion serves two purposes. First, it reduces the dynamic range from 8-bit wire values (0--252) to 6-bit display values (0--63), providing a more manageable intensity scale for rendering. Second, it conveniently strips the control bits used by the encoding schemes. In Encoding 1 and 2, the LSB is a control flag that is always 0 for literal values, so wire amplitudes are multiples of 2. In Encoding 3, the two LSBs are control bits, so wire amplitudes are multiples of 4. The $\gg 2$ shift cleanly removes these artifacts in all cases, mapping each encoding's literal values to a uniform 0--63 range.
+
+The display values are then mapped to RGBA pixels for PPI (Plan Position Indicator) rendering using a warm amber color palette.
+
+\begin{align}
+R &= \min\!\left(\frac{\texttt{amplitude} \times 255}{63},\; 255\right) \\[4pt]
+G &= \min\!\left(\frac{\texttt{amplitude} \times 180}{63},\; 255\right) \\[4pt]
+B &= \min\!\left(\frac{\texttt{amplitude} \times 20}{63},\; 255\right)
+\end{align}
+
+This produces a color gradient from black (amplitude 0) through deep red to bright amber (amplitude 63), optimized for visibility on dark backgrounds.
+
+
+%==============================================================================
+\section{Normal vs Doppler Mode}
+\label{sec:doppler}
+%==============================================================================
+
+\subsection{Status Field Encoding}
+\label{subsec:doppler-status}
+
+The radar supports Doppler target analysis, which repurposes the most significant bit of each echo byte to encode target motion information. The Doppler mode is controlled via the \texttt{\$SEF} command (register \texttt{0xEF}) and is indicated per-spoke through a status field.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_doppler_layout.pdf}
+\caption{Echo byte layout in normal vs Doppler mode, with status field encoding.}
+\label{fig:doppler}
+\end{figure}
+
+The status field carries the Doppler active flag in bit 8 (\texttt{0x100}). When this bit is 0, the spoke carries normal echo data. When it is 1, the echo bytes use the Doppler-modified layout. Bits 2:0 of the status field independently encode the pulse type: 1 indicates a long/coarse pulse, and 4 indicates a short/fine pulse.
+
+\begin{table}[H]
+\centering
+\caption{Observed status field values.}
+\label{tab:status}
+\begin{tabular}{@{}rrl@{}}
+\toprule
+\textbf{Status} & \textbf{Binary} & \textbf{Meaning} \\
+\midrule
+1 (0x01) & \texttt{0\_0000\_0001} & Normal echo, long pulse \\
+4 (0x04) & \texttt{0\_0000\_0100} & Normal echo, short pulse \\
+257 (0x101) & \texttt{1\_0000\_0001} & Doppler echo, long pulse \\
+260 (0x104) & \texttt{1\_0000\_0100} & Doppler echo, short pulse \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{Normal Mode Byte Layout}
+\label{subsec:normal-mode}
+
+When Doppler is disabled (status bit 8 = 0), the full 8-bit range of each echo byte is used for intensity, spanning 0 to 252. In normal operation, approximately 26\% of echo bytes have bit 7 set, meaning values above 127 are common for strong returns. This full-range usage provides the maximum dynamic range for amplitude-only displays.
+
+
+\subsection{Doppler Mode Byte Layout}
+\label{subsec:doppler-mode}
+
+When Doppler is enabled (status bit 8 = 1), each echo byte is split into two fields. Bit 7 serves as the Doppler direction flag (D flag): a value of 0 indicates a stationary target, and 1 indicates a moving target. Bits 6:0 encode echo intensity compressed to 7 bits, spanning 0 to 126.
+
+The extraction operations are straightforward.
+
+\begin{align}
+D &= \texttt{byte} \mathbin{\&} \texttt{0x80} \\
+\texttt{intensity} &= \texttt{byte} \mathbin{\&} \texttt{0x7F}
+\end{align}
+
+This halves the intensity dynamic range (7 bits vs 8 bits) in exchange for per-bin motion detection. For example, the wire byte \texttt{0xC7} decodes to $D = 1$ (moving target) with intensity $\texttt{0x47} = 71$.
+
+
+\subsection{Downstream Processing}
+\label{subsec:doppler-downstream}
+
+After decoding, the D flag can be used to apply a distinct color overlay on the PPI display, rendering moving targets in a contrasting color (typically blue or green against the amber echo palette). The flag can also be logged as metadata alongside amplitude values for post-processing analysis. The Doppler mode integrates naturally with the encoding schemes described in Section~\ref{sec:encoding}, as the compression operates on the raw echo bytes before any D-flag extraction occurs.
+
+
+%==============================================================================
+\section{Dual-Pulse Interleaving}
+\label{sec:dualpulse}
+%==============================================================================
+
+\subsection{Pulse Types}
+\label{subsec:pulse-types}
+
+The DRS4D-NXT alternates between long and short transmitter pulses on consecutive spokes. This is a hardware characteristic of the radar's solid-state transmitter, not a software-controlled feature.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/fig_dual_pulse.pdf}
+\caption{Quantization characteristics of long-pulse vs short-pulse spokes.}
+\label{fig:dual_pulse}
+\end{figure}
+
+Long-pulse spokes (status bits 2:0 = 1) produce \textit{coarse} quantization with only 17 discrete intensity levels. These levels are not linearly spaced. The exact values observed are:
+
+\begin{lstlisting}
+0, 8, 20, 28, 36, 44, 56, 64, 76, 88, 104, 120, 140, 164, 188, 220, 252
+\end{lstlisting}
+
+The gaps between levels grow with amplitude: the spacing between the lowest two non-zero levels is 12 (from 8 to 20), while the spacing between the highest two is 32 (from 220 to 252). This non-linear distribution provides finer resolution at low amplitudes where target discrimination is most critical. With only 17 levels, the effective bit depth is approximately 4 bits ($\log_2 17 \approx 4.09$).
+
+Short-pulse spokes (status bits 2:0 = 4) produce \textit{fine} quantization with 130 to 240 unique intensity values, depending on the Rez Boost setting. This provides near-continuous coverage of the 0--252 wire range, yielding an effective bit depth approaching 8 bits.
+
+
+\subsection{Range Dependence}
+\label{subsec:range-dependence}
+
+The ratio of short-pulse to long-pulse spokes varies with the radar's range setting. At short ranges (e.g., 1/8 NM to 1 NM), short-pulse spokes dominate, providing high-resolution intensity data appropriate for close-range navigation. At longer ranges (e.g., 12 NM to 48 NM), long-pulse spokes become more prevalent, as the longer transmit duration provides the additional energy needed to detect targets at greater distances.
+
+The interleaving pattern is determined by the radar hardware and cannot be directly controlled by the host software. However, the \texttt{pulse\_width} command (\texttt{\$S68}) allows selection among six predefined pulse length presets (S1, S2, M1, M2, M3, L), which influence the interleaving ratio.
+
+
+\subsection{Rez Boost Effect}
+\label{subsec:rezboost}
+
+Rez Boost (bearing resolution enhancement, register \texttt{\$SEE}) provides four levels: off, low, medium, and high. Increasing the Rez Boost level shifts the pulse interleaving ratio toward more short-pulse spokes, increasing effective angular and amplitude resolution at the cost of maximum detection range. At Rez Boost high, the majority of spokes use short pulses, providing the finest quantization across the full scan.
+
+The Rez Boost setting also affects the number of unique intensity levels in short-pulse spokes. At Rez Boost off, short pulses produce approximately 130 unique values. At Rez Boost high, this increases to approximately 240 unique values, approaching the theoretical maximum for 8-bit encoding.
+
+
+%==============================================================================
+\section{Comparison to Other Marine Radar Systems}
+\label{sec:comparison}
+%==============================================================================
+
+The Furuno DRS4D-NXT's echo encoding can be better understood in the context of competing marine radar systems. Each manufacturer has developed its own proprietary protocol for streaming echo data from the antenna unit to the display processor. The following comparison is based on community reverse-engineering efforts, primarily from the OpenCPN radar plugin project and SignalK marine data platform. Competitor specifications should be considered approximate, as they are derived from observed behavior rather than official documentation.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{figures/fig_radar_comparison.pdf}
+\caption{Marine radar echo protocol comparison across four major manufacturers.}
+\label{fig:comparison}
+\end{figure}
+
+
+\subsection{Navico (Simrad, Lowrance, B\&G)}
+\label{subsec:navico}
+
+Navico produces both magnetron (BR24 series) and solid-state (HALO series) marine radars. The BR24 protocol uses UDP unicast over Ethernet with a spoke-based data format. Each rotation produces approximately 4{,}096 spokes with 512 range bins per spoke. The echo data uses 4-bit samples (16 intensity levels), packed two samples per byte. Compression is minimal, consisting of basic run-length encoding for consecutive zero bins.
+
+The HALO series upgraded to 8-bit samples with approximately 2{,}048 spokes per rotation and up to 1{,}024 range bins. The HALO also introduced VelocityTrack, Navico's Doppler implementation, which uses a separate data channel rather than embedding motion flags in the echo bytes.
+
+Compared to the Furuno DRS4D-NXT, the Navico radars use simpler encoding with fewer compression options. The BR24's 4-bit samples provide significantly less dynamic range than Furuno's 8-bit wire values, though the HALO's 8-bit samples are comparable. Neither Navico radar uses the adaptive multi-scheme compression that the Furuno employs.
+
+
+\subsection{Garmin (xHD, GMR)}
+\label{subsec:garmin}
+
+Garmin marine radars use a proprietary binary protocol over Ethernet. The xHD and GMR series typically produce 360 to 720 spokes per rotation, yielding angular resolution between $0.5\degree$ and $1.0\degree$. Range bins per spoke vary from 250 to 750 depending on the model and range setting.
+
+The Garmin encoding uses 8-bit samples with a proprietary compression scheme. Limited public documentation exists for the Garmin protocol, and the compression details have not been fully reverse-engineered by the community. No Doppler or dual-pulse capability has been identified in the Garmin product line.
+
+The lower spoke count of Garmin radars compared to Furuno's 8{,}192 ticks means significantly coarser angular resolution. The Furuno's $0.044\degree$ resolution is approximately 10 to 20 times finer than typical Garmin systems.
+
+
+\subsection{Raymarine (Quantum)}
+\label{subsec:raymarine}
+
+The Raymarine Quantum series is distinctive for using Wi-Fi (802.11) rather than Ethernet for the radar data link. This design simplifies installation by eliminating the need for a wired connection between the antenna unit and the display processor. The Quantum uses CHIRP (Compressed High-Intensity Radar Pulse) and FMCW (Frequency-Modulated Continuous Wave) transmission rather than traditional pulsed magnetron or simple solid-state designs.
+
+Echo data is transmitted using a lossy compression scheme similar to JPEG block encoding. This provides good compression ratios but introduces quantization artifacts not present in the lossless schemes used by Furuno and Navico. The Quantum produces approximately 250 to 500 spokes per rotation with 250 to 500 range bins, yielding angular resolution between $0.72\degree$ and $1.44\degree$.
+
+The Wi-Fi transport introduces latency and bandwidth constraints not present in wired Ethernet systems. The Quantum compensates with aggressive compression, but at the cost of some fidelity in the echo amplitude data.
+
+
+\subsection{Comparative Analysis}
+\label{subsec:comparative}
+
+The Furuno DRS4D-NXT distinguishes itself in several dimensions. Its 8{,}192-tick azimuth quantization provides the finest angular resolution among consumer marine radars, at $0.044\degree$ per tick. This is approximately 4 times finer than the Navico HALO and 10 to 20 times finer than Garmin or Raymarine systems. The four adaptive encoding schemes provide a uniquely flexible compression system that can optimize for different echo conditions within a single scan. No other consumer marine radar is known to use more than one or two encoding modes.
+
+The native Doppler integration at the byte level (bit 7 = D flag) is more tightly coupled than Navico's VelocityTrack, which uses a separate data channel. This integration means Doppler information is available at every range bin without additional bandwidth, though at the cost of halving the intensity dynamic range when Doppler is active.
+
+The dual-pulse interleaving is another distinctive feature. While other radar systems use a single pulse type per spoke, the Furuno alternates long and short pulses to provide both extended range detection and fine-grained intensity resolution within the same scan. This approach requires more sophisticated decoding and display logic but provides a richer data set for target analysis.
+
+The primary trade-off in the Furuno system is protocol complexity. The four encoding schemes, dual-pulse interleaving, and Doppler byte packing create a significantly more complex decode pipeline than the simpler protocols used by competitors. For third-party integration, this complexity presents a higher implementation barrier but rewards the effort with richer data.
+
+
+%==============================================================================
+\end{document}
+%==============================================================================
