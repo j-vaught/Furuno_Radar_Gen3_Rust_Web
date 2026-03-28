@@ -571,5 +571,78 @@ In Doppler mode with Encoding 3, only 5 bits of intensity information remain in 
 
 
 %==============================================================================
+\section{Dual-Pulse Interleaving}
+\label{sec:dualpulse}
+%==============================================================================
+
+The radar alternates between two transmitter pulse types on consecutive spokes: a long pulse and a short pulse. This interleaving is a hardware characteristic of the solid-state transmitter and cannot be controlled by the host software. The pulse type for each spoke is encoded in bits 2:0 of the status field: a value of 1 indicates a long pulse, and a value of 4 indicates a short pulse.
+
+\subsection{Long Pulse vs Short Pulse}
+
+The two pulse types produce dramatically different intensity quantization.
+
+Long-pulse spokes (status = 1) generate only 17 discrete intensity levels. The levels are not linearly spaced; the gaps between consecutive values grow with amplitude. The complete set of observed long-pulse values is:
+
+\begin{lstlisting}
+0, 8, 20, 28, 36, 44, 56, 64, 76, 88, 104, 120, 140, 164, 188, 220, 252
+\end{lstlisting}
+
+With 17 levels, the effective bit depth is approximately 4 bits ($\log_2 17 \approx 4.09$). The non-linear spacing provides finer resolution at low amplitudes, where distinguishing weak targets from noise is most important. The spacing between the lowest two non-zero levels is 12 (from 8 to 20), while the spacing between the highest two is 32 (from 220 to 252).
+
+Short-pulse spokes (status = 4) produce 130 to 240 unique intensity values, depending on the Rez Boost setting. This provides near-continuous coverage of the 0--252 wire range, yielding an effective bit depth approaching 8 bits. Short pulses transmit less energy and therefore have reduced detection range, but provide much finer amplitude resolution.
+
+\subsection{Range Dependence}
+
+The ratio of long-pulse to short-pulse spokes varies with the radar's range setting. At short ranges, the radar uses a roughly equal mix of both pulse types. As the range increases, long-pulse spokes dominate because the additional transmit energy is needed to detect targets at greater distances.
+
+\begin{table}[H]
+\centering
+\caption{Observed long/short pulse ratio by range setting.}
+\label{tab:pulseratio}
+\begin{tabular}{@{}llcc@{}}
+\toprule
+\textbf{Range Index} & \textbf{Distance} & \textbf{Long \%} & \textbf{Short \%} \\
+\midrule
+21    & 1/16 NM & 50\%   & 50\% \\
+0     & 1/8 NM  & 50\%   & 50\% \\
+3     & 3/4 NM  & 50\%   & 50\% \\
+6     & 2 NM    & 51\%   & 49\% \\
+9     & 6 NM    & 69\%   & 31\% \\
+12    & 16 NM   & 99.9\% & 0.1\% \\
+15    & 48 NM   & 99.9\% & 0.1\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+At ranges beyond 16 NM, the radar produces almost exclusively long-pulse spokes, meaning the effective intensity resolution drops to approximately 17 levels for the majority of spokes.
+
+\subsection{Rez Boost Effect}
+
+Rez Boost (bearing resolution enhancement, register \texttt{\$SEE}) provides four levels: off (0), low (1), medium (2), and high (3). Increasing the Rez Boost level shifts the pulse ratio toward more short-pulse spokes and increases the number of unique intensity levels in short-pulse data.
+
+\begin{table}[H]
+\centering
+\caption{Effect of Rez Boost on pulse ratio and short-pulse resolution.}
+\label{tab:rezboost}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Rez Boost} & \textbf{Long \%} & \textbf{Short \%} & \textbf{Short Pulse Levels} \\
+\midrule
+Off (0)    & 81\% & 19\% & $\sim$130 \\
+Low (1)    & 37\% & 63\% & $\sim$210 \\
+Medium (2) & 39\% & 61\% & $\sim$240 \\
+High (3)   & 36\% & 64\% & $\sim$240 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+With Rez Boost disabled, the radar produces predominantly long-pulse spokes (81\%), resulting in coarse 17-level quantization for most of the scan. Enabling Rez Boost at any level flips this ratio, producing roughly twice as many short-pulse spokes as long-pulse spokes. The difference between Low, Medium, and High settings is primarily in the number of unique intensity values: Low yields approximately 210 levels per short-pulse spoke, while Medium and High yield approximately 240.
+
+\subsection{Current Implementation}
+
+The current software implementation does not distinguish between long-pulse and short-pulse spokes. The status field (1 vs 4) is present in each spoke's data but is not extracted or stored in the \texttt{Spoke} structure. All spokes undergo the same decoding and display conversion regardless of pulse type. The 17-level quantization of long-pulse spokes and the fine quantization of short-pulse spokes are both mapped through the same $\gg 2$ display shift without any pulse-type-specific processing.
+
+
+%==============================================================================
 \end{document}
 %==============================================================================
