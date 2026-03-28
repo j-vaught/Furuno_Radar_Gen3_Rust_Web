@@ -1,0 +1,90 @@
+\documentclass[border=5pt]{standalone}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, decorations.pathreplacing, calc}
+\usepackage{xcolor}
+
+\definecolor{Garnet}{HTML}{73000A}
+\definecolor{NinetyBlack}{HTML}{363636}
+\definecolor{SeventyBlack}{HTML}{5C5C5C}
+\definecolor{FiftyBlack}{HTML}{A2A2A2}
+\definecolor{ThirtyBlack}{HTML}{C7C7C7}
+\definecolor{TenBlack}{HTML}{ECECEC}
+\definecolor{Atlantic}{HTML}{466A9F}
+\definecolor{Congaree}{HTML}{1F414D}
+\definecolor{Sandstorm}{HTML}{FFF2E3}
+\definecolor{Horseshoe}{HTML}{65780B}
+
+\tikzset{every node/.append style={rounded corners=0pt}}
+
+\begin{document}
+\begin{tikzpicture}[
+    block/.style={draw, thick, minimum height=1.3cm, anchor=west, align=center},
+]
+
+% ── Title ──
+\node[font=\bfseries\large, color=Garnet] at (8, 5.0) {UDP Echo Packet Structure};
+
+% ── Main packet bar ──
+
+% Header
+\node[block, fill=Garnet!15, minimum width=2.5cm, font=\footnotesize\bfseries, color=NinetyBlack] (hdr) at (0, 2.8) {Header\\[-2pt]{\scriptsize 16 bytes}};
+
+% Spoke 0: sub-header + echo data
+\node[block, fill=Atlantic!30, minimum width=0.9cm, font=\tiny\bfseries, color=NinetyBlack] (s0h) at (2.5, 2.8) {Az\\Hd};
+\node[block, fill=Atlantic!12, minimum width=2.3cm, font=\scriptsize\bfseries, color=Atlantic] (s0d) at (3.4, 2.8) {Echo Data};
+
+% Spoke 1: sub-header + echo data
+\node[block, fill=Congaree!25, minimum width=0.9cm, font=\tiny\bfseries, color=NinetyBlack] (s1h) at (5.7, 2.8) {Az\\Hd};
+\node[block, fill=Congaree!10, minimum width=1.8cm, font=\scriptsize\bfseries, color=Congaree] (s1d) at (6.6, 2.8) {Echo Data};
+
+% Dots
+\node[font=\Large\bfseries, color=FiftyBlack] at (9.1, 2.8) {$\cdots$};
+
+% Spoke N-1: sub-header + echo data
+\node[block, fill=Horseshoe!25, minimum width=0.9cm, font=\tiny\bfseries, color=NinetyBlack] (snh) at (9.8, 2.8) {Az\\Hd};
+\node[block, fill=Horseshoe!10, minimum width=2.2cm, font=\scriptsize\bfseries, color=Horseshoe] (snd) at (10.7, 2.8) {Echo Data};
+
+% Spoke labels above
+\draw[decorate, decoration={brace, amplitude=4pt}, thick, Atlantic]
+    (2.5, 3.55) -- (5.7, 3.55) node[midway, above=4pt, font=\scriptsize\bfseries, color=Atlantic] {Spoke 0};
+\draw[decorate, decoration={brace, amplitude=4pt}, thick, Congaree]
+    (5.7, 3.55) -- (8.4, 3.55) node[midway, above=4pt, font=\scriptsize\bfseries, color=Congaree] {Spoke 1};
+\draw[decorate, decoration={brace, amplitude=4pt}, thick, Horseshoe]
+    (9.8, 3.55) -- (12.9, 3.55) node[midway, above=4pt, font=\scriptsize\bfseries, color=Horseshoe] {Spoke $N{-}1$};
+
+% ── Size annotations below ──
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}, thick, SeventyBlack]
+    (2.5, 2.0) -- (3.4, 2.0) node[midway, below=3pt, font=\tiny\bfseries, color=SeventyBlack] {4 B};
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}, thick, SeventyBlack]
+    (3.4, 2.0) -- (5.7, 2.0) node[midway, below=3pt, font=\tiny\bfseries, color=SeventyBlack] {variable};
+
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}, thick, SeventyBlack]
+    (5.7, 2.0) -- (6.6, 2.0) node[midway, below=3pt, font=\tiny\bfseries, color=SeventyBlack] {4 B};
+\draw[decorate, decoration={brace, amplitude=3pt, mirror}, thick, SeventyBlack]
+    (6.6, 2.0) -- (8.4, 2.0) node[midway, below=3pt, font=\tiny\bfseries, color=SeventyBlack] {variable};
+
+% ── Decode arrow ──
+\draw[-{Stealth}, thick, Garnet] (6.5, 0.9) -- (6.5, 0.2);
+\node[font=\scriptsize\bfseries, color=Garnet, anchor=west] at (6.7, 0.55) {decode};
+
+% ── Decoded spoke (fixed length) ──
+\node[font=\scriptsize\bfseries, color=NinetyBlack, anchor=east] at (0.9, -0.5) {Decoded:};
+
+% Gradient bar of range bins
+\foreach \i in {0,...,12} {
+    \pgfmathsetmacro{\shade}{int(8 + \i * 4)}
+    \draw[thick, fill=Atlantic!\shade] (1.0 + \i*0.85, -0.9) rectangle (1.0 + \i*0.85 + 0.85, -0.1);
+}
+% Labels on top of bins
+\node[font=\tiny\bfseries, color=NinetyBlack] at (1.425, -0.5) {bin 0};
+\node[font=\tiny\bfseries, color=NinetyBlack] at (2.275, -0.5) {bin 1};
+\node[font=\tiny\bfseries, color=NinetyBlack] at (3.125, -0.5) {bin 2};
+\node[font=\tiny\bfseries, color=FiftyBlack] at (6.375, -0.5) {$\cdots$};
+\node[font=\tiny\bfseries, color=white] at (11.2, -0.5) {bin 867};
+
+\draw[decorate, decoration={brace, amplitude=4pt, mirror}, thick, Atlantic]
+    (1.0, -1.05) -- (12.05, -1.05) node[midway, below=4pt, font=\scriptsize\bfseries, color=Atlantic]
+    {Fixed length: \texttt{sweep\_len} bins (typically 868)};
+
+\end{tikzpicture}
+\end{document}
