@@ -1,0 +1,17 @@
+\documentclass[border=5pt]{standalone}
+\usepackage{tikz}
+\usepackage{xcolor}
+
+\tikzset{every node/.append style={rounded corners=0pt}}
+
+\begin{document}
+\begin{tikzpicture}[
+    block/.style={draw, thick, minimum height=1.4cm, anchor=west, align=center, fill=white, font=\scriptsize},
+]
+
+\node[block, minimum width=3.0cm] at (0, 0) {\textbf{Azimuth}\\[-2pt]2 bytes};
+\node[block, minimum width=3.0cm] at (3.0, 0) {\textbf{Heading}\\[-2pt]2 bytes};
+\node[block, minimum width=5.0cm] at (6.0, 0) {\textbf{Echo Data}\\[-2pt](variable)};
+
+\end{tikzpicture}
+\end{document}
