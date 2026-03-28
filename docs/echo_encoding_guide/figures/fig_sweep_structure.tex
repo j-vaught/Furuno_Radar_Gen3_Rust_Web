@@ -19,27 +19,27 @@
 \node[block, fill=Garnet!8, minimum width=2.4cm, font=\footnotesize\bfseries] (hdr) at (0, 0) {Header\\[-2pt]{\scriptsize 16 bytes}};
 
 % Spoke 0
-\node[block, minimum width=0.8cm, font=\tiny\bfseries] (s0h) at (2.4, 0) {A/H\\[-2pt]{\tiny 4B}};
-\node[block, minimum width=2.6cm] (s0d) at (3.2, 0) {Echo Data\\[-2pt]{\scriptsize (variable)}};
+\node[block, minimum width=1.2cm, font=\scriptsize\bfseries] (s0h) at (2.4, 0) {Angle\\[-2pt]{\tiny 4B}};
+\node[block, minimum width=2.8cm] (s0d) at (3.6, 0) {Echo Data\\[-2pt]{\scriptsize (variable)}};
 
 % Spoke 1
-\node[block, minimum width=0.8cm, font=\tiny\bfseries] (s1h) at (5.8, 0) {A/H\\[-2pt]{\tiny 4B}};
-\node[block, minimum width=1.8cm] (s1d) at (6.6, 0) {Echo Data\\[-2pt]{\scriptsize (variable)}};
+\node[block, minimum width=1.2cm, font=\scriptsize\bfseries] (s1h) at (6.4, 0) {Angle\\[-2pt]{\tiny 4B}};
+\node[block, minimum width=2.8cm] (s1d) at (7.6, 0) {Echo Data\\[-2pt]{\scriptsize (variable)}};
 
 % Dots
-\node[font=\large\bfseries, color=FiftyBlack] at (9.1, 0) {$\cdots$};
+\node[font=\large\bfseries, color=FiftyBlack] at (11.1, 0) {$\cdots$};
 
 % Spoke N-1
-\node[block, minimum width=0.8cm, font=\tiny\bfseries] (snh) at (9.8, 0) {A/H\\[-2pt]{\tiny 4B}};
-\node[block, minimum width=2.8cm] (snd) at (10.6, 0) {Echo Data\\[-2pt]{\scriptsize (variable)}};
+\node[block, minimum width=1.2cm, font=\scriptsize\bfseries] (snh) at (11.8, 0) {Angle\\[-2pt]{\tiny 4B}};
+\node[block, minimum width=2.8cm] (snd) at (13.0, 0) {Echo Data\\[-2pt]{\scriptsize (variable)}};
 
 % Spoke braces below
 \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
-    (2.4, -0.85) -- (5.8, -0.85) node[midway, below=5pt, font=\scriptsize\bfseries] {Spoke 0};
+    (2.4, -0.85) -- (6.4, -0.85) node[midway, below=5pt, font=\scriptsize\bfseries] {Spoke 0};
 \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
-    (5.8, -0.85) -- (8.4, -0.85) node[midway, below=5pt, font=\scriptsize\bfseries] {Spoke 1};
+    (6.4, -0.85) -- (10.4, -0.85) node[midway, below=5pt, font=\scriptsize\bfseries] {Spoke 1};
 \draw[decorate, decoration={brace, amplitude=5pt, mirror}, thick]
-    (9.8, -0.85) -- (13.4, -0.85) node[midway, below=5pt, font=\scriptsize\bfseries] {Spoke $N{-}1$};
+    (11.8, -0.85) -- (15.8, -0.85) node[midway, below=5pt, font=\scriptsize\bfseries] {Spoke $N{-}1$};
 
 \end{tikzpicture}
 \end{document}
