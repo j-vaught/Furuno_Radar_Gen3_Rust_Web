@@ -644,5 +644,75 @@ The current software implementation does not distinguish between long-pulse and 
 
 
 %==============================================================================
+\section{Comparison to Other Marine Radars}
+\label{sec:comparison}
+%==============================================================================
+
+The Furuno DRS4D-NXT echo protocol can be understood in context by comparing it to other consumer marine radar systems. The following data is drawn from community reverse-engineering efforts, primarily the OpenCPN \texttt{radar\_pi} plugin and the \texttt{mayara-server} project. Competitor specifications should be treated as approximate.
+
+\subsection{Echo Transport and Spoke Format}
+
+All systems surveyed use UDP over Ethernet for echo data, with the exception of the Raymarine Quantum which can also operate over Wi-Fi. The Furuno is unique in using TCP with ASCII-formatted commands for radar control, while all other brands use binary UDP commands.
+
+\begin{table}[H]
+\centering
+\caption{Echo transport and spoke format comparison.}
+\label{tab:compare-transport}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Property} & \textbf{Furuno NXT} & \textbf{Navico HALO} & \textbf{Garmin xHD} & \textbf{Raymarine HD} \\
+\midrule
+Transport        & UDP multicast   & UDP multicast   & UDP multicast  & UDP multicast \\
+Spokes/rotation  & 8{,}192         & 2{,}048         & 1{,}440        & 2{,}048 \\
+Range bins/spoke & 883             & 1{,}024         & 705            & 1{,}024 \\
+Spokes/packet    & $\sim$8         & 32              & 1              & variable \\
+Angular res.     & 0.044\textdegree & 0.176\textdegree & 0.25\textdegree & 0.176\textdegree \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Furuno's 8{,}192-spoke resolution is four times finer than Navico and Raymarine, and nearly six times finer than Garmin xHD. This is the highest angular resolution among consumer marine radars.
+
+\subsection{Bit Depth and Encoding}
+
+The approaches to echo amplitude encoding vary significantly across manufacturers.
+
+\begin{table}[H]
+\centering
+\caption{Bit depth and compression comparison.}
+\label{tab:compare-encoding}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Property} & \textbf{Furuno NXT} & \textbf{Navico HALO} & \textbf{Garmin xHD} & \textbf{Raymarine HD} \\
+\midrule
+Bit depth          & 6 effective    & 4              & 8              & 8 \\
+Intensity levels   & 64             & 16             & 256            & 256 \\
+Compression        & 4 adaptive     & none           & none           & RLE \\
+Encoding modes     & raw, RLE,      & raw nibbles    & raw bytes      & escape-byte \\
+                   & delta, combined &                &                & RLE \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Navico packs two 4-bit samples per byte with no compression, yielding only 16 intensity levels but very simple decoding. Garmin xHD uses full 8-bit samples with no compression. Raymarine uses a straightforward RLE scheme with a dedicated escape byte (\texttt{0x5C}): when the decoder encounters this byte, the next byte is a repeat count and the byte after that is the value to repeat. This approach does not sacrifice any intensity bits but requires a full 3-byte sequence for each run, making it less space-efficient than Furuno's flag-bit approach.
+
+The Furuno system is unique in offering four encoding modes selected adaptively per packet. The temporal delta encoding (Encoding 2) and combined mode (Encoding 3) have no equivalent in any other surveyed radar protocol. These modes exploit the similarity between consecutive spokes, a compression strategy that other manufacturers do not implement at the protocol level.
+
+\subsection{Doppler}
+
+Doppler target detection is available on only two of the surveyed platforms.
+
+The Navico HALO implements Doppler through its VelocityTrack feature. When active, the 4-bit nibble values \texttt{0xF} and \texttt{0xE} take on special meaning: \texttt{0xF} indicates an approaching target and \texttt{0xE} indicates a receding target. No velocity magnitude is transmitted; the radar applies a configurable speed threshold internally and reports only a binary approaching/receding classification per range bin.
+
+The Furuno DRS4D-NXT uses bit 7 of each echo byte as a D flag (0 = stationary, 1 = moving) when Doppler mode is active. Like Navico, this is a binary indicator rather than a velocity measurement. The key difference is that the Furuno D flag is embedded in the same byte as the intensity data, reducing intensity resolution from 8 to 7 bits, whereas Navico reserves specific nibble values from the existing 4-bit space.
+
+Garmin and Raymarine HD do not support Doppler in their echo protocols. The Raymarine Quantum 2 has Doppler hardware, but the protocol encoding has not been documented.
+
+\subsection{Summary}
+
+The Furuno DRS4D-NXT protocol trades encoding complexity for flexibility. Its four adaptive compression modes, temporal spoke referencing, and integrated Doppler flag represent the most sophisticated echo encoding among consumer marine radars. The trade-off is a more complex decoder and a lower effective bit depth (6 bits, or 64 intensity levels) compared to the 8-bit raw data used by Garmin and Raymarine. However, the Furuno's angular resolution is unmatched, and its compression allows efficient bandwidth use despite streaming four times as many spokes per rotation as competing systems.
+
+
+%==============================================================================
 \end{document}
 %==============================================================================
