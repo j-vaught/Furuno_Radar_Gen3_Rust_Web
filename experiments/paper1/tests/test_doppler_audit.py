@@ -75,6 +75,19 @@ class DopplerAuditTests(unittest.TestCase):
         self.assertEqual(result["last_match_replay_index"], 5)
         self.assertTrue(result["match_indices_contiguous"])
 
+    def test_csv_alignment_does_not_call_partial_fragment_contiguous(self) -> None:
+        spokes = [
+            SpokeRecord(0, index, 0, 0, 3, 1, [value], True, index, index)
+            for index, value in enumerate([0, 4, 8])
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rotation.csv"
+            path.write_text("Angle\tEchoValues\n0\t0\n0\t99\n", encoding="utf-8")
+            result = compare_csv([path], spokes)[0]
+        self.assertEqual(result["matched_row_count"], 1)
+        self.assertEqual(result["unmatched_row_count"], 1)
+        self.assertFalse(result["match_indices_contiguous"])
+
     def test_encoding_zero_preserves_raw_values_and_shift_is_separate(self) -> None:
         decoded = _decode_sweep(bytes([0, 1, 2, 252]), 0, 4, [])
         self.assertEqual(decoded.values, [0, 1, 2, 252])

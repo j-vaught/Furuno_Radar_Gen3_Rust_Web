@@ -59,6 +59,7 @@ class SpokeRecord:
 @dataclass
 class ReplayState:
     packet_count: int = 0
+    payload_bytes: int = 0
     malformed_packet_count: int = 0
     unsupported_encoding_count: int = 0
     truncated_packet_count: int = 0
@@ -256,6 +257,7 @@ def replay_raw(path: Path) -> tuple[ReplayState, list[dict[str, Any]]]:
                 continue
 
             state.packet_count += 1
+            state.payload_bytes += len(payload)
             state.timestamps.append(receive_ns)
             metadata = _packet_metadata(payload)
             if metadata is None:
@@ -455,7 +457,11 @@ def compare_csv(csv_paths: Iterable[Path], spokes: list[SpokeRecord]) -> list[di
                     previous_match = candidate
         found = [match for match in matches if match >= 0]
         monotonic = all(a <= b for a, b in zip(found, found[1:], strict=False))
-        contiguous = bool(found) and all(b == a + 1 for a, b in zip(found, found[1:], strict=False))
+        contiguous = (
+            bool(rows)
+            and len(found) == len(rows)
+            and all(b == a + 1 for a, b in zip(found, found[1:], strict=False))
+        )
         results.append(
             {
                 "csv_path": str(path),
@@ -478,7 +484,7 @@ def compare_csv(csv_paths: Iterable[Path], spokes: list[SpokeRecord]) -> list[di
 
 
 def capture_design() -> list[dict[str, Any]]:
-    """Return the controlled 30-second matrix without issuing hardware commands."""
+    """Return the proposed future 30-second matrix without hardware commands."""
 
     common = {
         "duration_s": 30,
@@ -589,6 +595,7 @@ def build_summary(
         "raw_path": str(raw_path),
         "raw_sha256": sha256_file(raw_path),
         "packet_count": state.packet_count,
+        "payload_bytes": state.payload_bytes,
         "malformed_packet_count": state.malformed_packet_count,
         "unsupported_encoding_count": state.unsupported_encoding_count,
         "truncated_packet_count": state.truncated_packet_count,
@@ -720,7 +727,7 @@ def build_summary(
                 "Doppler evidence"
             ),
         },
-        "capture_design": capture_design(),
+        "proposed_future_capture_design": capture_design(),
         "provenance": {
             "decoder_basis": [
                 "furuno-server/src/protocol.rs parse_echo_metadata",
@@ -863,7 +870,11 @@ def write_outputs(raw_path: Path, out_dir: Path, csv_paths: list[Path]) -> dict[
     write_csv(
         out_dir / "csv_alignment.csv", alignment, list(alignment[0]) if alignment else ["csv_path"]
     )
-    write_csv(out_dir / "capture_design.csv", capture_design(), list(capture_design()[0]))
+    write_csv(
+        out_dir / "proposed_future_capture_design.csv",
+        capture_design(),
+        list(capture_design()[0]),
+    )
     return summary
 
 

@@ -30,6 +30,7 @@ _doppler_audit = importlib.import_module(
 ReplayState = _doppler_audit.ReplayState
 replay_checksum = _doppler_audit.replay_checksum
 replay_raw = _doppler_audit.replay_raw
+compare_csv = _doppler_audit.compare_csv
 
 SCHEMA_VERSION = "paper1-doppler-campaign-audit-2"
 REQUIRED_EF_MODES = (0, 1, 2)
@@ -113,6 +114,33 @@ def locate_session(path: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     return session_dir, manifest_path, raw_path, load_object(manifest_path)
 
 
+def manifest_csv_paths(session_dir: Path, manifest: dict[str, Any]) -> list[Path]:
+    """Resolve declared Mac recording CSVs onto the mirrored analysis host."""
+
+    live_dir = session_dir.parents[1]
+    paths: list[Path] = []
+    phases = manifest.get("phases", [])
+    if not isinstance(phases, list):
+        return paths
+    for phase in phases:
+        if not isinstance(phase, dict):
+            continue
+        record_dir = phase.get("record_dir")
+        if not isinstance(record_dir, str):
+            continue
+        recording_name = Path(record_dir).name
+        output = phase.get("recording_output", {})
+        declared = output.get("csv_files", []) if isinstance(output, dict) else []
+        for item in declared:
+            source = item.get("path") if isinstance(item, dict) else item
+            if not isinstance(source, str):
+                continue
+            candidate = live_dir / "macos-recordings" / recording_name / "csv" / Path(source).name
+            if candidate not in paths:
+                paths.append(candidate)
+    return paths
+
+
 def settings_digest(settings: dict[str, Any]) -> str:
     fixed = {
         key: value
@@ -171,6 +199,14 @@ def phase_metrics(
     header_flags = Counter(int(row["flags_u16_be"]) for row in packets if "flags_u16_be" in row)
     header_configs = Counter(int(row["config_u16_be"]) for row in packets if "config_u16_be" in row)
     checksum = replay_checksum(spokes)
+    raw_receive_times = [int(row["receive_unix_ns"]) for row in packets]
+    raw_first_receive = min(raw_receive_times) if raw_receive_times else None
+    raw_last_receive = max(raw_receive_times) if raw_receive_times else None
+    raw_receive_span = (
+        (raw_last_receive - raw_first_receive) / 1e9
+        if raw_first_receive is not None and raw_last_receive is not None
+        else None
+    )
     requested_duration = phase.get("record_s", 0)
     try:
         requested_duration = float(requested_duration)
@@ -210,6 +246,12 @@ def phase_metrics(
         "window_end_unix_ns": end,
         "window_duration_s": measured_duration,
         "requested_record_s": requested_duration,
+        "raw_first_receive_unix_ns": raw_first_receive,
+        "raw_last_receive_unix_ns": raw_last_receive,
+        "raw_receive_span_s": raw_receive_span,
+        "raw_receive_coverage_adequate": bool(
+            raw_receive_span is not None and raw_receive_span >= REQUIRED_DURATION_S
+        ),
         "duration_adequate": bool(
             requested_duration >= REQUIRED_DURATION_S
             and measured_duration is not None
@@ -314,6 +356,121 @@ def compare_modes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return comparisons
 
 
+def session_quality(
+    state: ReplayState,
+    spokes: list[Any],
+    session_dir: Path,
+    manifest: dict[str, Any],
+    phase_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Audit closed-session CSV completeness, windows, readbacks, and writer counters."""
+
+    declared = manifest_csv_paths(session_dir, manifest)
+    missing_paths = [str(path) for path in declared if not path.exists()]
+    existing = [path for path in declared if path.exists()]
+    alignment = compare_csv(existing, spokes)
+    row_count = sum(int(row["row_count"]) for row in alignment)
+    matched_row_count = sum(int(row["matched_row_count"]) for row in alignment)
+    unmatched_row_count = sum(int(row["unmatched_row_count"]) for row in alignment)
+    contiguous_count = sum(row["match_indices_contiguous"] is True for row in alignment)
+    all_rows_match = (
+        not missing_paths and len(alignment) == len(declared) and unmatched_row_count == 0
+    )
+    all_files_contiguous = all_rows_match and contiguous_count == len(declared) and bool(declared)
+    raw_windows_adequate = all(row["raw_receive_coverage_adequate"] for row in phase_rows) and bool(
+        phase_rows
+    )
+    readback_verified = all(row["settings_readback_verified"] for row in phase_rows) and bool(
+        phase_rows
+    )
+    receiver = manifest.get("raw_receiver", {})
+    receiver = receiver if isinstance(receiver, dict) else {}
+    counter_fields = {
+        key: receiver.get(key)
+        for key in (
+            "packets",
+            "received_packets",
+            "written_packets",
+            "bytes",
+            "received_bytes",
+            "written_bytes",
+            "pending",
+            "queue_overflow",
+            "write_errors",
+            "peer_mismatch",
+        )
+        if key in receiver
+    }
+    extended_counters = any(
+        key in receiver
+        for key in (
+            "received_packets",
+            "written_packets",
+            "received_bytes",
+            "written_bytes",
+            "pending",
+            "queue_overflow",
+            "write_errors",
+        )
+    )
+    if extended_counters:
+        counter_consistent: bool | None = bool(
+            receiver.get("received_packets") == receiver.get("written_packets")
+            and receiver.get("received_bytes") == receiver.get("written_bytes")
+            and receiver.get("pending") == 0
+            and receiver.get("queue_overflow") == 0
+            and receiver.get("write_errors") == 0
+            and receiver.get("peer_mismatch") == 0
+            and receiver.get("received_packets") == state.packet_count
+        )
+    elif receiver and "packets" in receiver and "bytes" in receiver:
+        counter_consistent = bool(
+            receiver.get("packets") == state.packet_count
+            and receiver.get("bytes") == state.payload_bytes
+            and receiver.get("peer_mismatch", 0) == 0
+        )
+    else:
+        counter_consistent = None
+    if counter_consistent is True:
+        counter_status = "consistent"
+    elif counter_consistent is False:
+        counter_status = "inconsistent"
+    else:
+        counter_status = "unavailable"
+    failures: list[str] = []
+    if missing_paths:
+        failures.append("missing_declared_csv")
+    if not all_rows_match:
+        failures.append("csv_rows_unmatched")
+    if not all_files_contiguous:
+        failures.append("csv_files_not_fully_contiguous")
+    if not raw_windows_adequate:
+        failures.append("raw_window_under_30s")
+    if not readback_verified:
+        failures.append("settings_readback_unverified")
+    if counter_consistent is False:
+        failures.append("writer_counters_inconsistent")
+    return {
+        "declared_csv_file_count": len(declared),
+        "available_csv_file_count": len(existing),
+        "missing_declared_csv_paths": missing_paths,
+        "csv_row_count": row_count,
+        "csv_matched_row_count": matched_row_count,
+        "csv_unmatched_row_count": unmatched_row_count,
+        "csv_fully_contiguous_file_count": contiguous_count,
+        "all_csv_rows_match": all_rows_match,
+        "all_csv_files_fully_matched_contiguous": all_files_contiguous,
+        "raw_windows_all_at_least_30s": raw_windows_adequate,
+        "settings_readback_all_verified": readback_verified,
+        "writer_counters": counter_fields,
+        "writer_counters_consistent": counter_consistent,
+        "writer_counters_status": counter_status,
+        "quality_status": "pass" if not failures else "fail",
+        "quality_failures": failures,
+        "csv_alignment": alignment,
+    }
+
+
 def analyze_session(session_path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     session_dir, manifest_path, raw_path, manifest = locate_session(session_path)
     state, packet_rows = replay_raw(raw_path)
@@ -334,6 +491,7 @@ def analyze_session(session_path: Path) -> tuple[list[dict[str, Any]], dict[str,
         for phase in phases
         if isinstance(phase, dict)
     ]
+    quality = session_quality(state, state.spokes, session_dir, manifest, rows)
     return rows, {
         "session_id": manifest.get("session_id", session_dir.name),
         "manifest_path": str(manifest_path),
@@ -343,6 +501,7 @@ def analyze_session(session_path: Path) -> tuple[list[dict[str, Any]], dict[str,
         "full_stream_decoded_spokes": state.decoded_spoke_count,
         "full_stream_missing_declared_sweeps": state.declared_sweep_count
         - state.decoded_spoke_count,
+        "quality": quality,
     }
 
 
@@ -358,6 +517,7 @@ def csv_write(path: Path, rows: Iterable[dict[str, Any]]) -> None:
 def write_campaign(paths: list[Path], out_dir: Path) -> dict[str, Any]:
     phase_rows: list[dict[str, Any]] = []
     sessions: list[dict[str, Any]] = []
+    quality_records: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     for path in paths:
         try:
@@ -366,6 +526,18 @@ def write_campaign(paths: list[Path], out_dir: Path) -> dict[str, Any]:
             errors.append({"path": str(path), "error": str(exc)})
             continue
         phase_rows.extend(rows)
+        quality = session_summary.get("quality", {})
+        if isinstance(quality, dict):
+            quality_records.append(
+                {
+                    "session_id": session_summary["session_id"],
+                    "raw_sha256": session_summary["raw_sha256"],
+                    "quality": quality,
+                }
+            )
+            session_summary["quality"] = {
+                key: value for key, value in quality.items() if key != "csv_alignment"
+            }
         sessions.append(session_summary)
     comparisons = compare_modes(phase_rows)
     observed_modes = sorted(
@@ -379,6 +551,13 @@ def write_campaign(paths: list[Path], out_dir: Path) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "sessions": sessions,
         "errors": errors,
+        "quality_status": "pass"
+        if quality_records
+        and all(record["quality"]["quality_status"] == "pass" for record in quality_records)
+        else "fail",
+        "quality_failure_count": sum(
+            bool(record["quality"].get("quality_failures")) for record in quality_records
+        ),
         "phase_count": len(phase_rows),
         "observed_doppler_modes": observed_modes,
         "required_doppler_modes": list(REQUIRED_MODES),
@@ -420,6 +599,59 @@ def write_campaign(paths: list[Path], out_dir: Path) -> dict[str, Any]:
     (out_dir / "doppler_campaign_summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
+    quality_statuses = [
+        record["quality"]["quality_status"]
+        for record in quality_records
+        if isinstance(record.get("quality"), dict)
+    ]
+    quality_document = {
+        "schema_version": "paper1-doppler-quality-diagnostic-1",
+        "quality_status": "pass"
+        if quality_statuses and all(status == "pass" for status in quality_statuses)
+        else "fail",
+        "sessions": quality_records,
+        "conclusions": [
+            (
+                f"{record['session_id']}: {record['quality']['csv_matched_row_count']} of "
+                f"{record['quality']['csv_row_count']} CSV rows matched, "
+                f"{record['quality']['csv_fully_contiguous_file_count']} of "
+                f"{record['quality']['declared_csv_file_count']} files fully contiguous, "
+                "raw_windows_all_at_least_30s="
+                f"{record['quality']['raw_windows_all_at_least_30s']}, "
+                "settings_readback_all_verified="
+                f"{record['quality']['settings_readback_all_verified']}, "
+                f"writer_counters_consistent={record['quality']['writer_counters_consistent']}."
+            )
+            for record in quality_records
+        ],
+        "provenance": {
+            "csv_policy": (
+                "every declared CSV row must match the replay in order and every file "
+                "must be fully contiguous"
+            ),
+            "raw_window_policy": (
+                "every manifest recording window must contain at least 30 seconds "
+                "between first and last received packet"
+            ),
+            "counter_policy": (
+                "extended writer counters must agree with zero pending, overflow, "
+                "write errors, and peer mismatches; legacy manifests require "
+                "packet-count agreement and zero peer mismatches"
+            ),
+            "no_hardware_actions": True,
+        },
+    }
+    (out_dir / "doppler_quality_diagnostic.json").write_text(
+        json.dumps(quality_document, indent=2) + "\n", encoding="utf-8"
+    )
+    csv_write(
+        out_dir / "doppler_quality_csv_alignment.csv",
+        [
+            alignment_row | {"session_id": record["session_id"], "raw_sha256": record["raw_sha256"]}
+            for record in quality_records
+            for alignment_row in record["quality"].get("csv_alignment", [])
+        ],
+    )
     csv_write(out_dir / "doppler_phase_metrics.csv", phase_rows)
     csv_write(out_dir / "doppler_mode_comparisons.csv", comparisons)
     return summary
@@ -437,7 +669,9 @@ def main() -> int:
             sorted(
                 path
                 for path in args.root.iterdir()
-                if path.is_dir() and (path / "session_manifest.json").exists()
+                if path.is_dir()
+                and (path / "session_manifest.json").exists()
+                and load_object(path / "session_manifest.json").get("status") == "complete"
             )
         )
     if not paths:
