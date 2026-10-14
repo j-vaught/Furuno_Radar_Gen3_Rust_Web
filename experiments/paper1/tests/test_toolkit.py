@@ -14,16 +14,69 @@ from scripts.capture_runner import (
     apply_phase,
     characterize_controls,
     expand_control_matrix,
+    expand_phase_repeats,
     filter_by_characterization_report,
+    inspect_recording_output,
     merge_characterization_reports,
     parse_settings_response,
     readback,
     require_confirmed_readback,
+    require_transmitting_readback,
     restore_verified_baseline,
 )
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_recording_output_requires_verified_furuno_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            record_dir = Path(tmp) / "recording"
+            (record_dir / "csv").mkdir(parents=True)
+            (record_dir / "settings.json").write_text(
+                json.dumps({"schema_version": "furuno-web-2"}), encoding="utf-8"
+            )
+            csv_header = (
+                "# schema_version,furuno-web-2\n"
+                "# settings_verified,true\n"
+                "# recording_started_at,unix_ms:1\n"
+                "# recording_stopped_at,unix_ms:2\n"
+                "angle_deg,echoes\n"
+                "0,0\n"
+            )
+            for index in range(2):
+                (record_dir / "csv" / f"rotation_{index}.csv").write_text(
+                    csv_header, encoding="utf-8"
+                )
+            result = inspect_recording_output(record_dir, 2)
+            self.assertEqual(result["csv_count"], 2)
+            self.assertTrue(all(item["settings_verified"] for item in result["csv_files"]))
+
+    def test_transmitting_readback_rejects_standby_state(self) -> None:
+        standby = {
+            "confirmed": True,
+            "fresh": True,
+            "settings": {"tx_state": 1},
+            "settings_readback": {"fields": {"tx_state": {"verified": True, "value": 1}}},
+        }
+        with self.assertRaises(RuntimeError):
+            require_transmitting_readback(standby, "test TX gate")
+
+    def test_phase_repeats_expand_with_unique_provenance_ids(self) -> None:
+        expanded = expand_phase_repeats(
+            {
+                "phases": [
+                    {"id": "reference", "settings": {}, "repeat": 2},
+                    {"id": "reference", "settings": {}},
+                ]
+            }
+        )
+        self.assertEqual(
+            [phase["id"] for phase in expanded["phases"]],
+            ["reference__r01", "reference__r02", "reference__p003"],
+        )
+        self.assertEqual(expanded["phases"][1]["repeat_index"], 1)
+        self.assertEqual(expanded["phases"][2]["source_phase_id"], "reference")
+        self.assertEqual([phase["phase_index"] for phase in expanded["phases"]], [0, 1, 2])
+
     def test_analyzer_encoding_three_copy_updates_repeat_strength(self) -> None:
         values, consumed = decode_sweep_count(bytes([18, 13]), 3, 7, [4, 8, 12, 16])
         self.assertEqual(values, [4, 8, 12, 16, 16, 16, 16])

@@ -5,10 +5,33 @@ figure_root=$(cd "$(dirname "$0")" && pwd)
 output_dir=${FIGURE_OUTPUT_DIR:-"$figure_root/output"}
 figure_data=${1:-}
 bit_audit=${2:-}
+campaign_manifest=${3:-}
+campaign_metrics=${4:-}
+characterization=${5:-}
 
 cd "$figure_root"
-if [[ -n "$figure_data" || -n "$bit_audit" ]]; then
-  adapter_args=(--figure-data "${figure_data:-/dev/null}" --out data)
+if [[ -n "$campaign_manifest" || -n "$campaign_metrics" || -n "$characterization" ]]; then
+  campaign_args=(--out data)
+  if [[ -n "$campaign_manifest" ]]; then
+    campaign_args+=(--manifest "$campaign_manifest")
+  fi
+  if [[ -n "$campaign_metrics" ]]; then
+    campaign_args+=(--rotation-metrics "$campaign_metrics")
+  fi
+  if [[ -n "$characterization" ]]; then
+    campaign_args+=(--recover-characterization "$characterization")
+  fi
+  python3 tools/aggregate_campaign.py "${campaign_args[@]}"
+fi
+
+if [[ -n "$figure_data" || -n "$bit_audit" || -n "$campaign_manifest" || -n "$campaign_metrics" || -n "$characterization" ]]; then
+  adapter_args=(--figure-data "${figure_data:-data}" --out data)
+  if [[ -n "$campaign_manifest" || -n "$campaign_metrics" || -n "$characterization" ]]; then
+    adapter_args+=(--campaign-data data)
+  fi
+  if [[ -n "$characterization" ]]; then
+    adapter_args+=(--characterization "$characterization")
+  fi
   if [[ -n "$bit_audit" ]]; then
     adapter_args+=(--bit-audit "$bit_audit")
   fi

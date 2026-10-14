@@ -22,9 +22,9 @@
       ..plots,
       width: 3.12in,
       height: 1.78in,
-      xlabel: [Rotation index],
+      xlabel: [Condition index],
       ylabel: label,
-      legend: if d.conditions.len() > 1 { (position: bottom, dy: 75%, radius: 0pt) } else { none },
+      legend: if d.conditions.len() > 1 { (position: top + right, radius: 0pt) } else { none },
       xaxis: (subticks: none),
       yaxis: (subticks: none),
     )
@@ -33,8 +33,7 @@
     columns: 2,
     column-gutter: 0.24in,
     panel("zero_fraction", [Decoded zero fraction]),
-    panel("mean_code", [Decoded mean code]),
-    panel("max_code_fraction", [Maximum-code fraction]),
-    panel("unique_angle_count", [Unique angle count]),
+    panel("exported_code_support", [Exported-code support]),
+    panel("angular_support", [Angular support]),
   ))
 }

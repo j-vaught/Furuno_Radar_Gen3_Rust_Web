@@ -19,7 +19,7 @@ The adapter in `tools/adapt_toolkit.py` consumes the analyzer's
 `figure_data/session_summary.csv`, `figure_data/setting_transition.csv`, and
 `figure_data/geometry_residuals.csv` files. When present, an optional
 `figure_data/settings_coverage.csv` supplies explicit `accepted`, `rejected`,
-`clamped`, `deferred`, and `restored` outcomes. The adapter writes the JSON files imported
+`clamped`, `deferred`, `restored`, or `superseded` outcomes. The adapter writes the JSON files imported
 by the Typst sources. The future analyzer sources use a top-level `status`
 field. `preview` is the only permitted state for an empty input and causes the
 Typst source to render an explicit preview panel. A production result sets
@@ -31,15 +31,34 @@ The repeatability adapter emits `runs` and `metric` from rotation index and
 `latency_ms` is computed from the ISO-8601 ACK and readback timestamps and
 remains empty when either timestamp is absent.
 The settings coverage adapter emits the same event index and match indicator,
-plus setting, requested, and observed labels for audit. The surveyed residual
+plus setting, requested, and observed labels for audit. It maps only documented
+schema outcomes. Missing or unknown outcomes increment `unclassified_count`
+and are excluded from category counts. `superseded` is a separate category for
+a source record replaced by a corrected run and is never mapped to `deferred`.
+The surveyed residual
 adapter emits `range_m`, `range_error_m`, `bearing_deg`, and
 `bearing_error_deg` only for complete rows.
 
 The setting-response adapter consumes `figure_data/setting_response.csv` or
 `setting_effects.csv` and groups rows by `control_family` and `condition`. It
-requires rotation index plus decoded zero fraction, decoded mean code,
-maximum-code fraction, and unique angular support. The bit-plane adapter
+accepts campaign phase rows with `phase_index`, `phase_id`, `control_family`,
+`role`, `reference_phase_id`, `reference_relation`, `settings_hash`,
+`reference_settings_hash`, `settings_delta_keys`, `rotation_count`,
+`decoded_zero_fraction`, `exported_code_support`, and `angular_support`.
+The campaign aggregator computes these means from completed rotation metrics
+and preserves the phase and settings provenance. It groups the figure output by
+control family so the plot does not create one legend entry per setting value.
+The adapter also consumes `control_characterization.csv` for settings coverage;
+outcomes are mapped to accepted, rejected, clamped, deferred, and restored
+without treating an unverified command as an accepted response. The bit-plane adapter
 consumes the Doppler audit JSON and retains the pre-shift histogram, upper-six
 histogram, decoded low-two occupancy, and exact CSV replay match fractions.
 Those fields are representation and alignment evidence. They do not establish
 velocity or Doppler observability.
+
+The campaign command is `tools/aggregate_campaign.py --manifest
+<session_manifest.json> --rotation-metrics <rotation_metrics.csv> --out
+<figure_data>`. It writes `setting_response.csv`. For a recovered standby
+characterization, pass `--recover-characterization
+<characterization_recovered.json>` to write `control_characterization.csv`;
+this path contains readback outcomes only and does not create response metrics.

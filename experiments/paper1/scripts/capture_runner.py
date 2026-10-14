@@ -402,6 +402,90 @@ def require_confirmed_readback(readback_result: dict[str, Any], context: str) ->
     raise RuntimeError(f"{context}: settings readback is {reason}; missing={missing}")
 
 
+def require_transmitting_readback(result: dict[str, Any], context: str) -> None:
+    """Require a fresh settings readback that indicates active transmission."""
+    require_confirmed_readback(result, context)
+    tx_state = _verified_settings(result).get("tx_state")
+    if tx_state not in {2, 3}:
+        raise RuntimeError(f"{context}: expected TX state 2 or 3, got {tx_state!r}")
+
+
+def require_success(status: int, body: str, context: str) -> None:
+    """Reject HTTP or textual command failures before accepting acquisition."""
+    lowered = body.lower()
+    if (
+        status < 200
+        or status >= 300
+        or any(
+            token in lowered
+            for token in ("failed", "failure", "error", "rejected", "denied", "not recording")
+        )
+    ):
+        raise RuntimeError(f"{context} failed: HTTP {status}; response={body!r}")
+
+
+def inspect_recording_output(record_dir: Path, expected_rotations: int) -> dict[str, Any]:
+    """Check recording count and lightweight furuno-web-2 CSV metadata."""
+    if not record_dir.is_dir():
+        raise RuntimeError(f"recording directory does not exist: {record_dir}")
+    settings_path = record_dir / "settings.json"
+    if not settings_path.is_file() or settings_path.stat().st_size == 0:
+        raise RuntimeError(f"recording settings metadata is missing or empty: {settings_path}")
+    try:
+        settings_snapshot = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"recording settings metadata is unreadable: {settings_path}") from exc
+    csv_files = sorted(record_dir.glob("csv/*.csv"))
+    if len(csv_files) < expected_rotations:
+        raise RuntimeError(
+            f"recording produced {len(csv_files)} CSV rotations; "
+            f"expected at least {expected_rotations}"
+        )
+    metadata: list[dict[str, Any]] = []
+    for path in csv_files:
+        if path.stat().st_size == 0:
+            raise RuntimeError(f"recording CSV is empty: {path}")
+        header: dict[str, str] = {}
+        try:
+            with path.open(encoding="utf-8", errors="replace") as fp:
+                for _ in range(96):
+                    line = fp.readline()
+                    if not line:
+                        break
+                    if not line.startswith("# "):
+                        break
+                    key, separator, value = line[2:].rstrip("\n").partition(",")
+                    if separator:
+                        header[key] = value
+        except OSError as exc:
+            raise RuntimeError(f"recording CSV metadata is unreadable: {path}") from exc
+        if header.get("schema_version") != "furuno-web-2":
+            raise RuntimeError(
+                f"recording CSV has unexpected schema {header.get('schema_version')!r}: {path}"
+            )
+        if header.get("settings_verified", "").lower() != "true":
+            raise RuntimeError(f"recording CSV settings are not verified: {path}")
+        for required in ("recording_started_at", "recording_stopped_at"):
+            if required not in header:
+                raise RuntimeError(f"recording CSV is missing {required}: {path}")
+        metadata.append(
+            {
+                "path": str(path),
+                "bytes": path.stat().st_size,
+                "schema_version": header["schema_version"],
+                "settings_verified": True,
+                "recording_started_at": header["recording_started_at"],
+                "recording_stopped_at": header["recording_stopped_at"],
+            }
+        )
+    return {
+        "settings_path": str(settings_path),
+        "settings_snapshot_schema": settings_snapshot.get("schema_version"),
+        "csv_count": len(csv_files),
+        "csv_files": metadata,
+    }
+
+
 def mounted_and_writable(root: Path) -> tuple[bool, str]:
     root = root.resolve()
     if not root.is_absolute() or not root.exists() or not root.is_dir():
@@ -1574,6 +1658,38 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def expand_phase_repeats(experiment: dict[str, Any]) -> dict[str, Any]:
+    """Expand explicit phase repeats and give every executed phase a unique ID."""
+    expanded: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for source_index, phase in enumerate(experiment.get("phases", [])):
+        source_id = str(phase.get("id", f"phase_{source_index}"))
+        try:
+            repeat_count = int(phase.get("repeat", 1))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"phase {source_id} repeat must be an integer") from exc
+        if repeat_count < 1:
+            raise ValueError(f"phase {source_id} repeat must be at least one")
+        for repeat_index in range(repeat_count):
+            clone = dict(phase)
+            clone.pop("repeat", None)
+            clone["source_phase_id"] = source_id
+            clone["repeat_index"] = repeat_index
+            clone["repeat_count"] = repeat_count
+            clone["phase_index"] = len(expanded)
+            if repeat_count > 1:
+                clone["id"] = f"{source_id}__r{repeat_index + 1:02d}"
+            elif source_id in seen_ids:
+                clone["id"] = f"{source_id}__p{len(expanded) + 1:03d}"
+            else:
+                clone["id"] = source_id
+            seen_ids.add(source_id)
+            expanded.append(clone)
+    result = dict(experiment)
+    result["phases"] = expanded
+    return result
+
+
 def filter_by_characterization_report(
     experiment: dict[str, Any], report: dict[str, Any]
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -1810,6 +1926,7 @@ def main() -> int:
         experiment, skipped_controls = filter_by_characterization_report(
             experiment, characterization_report
         )
+    experiment = expand_phase_repeats(experiment)
     target_manifest: dict[str, Any] | None = None
     if experiment.get("requires_operator_fields"):
         if args.target_manifest is None:
@@ -1922,6 +2039,10 @@ def main() -> int:
             manifest["phases"] = [
                 {
                     "phase_id": phase["id"],
+                    "source_phase_id": phase.get("source_phase_id", phase["id"]),
+                    "phase_index": phase.get("phase_index"),
+                    "repeat_index": phase.get("repeat_index", 0),
+                    "repeat_count": phase.get("repeat_count", 1),
                     "requested_settings": phase.get("settings", {}),
                     "device_readback": None,
                     "settle_s": phase.get("settle_s", 0),
@@ -1984,6 +2105,10 @@ def main() -> int:
                     break
                 phase_record: dict[str, Any] = {
                     "phase_id": phase["id"],
+                    "source_phase_id": phase.get("source_phase_id", phase["id"]),
+                    "phase_index": phase.get("phase_index"),
+                    "repeat_index": phase.get("repeat_index", 0),
+                    "repeat_count": phase.get("repeat_count", 1),
                     "requested_settings": phase.get("settings", {}),
                     "settle_s": phase.get("settle_s", 0),
                     "record_s": phase.get("record_s", 0),
@@ -1991,17 +2116,18 @@ def main() -> int:
                     "command_events": [],
                     "rotation_files": [],
                 }
+                manifest["active_phase"] = phase_record
                 phase_record["raw_receiver_start"] = dict(receiver_counts)
                 phase_record["command_events"] = apply_phase(
                     args.base_url, phase, events, args.http_timeout
                 )
                 settle = float(phase.get("settle_s", 0))
-                phase_record["device_readback"] = readback(args.base_url, events, args.http_timeout)
-                require_confirmed_readback(
-                    phase_record["device_readback"], f"phase {phase['id']} readback"
-                )
+                pre_tx_readback = readback(args.base_url, events, args.http_timeout)
+                phase_record["pre_tx_readback"] = pre_tx_readback
+                phase_record["device_readback"] = pre_tx_readback
+                require_confirmed_readback(pre_tx_readback, f"phase {phase['id']} pre-TX readback")
                 phase_record["readback_matches"] = requested_matches_readback(
-                    phase.get("settings", {}), phase_record["device_readback"]
+                    phase.get("settings", {}), pre_tx_readback
                 )
                 mismatches = [
                     field
@@ -2037,6 +2163,9 @@ def main() -> int:
                         tx_readback, f"phase {phase['id']} TX-start readback"
                     )
                     phase_record["tx_readback"] = tx_readback
+                    require_transmitting_readback(
+                        tx_readback, f"phase {phase['id']} TX-start readback"
+                    )
                     tx_matches = requested_matches_readback(phase.get("settings", {}), tx_readback)
                     tx_mismatches = [
                         field for field, matched in tx_matches.items() if matched is not True
@@ -2060,7 +2189,11 @@ def main() -> int:
                     require_confirmed_readback(
                         stable_readback, f"phase {phase['id']} post-settle readback"
                     )
+                    require_transmitting_readback(
+                        stable_readback, f"phase {phase['id']} post-settle readback"
+                    )
                     phase_record["post_settle_readback"] = stable_readback
+                    phase_record["device_readback"] = stable_readback
                     stable_matches = requested_matches_readback(
                         phase.get("settings", {}), stable_readback
                     )
@@ -2075,6 +2208,7 @@ def main() -> int:
                     status, body = http_request(
                         args.base_url, "/toggle_recording", {"mode": "start"}, args.http_timeout
                     )
+                    require_success(status, body, f"phase {phase['id']} recording start")
                     log_event(
                         events,
                         "recording_start",
@@ -2082,6 +2216,25 @@ def main() -> int:
                         http_status=status,
                         response=body,
                     )
+                    status, body = http_request(
+                        args.base_url, "/get_system_info", timeout=args.http_timeout
+                    )
+                    require_success(status, body, f"phase {phase['id']} recording status")
+                    try:
+                        recording_info = json.loads(body)
+                    except json.JSONDecodeError as exc:
+                        raise RuntimeError(
+                            f"phase {phase['id']} recording status was not JSON"
+                        ) from exc
+                    if recording_info.get("recording") is not True:
+                        raise RuntimeError(
+                            f"phase {phase['id']} recording did not become active: {recording_info}"
+                        )
+                    if recording_info.get("connected") is False:
+                        raise RuntimeError(
+                            f"phase {phase['id']} controller disconnected at recording start"
+                        )
+                    phase_record["recording_start_info"] = recording_info
                     start = time.monotonic()
                     log_event(
                         events, "recording_window_start", phase_id=phase["id"], record_s=record_s
@@ -2092,10 +2245,19 @@ def main() -> int:
                         status, body = http_request(
                             args.base_url, "/get_system_info", timeout=args.http_timeout
                         )
+                        require_success(status, body, f"phase {phase['id']} recording status poll")
                         try:
                             info = json.loads(body)
-                        except json.JSONDecodeError:
-                            info = {}
+                        except json.JSONDecodeError as exc:
+                            raise RuntimeError(
+                                f"phase {phase['id']} recording status poll was not JSON"
+                            ) from exc
+                        if info.get("recording") is False:
+                            raise RuntimeError(
+                                f"phase {phase['id']} recording stopped unexpectedly"
+                            )
+                        if info.get("connected") is False:
+                            raise RuntimeError(f"phase {phase['id']} controller disconnected")
                         start_rotations = (
                             info.get("rotation_count")
                             if start_rotations is None
@@ -2135,6 +2297,7 @@ def main() -> int:
                     status, body = http_request(
                         args.base_url, "/toggle_recording", {"mode": "stop"}, args.http_timeout
                     )
+                    require_success(status, body, f"phase {phase['id']} recording stop")
                     log_event(
                         events,
                         "recording_stop",
@@ -2149,6 +2312,14 @@ def main() -> int:
                         phase_record["rotation_files"] = [
                             str(path) for path in sorted(record_dir.glob("csv/*.csv"))
                         ]
+                        phase_record["recording_output"] = inspect_recording_output(
+                            record_dir, int(phase["scans"])
+                        )
+                    else:
+                        raise RuntimeError(
+                            f"phase {phase['id']} recording stop did not identify "
+                            "a recording directory"
+                        )
                 if experiment.get("reset_to_baseline"):
                     phase_record["baseline_reset_readback"] = restore_settings_baseline(
                         args.base_url,
@@ -2162,6 +2333,7 @@ def main() -> int:
                     "raw_receiver_start"
                 ].get("packets", 0)
                 manifest["phases"].append(phase_record)
+                manifest.pop("active_phase", None)
             manifest["raw_receiver"] = receiver_counts
             if not is_characterization:
                 manifest["status"] = "complete" if not STOP.is_set() else "interrupted"
@@ -2185,7 +2357,7 @@ def main() -> int:
                     log_event(events, "cleanup_error", cleanup_event=event, error=repr(exc))
             if cleanup_errors:
                 manifest["cleanup_errors"] = cleanup_errors
-            if experiment.get("reset_to_baseline") and manifest.get("initial_device_readback"):
+            if not is_characterization and manifest.get("initial_device_readback"):
                 try:
                     manifest["final_baseline_restore"] = restore_settings_baseline(
                         args.base_url,

@@ -4,6 +4,7 @@
 #show math.equation: set text(font: "New Computer Modern Math")
 #import "@preview/lilaq:0.6.0" as lq
 #let d = json("data/settings_coverage.json")
+#let category-ticks = d.categories.enumerate().map(((index, label)) => (index, label))
 
 #if d.status == "preview" {
   align(center, block(width: 6.4in, height: 2.0in, stroke: (paint: black, thickness: 0.7pt),
@@ -14,10 +15,10 @@
     lq.bar(range(0, d.categories.len()), d.category_counts, width: 0.72),
     width: 6.4in,
     height: 2.0in,
-    xlabel: [Outcome category index],
+    xlabel: [Schema outcome category],
     ylabel: [Control count],
-    xlim: (-0.5, 4.5),
-    xaxis: (ticks: (0, 1, 2, 3, 4), subticks: none),
-    yaxis: (ticks: (0, 1), subticks: none),
+    xlim: (-0.5, d.categories.len() - 0.5),
+    xaxis: (ticks: category-ticks, subticks: none),
+    yaxis: (subticks: none),
   )
 }

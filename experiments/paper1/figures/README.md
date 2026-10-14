@@ -15,6 +15,14 @@ production names are `fig_capture_contract`, `fig_target_geometry`,
 `fig_stationary_repeatability`, `fig_setting_transition`,
 `fig_settings_coverage`, `fig_setting_response`, `fig_bit_planes`, and
 `fig_range_bearing_residuals`.
+For a completed campaign, pass the manifest and analyzer rotation metrics as
+the third and fourth arguments. An optional fifth argument recovers standby
+control-characterization outcomes. The campaign adapter groups phase rows by
+control family and retains phase identifiers, settings hashes, and neighboring
+reference identifiers in `setting_response.csv`.
+The full invocation is `./build-figures.sh <figure_data> <bit_audit.json>
+<session_manifest.json> <rotation_metrics.csv>
+<characterization_recovered.json>`.
 The CeTZ diagrams use square corners, New Computer Modern, garnet only as an
 accent, and filled stealth arrows. The Lilaq plots retain the package default
 palette.
@@ -26,3 +34,7 @@ files contain data and intentionally render a clearly labeled preview while
 inputs are empty. No unavailable result is plotted. `fig_settings_coverage.typ`
 adds the settings command/readback coverage panel required by the functional
 test sequence.
+Coverage bars use the documented schema classes accepted, rejected, clamped,
+deferred, restored, and superseded. Superseded records remain separate from
+deferred records, while missing or unknown classes are reported as
+`unclassified_count` and are not inferred from readback equality.

@@ -7,6 +7,7 @@
   "setting_labels": ["gain", "range", "pulse", "clutter"],
   "requested_labels": ["64", "2", "0", "10"],
   "readback_labels": ["64", "2", "1", "10"]
-  ,"categories": ["accepted", "rejected", "clamped", "deferred", "restored"]
-  ,"category_counts": [2, 1, 0, 0, 1]
+  ,"categories": ["accepted", "rejected", "clamped", "deferred", "restored", "superseded"]
+  ,"category_counts": [2, 1, 0, 0, 1, 0]
+  ,"unclassified_count": 0
 }

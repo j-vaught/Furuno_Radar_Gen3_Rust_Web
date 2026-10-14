@@ -8,6 +8,8 @@ The preferred endpoint contract is recorded in `schemas/settings_readback.schema
 
 The runner refuses a live capture unless the output directory exists, is writable, and is proved to be on a mounted external volume. A transmitting experiment also requires both `--transmit` and `--physical-ready`. A signal handler and a `finally` block issue TX OFF and recording STOP, and the event log records whether those cleanup requests returned successfully. No command is issued in `--dry-run` mode.
 
+The runner expands each phase's `repeat` count before acquisition. Every executed phase receives a unique ID plus `source_phase_id`, `phase_index`, `repeat_index`, and `repeat_count` fields, so repeated rotations remain separate rows while retaining their source definition. Any non-characterization session with a successful initial readback attempts final restoration even when a phase fails.
+
 Every manifest records the full Git commit, dirty-tree state, SHA-256 values for the runner, analyzer, plan, schemas, and available controller binary, plus an estimated phase runtime and optional raw-packet storage estimate from `metadata.capture_estimate`. Live runs require Git provenance.
 
 ## Before the first session
@@ -109,6 +111,8 @@ E5 characterizes the HTTP control surface while the radar remains in standby. It
 E6 is the transmitting indoor response plan. It changes one operational control at a time from a confirmed baseline, records each condition for at least 30 s after settling, interleaves reference conditions, and restores the baseline after every condition and again during final cleanup. Indoor weather is held constant. Sea, rain, and Doppler values are recorded as internal processing modes rather than outdoor-weather variation.
 
 For each transmitting phase, the runner verifies the requested state in standby, enables TX, obtains a fresh TX-start readback, waits the configured settling interval after TX is active, obtains a second readback, and only then starts recording. Gain, clutter, and antenna settings are sent as one complete register payload when a phase changes that register; unchanged payloads are logged and skipped from the fresh readback.
+
+The TX gates require a transmitting readback state of 2 or 3, a successful recording-start response, and a `get_system_info` response with recording active. During acquisition the runner stops on an explicit recording or controller disconnect. After stopping, it requires the requested number of CSV rotations and checks each `furuno-web-2` CSV header for `settings_verified,true`, nonempty output, and recording start and stop boundaries. An active phase is retained in the failure manifest until its output checks and baseline restoration complete.
 
 The current finite E6 matrix expands to 191 phases. At the configured 5 s settling interval and 30 s recording window, this is 5,730 s of recording and 6,685 s, or about 111.4 min, including settling before HTTP and file-system overhead. The runner writes this estimate into `session_manifest.json` and refuses a live run when it exceeds `--campaign-timeout`; use a fresh session identifier and a deliberately larger timeout only after confirming available storage and operator coverage.
 
