@@ -83,6 +83,41 @@ REQUIRED_READBACK_FIELDS = [
     "noise_reduction_level",
     "antenna_height_raw",
 ]
+# These are the fields that a phase may request the runner to write.  The
+# controller also returns diagnostic and derived fields such as
+# ``*_level``, ``pulse_range_index``, and ``tx_state``; those remain part of
+# complete readback verification but are not writable phase settings.
+PHASE_SETTING_FIELDS = frozenset(
+    {
+        "range_index",
+        "pulse_width",
+        "gain_auto",
+        "gain_value",
+        "gain_manual_value",
+        "gain_auto_value",
+        "rezboost",
+        "antenna_speed",
+        "antenna_hi_rpm",
+        "sea_clutter",
+        "sea_clutter_auto",
+        "sea_clutter_auto_value",
+        "sea_clutter_mode",
+        "rain_clutter",
+        "rain_clutter_auto",
+        "rain_clutter_auto_value",
+        "rain_clutter_ftc_mode",
+        "rain_clutter_mode",
+        "near_stc",
+        "middle_stc",
+        "far_stc",
+        "interference_rejection",
+        "noise_reduction",
+        "antenna_height_raw",
+        "bird_mode",
+        "doppler",
+        "main_bang",
+    }
+)
 
 
 def utc_now() -> str:
@@ -2231,6 +2266,20 @@ def expand_phase_repeats(experiment: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def validate_phase_settings(experiment: dict[str, Any]) -> None:
+    """Reject readback-only fields before a live phase can reach the controller."""
+    for phase in experiment.get("phases", []):
+        settings = phase.get("settings", {})
+        if not isinstance(settings, dict):
+            raise ValueError(f"phase {phase.get('id', '<unknown>')} settings must be an object")
+        unsupported = sorted(set(settings) - PHASE_SETTING_FIELDS)
+        if unsupported:
+            raise ValueError(
+                f"phase {phase.get('id', '<unknown>')} requests unsupported writable fields "
+                f"{unsupported}; retain them only in complete readback verification"
+            )
+
+
 def filter_by_characterization_report(
     experiment: dict[str, Any], report: dict[str, Any]
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -2490,6 +2539,7 @@ def main() -> int:
             experiment, characterization_report
         )
     experiment = expand_phase_repeats(experiment)
+    validate_phase_settings(experiment)
     target_manifest: dict[str, Any] | None = None
     if experiment.get("requires_operator_fields"):
         if args.target_manifest is None:

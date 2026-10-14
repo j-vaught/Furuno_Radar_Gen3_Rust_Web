@@ -27,11 +27,27 @@ from scripts.capture_runner import (
     require_transmitting_readback,
     restore_verified_baseline,
     select_control_family,
+    validate_phase_settings,
     write_manifest_atomic,
 )
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_phase_validation_rejects_readback_only_fields(self) -> None:
+        with self.assertRaisesRegex(ValueError, "interference_rejection_level"):
+            validate_phase_settings(
+                {
+                    "phases": [
+                        {
+                            "id": "invalid-readback-field",
+                            "settings": {
+                                "interference_rejection_level": 0,
+                            },
+                        }
+                    ]
+                }
+            )
+
     def test_atomic_manifest_checkpoint_replaces_previous_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "session_manifest.json"
