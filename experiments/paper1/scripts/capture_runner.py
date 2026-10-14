@@ -15,10 +15,12 @@ import datetime as dt
 import json
 import os
 import platform
+import queue
 import re
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -30,6 +32,9 @@ from pathlib import Path
 from typing import Any
 
 STOP = threading.Event()
+RAW_QUEUE_SIZE = 16_384
+RAW_SOCKET_RCVBUF_BYTES = 2 * 1024 * 1024
+RAW_ARCHIVE_DRAIN_TIMEOUT_S = 30.0
 RANGE_LABELS = {
     21: "1/16 NM",
     0: "1/8 NM",
@@ -750,6 +755,104 @@ def mounted_and_writable(root: Path) -> tuple[bool, str]:
     return True, "mounted and writable"
 
 
+class RawArchive:
+    """Bounded FIFO archive writer for receive-time UDP records."""
+
+    _SENTINEL = object()
+
+    def __init__(
+        self,
+        path: Path,
+        queue_size: int = RAW_QUEUE_SIZE,
+        write_delay_s: float = 0.0,
+        shared_counts: dict[str, Any] | None = None,
+    ) -> None:
+        self.path = path
+        self.write_delay_s = write_delay_s
+        self.queue: queue.Queue[Any] = queue.Queue(maxsize=queue_size)
+        self.counts = shared_counts if shared_counts is not None else {}
+        self.counts.update(
+            {
+                "written_packets": 0,
+                "written_bytes": 0,
+                "pending": 0,
+                "queue_overflow": 0,
+                "write_errors": 0,
+                "archive_error": None,
+                "writer_alive": True,
+            }
+        )
+        self._writer = threading.Thread(
+            target=self._write_loop,
+            name="paper1-raw-archive-writer",
+            daemon=True,
+        )
+        self._writer.start()
+
+    def enqueue(self, record: dict[str, Any], payload_bytes: int) -> bool:
+        try:
+            self.queue.put_nowait((record, payload_bytes))
+        except queue.Full:
+            self.counts["queue_overflow"] += 1
+            self.counts["archive_error"] = "raw archive queue overflow"
+            STOP.set()
+            return False
+        self.counts["pending"] = self.queue.qsize()
+        return True
+
+    def _write_loop(self) -> None:
+        written_since_flush = 0
+        try:
+            with self.path.open("w", encoding="utf-8") as raw_fp:
+                while True:
+                    item = self.queue.get()
+                    try:
+                        if item is self._SENTINEL:
+                            raw_fp.flush()
+                            return
+                        record, payload_bytes = item
+                        if self.counts["archive_error"] is None:
+                            raw_fp.write(json.dumps(record) + "\n")
+                            self.counts["written_packets"] += 1
+                            self.counts["written_bytes"] += payload_bytes
+                            written_since_flush += 1
+                            if self.write_delay_s:
+                                time.sleep(self.write_delay_s)
+                            if written_since_flush >= 256:
+                                raw_fp.flush()
+                                written_since_flush = 0
+                    except (OSError, TypeError, ValueError) as exc:
+                        self.counts["write_errors"] += 1
+                        self.counts["archive_error"] = repr(exc)
+                        STOP.set()
+                    finally:
+                        self.queue.task_done()
+                        self.counts["pending"] = self.queue.qsize()
+        except (OSError, TypeError, ValueError) as exc:
+            self.counts["write_errors"] += 1
+            self.counts["archive_error"] = repr(exc)
+            STOP.set()
+        finally:
+            self.counts["writer_alive"] = False
+            self.counts["pending"] = self.queue.qsize()
+
+    def finish(self, timeout: float = RAW_ARCHIVE_DRAIN_TIMEOUT_S) -> bool:
+        try:
+            self.queue.put(self._SENTINEL, timeout=timeout)
+        except queue.Full:
+            self.counts["archive_error"] = "raw archive drain queue remained full"
+            self.counts["writer_alive"] = self._writer.is_alive()
+            return False
+        self._writer.join(timeout=timeout)
+        self.counts["pending"] = self.queue.qsize()
+        if self._writer.is_alive():
+            self.counts["archive_error"] = "raw archive writer did not drain before deadline"
+            self.counts["writer_alive"] = True
+            return False
+        self.counts["writer_alive"] = False
+        return self.counts["archive_error"] is None and self.counts["pending"] == 0
+
+
 def receive_raw(
     path: Path,
     bind: str,
@@ -757,12 +860,27 @@ def receive_raw(
     peer: str | None,
     fp: Any,
     receive_interface: str | None = None,
-) -> tuple[threading.Thread, dict[str, int]]:
+) -> tuple[threading.Thread, dict[str, Any], RawArchive]:
     host, port_text = bind.rsplit(":", 1)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     if hasattr(socket, "SO_REUSEPORT"):
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+    counts: dict[str, Any] = {
+        "packets": 0,
+        "bytes": 0,
+        "received_packets": 0,
+        "received_bytes": 0,
+        "peer_mismatch": 0,
+        "queue_size": RAW_QUEUE_SIZE,
+        "socket_rcvbuf_requested": RAW_SOCKET_RCVBUF_BYTES,
+        "socket_rcvbuf_actual": None,
+    }
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RAW_SOCKET_RCVBUF_BYTES)
+        counts["socket_rcvbuf_actual"] = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+    except OSError as exc:
+        counts["socket_rcvbuf_error"] = repr(exc)
     sock.bind((host, int(port_text)))
     if multicast:
         membership_interface = receive_interface or "0.0.0.0"
@@ -772,10 +890,10 @@ def receive_raw(
             socket.inet_aton(multicast) + socket.inet_aton(membership_interface),
         )
     sock.settimeout(0.25)
-    counts = {"packets": 0, "bytes": 0, "peer_mismatch": 0}
+    archive = RawArchive(path, shared_counts=counts)
 
     def loop() -> None:
-        with path.open("w", encoding="utf-8") as raw_fp:
+        try:
             while not STOP.is_set():
                 try:
                     payload, address = sock.recvfrom(65535)
@@ -785,21 +903,20 @@ def receive_raw(
                     break
                 counts["packets"] += 1
                 counts["bytes"] += len(payload)
+                counts["received_packets"] += 1
+                counts["received_bytes"] += len(payload)
                 if peer and address[0] != peer:
                     counts["peer_mismatch"] += 1
-                raw_fp.write(
-                    json.dumps(
-                        {
-                            "receive_utc": utc_now(),
-                            "receive_unix_ns": time.time_ns(),
-                            "peer": [address[0], address[1]],
-                            "payload_b64": base64.b64encode(payload).decode("ascii"),
-                        }
-                    )
-                    + "\n"
-                )
-                raw_fp.flush()
-        sock.close()
+                record = {
+                    "receive_utc": utc_now(),
+                    "receive_unix_ns": time.time_ns(),
+                    "peer": [address[0], address[1]],
+                    "payload_b64": base64.b64encode(payload).decode("ascii"),
+                }
+                if not archive.enqueue(record, len(payload)):
+                    break
+        finally:
+            sock.close()
 
     thread = threading.Thread(target=loop, name="paper1-raw-receiver", daemon=True)
     thread.start()
@@ -811,8 +928,11 @@ def receive_raw(
         multicast=multicast,
         peer=peer,
         receive_interface=receive_interface,
+        queue_size=RAW_QUEUE_SIZE,
+        socket_rcvbuf_requested=counts["socket_rcvbuf_requested"],
+        socket_rcvbuf_actual=counts["socket_rcvbuf_actual"],
     )
-    return thread, counts
+    return thread, counts, archive
 
 
 def setting_requests(
@@ -2426,9 +2546,11 @@ def filter_by_characterization_report(
             json.dumps(control.get("requested"), sort_keys=True),
         )
         fixed = control.get("fixed_settings", {})
+        fixed_range = fixed.get("range_index")
+        has_fixed_range = "range_index" in fixed and fixed_range is not None
         context_ok = any(
             key[:2] == key_prefix
-            and (not fixed.get("range_index") or f"range:{fixed['range_index']}" in key[2])
+            and (not has_fixed_range or f"range:{fixed_range}" in key[2])
             for key in accepted
         )
         if context_ok:
@@ -2437,7 +2559,7 @@ def filter_by_characterization_report(
                 (key, deferred[key])
                 for key in deferred
                 if key[:2] == key_prefix
-                and (not fixed.get("range_index") or f"range:{fixed['range_index']}" in key[2])
+                and (not has_fixed_range or f"range:{fixed_range}" in key[2])
             ]
             if matching:
                 candidate["characterization_deferred_fields"] = [key[0] for key, _ in matching]
@@ -2486,10 +2608,11 @@ def merge_characterization_reports(
 
     The original reports remain referenced and all outcomes are retained under
     ``outcomes_all_sources``. The filtered ``outcomes`` list contains the latest
-    observation for each setting and requested value, so a corrected IR query
-    cannot be blocked by an older selector-bug result.
+    observation for each setting, requested value, and characterization context,
+    so context-specific pulse results remain distinct while a corrected IR query
+    can supersede an older selector-bug result.
     """
-    latest: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
+    latest: dict[tuple[str, str, str], tuple[int, dict[str, Any]]] = {}
     all_outcomes: list[dict[str, Any]] = []
     sources: list[dict[str, Any]] = []
     for source_index, (path, report) in enumerate(reports):
@@ -2513,7 +2636,10 @@ def merge_characterization_reports(
                 continue
             setting = str(outcome.get("setting", ""))
             requested = json.dumps(outcome.get("requested"), sort_keys=True)
-            key = (setting, requested)
+            context = normalized_characterization_context(
+                setting, str(outcome.get("context", ""))
+            )
+            key = (setting, requested, context)
             tagged = {"source_index": source_index, "source_path": path, **outcome}
             all_outcomes.append(tagged)
             latest[key] = (source_index, tagged)
@@ -2525,13 +2651,30 @@ def merge_characterization_reports(
     ]
     return {
         "schema_version": "paper1-characterization-merge-1.0",
-        "merge_policy": "latest source per setting and requested value supersedes earlier outcome",
+        "merge_policy": (
+            "latest source per setting and requested value, preserving pulse-range "
+            "and antenna-speed/high-RPM contexts"
+        ),
         "sources": sources,
         "control_characterization": {
             "outcomes": merged_outcomes,
             "outcomes_all_sources": all_outcomes,
         },
     }
+
+
+def normalized_characterization_context(setting: str, context: str) -> str:
+    """Keep only contexts that change the meaning of a characterization probe."""
+    if setting == "pulse_width":
+        match = re.search(r"(?:^|:)range:(-?\d+)(?::|$)", context)
+        return f"range:{match.group(1)}" if match else ""
+    if setting == "antenna_speed":
+        speed = re.search(r"(?:^|:)speed:(-?\d+)(?::|$)", context)
+        hi_rpm = re.search(r"(?:^|:)hi_rpm:(true|false)(?::|$)", context, re.IGNORECASE)
+        if speed and hi_rpm:
+            return f"speed:{speed.group(1)}|hi_rpm:{hi_rpm.group(1).lower()}"
+        return ""
+    return ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -2811,10 +2954,11 @@ def main() -> int:
             raise SystemExit("standby characterization does not accept transmit flags")
         raw_path = session_dir / "raw_udp_payloads.jsonl"
         receiver_thread: threading.Thread | None = None
-        receiver_counts: dict[str, int] = {"packets": 0, "bytes": 0, "peer_mismatch": 0}
+        receiver_archive: RawArchive | None = None
+        receiver_counts: dict[str, Any] = {"packets": 0, "bytes": 0, "peer_mismatch": 0}
         if not is_characterization:
             receive_interface = args.receive_interface or metadata.get("radar", {}).get("host_ip")
-            receiver_thread, receiver_counts = receive_raw(
+            receiver_thread, receiver_counts, receiver_archive = receive_raw(
                 raw_path,
                 args.receive_bind,
                 args.multicast,
@@ -3139,7 +3283,7 @@ def main() -> int:
                 manifest["last_completed_phase_index"] = phase_record.get("phase_index")
                 manifest["last_completed_phase_id"] = phase_record.get("phase_id")
                 write_manifest_atomic(manifest_path, manifest)
-            manifest["raw_receiver"] = receiver_counts
+            manifest["raw_receiver"] = dict(receiver_counts)
             if not is_characterization:
                 manifest["status"] = "complete" if not STOP.is_set() else "interrupted"
         except BaseException as exc:
@@ -3149,6 +3293,7 @@ def main() -> int:
             raise
         finally:
             # Safety cleanup is attempted even when a request, write, or signal fails.
+            prior_exception = sys.exc_info()[0] is not None
             cleanup_errors: list[str] = []
             for endpoint, params, event in (
                 ("/toggle_echo", {"mode": "off"}, "safety_tx_off"),
@@ -3180,8 +3325,63 @@ def main() -> int:
                         error=repr(exc),
                     )
             STOP.set()
+            receiver_stopped = True
             if receiver_thread is not None:
                 receiver_thread.join(timeout=2)
+                receiver_stopped = not getattr(receiver_thread, "is_alive", lambda: False)()
+                if not receiver_stopped:
+                    # The receiver must stop before the archive sentinel is
+                    # inserted. Otherwise it can enqueue after the sentinel,
+                    # leaving packets unwritten while the manifest says the
+                    # drain completed.
+                    receiver_thread.join(timeout=RAW_ARCHIVE_DRAIN_TIMEOUT_S)
+                    receiver_stopped = not getattr(receiver_thread, "is_alive", lambda: False)()
+            raw_archive_failure: str | None = None
+            if receiver_archive is not None:
+                if not receiver_stopped:
+                    receiver_counts["receiver_shutdown_error"] = (
+                        "raw receiver did not stop before archive drain deadline"
+                    )
+                    receiver_counts["archive_error"] = receiver_counts[
+                        "receiver_shutdown_error"
+                    ]
+                    archive_complete = False
+                else:
+                    archive_complete = receiver_archive.finish()
+                receiver_counts.update(receiver_archive.counts)
+                manifest["raw_receiver"] = dict(receiver_counts)
+                manifest["raw_archive"] = dict(receiver_counts)
+                if archive_complete:
+                    received_packets = receiver_counts.get(
+                        "received_packets", receiver_counts.get("packets", 0)
+                    )
+                    received_bytes = receiver_counts.get(
+                        "received_bytes", receiver_counts.get("bytes", 0)
+                    )
+                    if (
+                        receiver_counts.get("written_packets") != received_packets
+                        or receiver_counts.get("written_bytes") != received_bytes
+                    ):
+                        receiver_counts["archive_error"] = (
+                            "raw archive count mismatch: "
+                            f"received={received_packets}/{received_bytes}, "
+                            f"written={receiver_counts.get('written_packets')}/"
+                            f"{receiver_counts.get('written_bytes')}"
+                        )
+                        manifest["raw_receiver"] = dict(receiver_counts)
+                        manifest["raw_archive"] = dict(receiver_counts)
+                        archive_complete = False
+                if not archive_complete:
+                    raw_archive_failure = (
+                        "raw archive did not complete: "
+                        f"{receiver_counts.get('archive_error') or receiver_counts}"
+                    )
+                    manifest["status"] = "failed"
+                    if prior_exception:
+                        manifest["raw_archive_error"] = raw_archive_failure
+                    else:
+                        manifest["error"] = raw_archive_failure
+                    log_event(events, "raw_archive_failure", error=raw_archive_failure)
             # Persist the manifest before leaving the events context, including
             # characterization outcomes and restoration failures when the main
             # body re-raises an exception.
@@ -3191,6 +3391,8 @@ def main() -> int:
                 events, "session_end", status=manifest.get("status"), raw_receiver=receiver_counts
             )
             write_manifest_atomic(manifest_path, manifest)
+            if raw_archive_failure is not None and not prior_exception:
+                raise RuntimeError(raw_archive_failure)
     return 0
 
 

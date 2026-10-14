@@ -1,6 +1,8 @@
 import base64
 import json
+import queue
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -10,6 +12,7 @@ from scripts import capture_runner
 from scripts.analyze_capture import decode_sweep_count, replay_raw
 from scripts.capture_runner import (
     REQUIRED_READBACK_FIELDS,
+    RawArchive,
     _valid_until_is_fresh,
     apply_phase,
     characterize_controls,
@@ -37,6 +40,62 @@ from scripts.capture_runner import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_receive_raw_returns_live_shared_counts(self) -> None:
+        delivered = threading.Event()
+
+        class FakeSocket:
+            def __init__(self) -> None:
+                self.sent = False
+
+            def setsockopt(self, *_args: Any) -> None:
+                return None
+
+            def getsockopt(self, *_args: Any) -> int:
+                return 2 * 1024 * 1024
+
+            def bind(self, _address: tuple[str, int]) -> None:
+                return None
+
+            def settimeout(self, _timeout: float) -> None:
+                return None
+
+            def recvfrom(self, _size: int) -> tuple[bytes, tuple[str, int]]:
+                if not self.sent:
+                    self.sent = True
+                    delivered.set()
+                    return b"radar", ("127.0.0.1", 4000)
+                if capture_runner.STOP.is_set():
+                    raise OSError("receiver stopped")
+                raise TimeoutError
+
+            def close(self) -> None:
+                return None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            events_path = Path(tmp) / "events.jsonl"
+            raw_path = Path(tmp) / "raw.jsonl"
+            capture_runner.STOP.clear()
+            with events_path.open("w", encoding="utf-8") as events, patch.object(
+                capture_runner.socket, "socket", return_value=FakeSocket()
+            ):
+                thread, counts, archive = capture_runner.receive_raw(
+                    raw_path,
+                    "127.0.0.1:5000",
+                    None,
+                    None,
+                    events,
+                )
+                self.assertTrue(delivered.wait(2))
+                self.assertIs(counts, archive.counts)
+                self.assertEqual(counts["received_packets"], 1)
+                capture_runner.STOP.set()
+                thread.join(timeout=2)
+                self.assertFalse(thread.is_alive())
+                self.assertTrue(archive.finish(timeout=2))
+                self.assertEqual(counts["written_packets"], 1)
+                self.assertEqual(counts["received_bytes"], counts["written_bytes"])
+            capture_runner.STOP.clear()
+
     def test_phase_validation_rejects_readback_only_fields(self) -> None:
         with self.assertRaisesRegex(ValueError, "interference_rejection_level"):
             validate_phase_settings(
@@ -285,6 +344,39 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(summary["decoded_spoke_count"], 1)
         self.assertEqual(summary["truncated_sweep_count"], 0)
         self.assertTrue(summary["timestamp_monotonic"])
+
+    def test_raw_archive_drains_slow_writer_without_changing_payload_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "raw.jsonl"
+            archive = RawArchive(path, queue_size=8, write_delay_s=0.01)
+            records = [
+                {
+                    "receive_utc": f"2026-10-14T00:00:0{index}Z",
+                    "receive_unix_ns": index,
+                    "peer": ["172.31.3.226", 10024],
+                    "payload_b64": base64.b64encode(bytes([index, 7, 9])).decode("ascii"),
+                }
+                for index in range(4)
+            ]
+            for record in records:
+                self.assertTrue(archive.enqueue(record, 3))
+            self.assertTrue(archive.finish(timeout=2.0))
+            self.assertEqual(archive.counts["written_packets"], 4)
+            self.assertEqual(archive.counts["written_bytes"], 12)
+            self.assertEqual(
+                [json.loads(line) for line in path.read_text().splitlines()], records
+            )
+
+    def test_raw_archive_reports_queue_overflow_and_shutdown_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = RawArchive(Path(tmp) / "raw.jsonl", queue_size=1)
+            archive.queue.put_nowait(({"payload_b64": "AA=="}, 1))
+            with patch.object(archive.queue, "put_nowait", side_effect=queue.Full):
+                self.assertFalse(archive.enqueue({"payload_b64": "AQ=="}, 1))
+            self.assertEqual(archive.counts["queue_overflow"], 1)
+            self.assertFalse(archive.finish(timeout=2.0))
+            self.assertIsNotNone(archive.counts["archive_error"])
+            capture_runner.STOP.clear()
 
     def test_raw_replay_separates_spoke_start_truncation(self) -> None:
         payload = bytes([2, 0, 0, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 0, 0, 0, 7, 0, 0, 0, 1, 2, 3, 4])
@@ -906,6 +998,63 @@ class ToolkitTests(unittest.TestCase):
             },
         )
 
+    def test_pulse_filter_treats_range_zero_as_a_real_context(self) -> None:
+        experiment = {
+            "phases": [
+                {"id": "reference", "settings": {"range_index": 0}},
+                {
+                    "id": "pulse_range_zero",
+                    "settings": {"range_index": 0, "pulse_width": 1},
+                    "control": {
+                        "role": "condition",
+                        "setting": "pulse_width",
+                        "requested": 1,
+                        "fixed_settings": {"range_index": 0},
+                    },
+                },
+            ]
+        }
+        nonzero_only = {
+            "control_characterization": {
+                "outcomes": [
+                    {
+                        "setting": "pulse_width",
+                        "requested": 1,
+                        "context": "pulse_width_by_range:range:1:value:1",
+                        "outcome": "supported",
+                    }
+                ]
+            }
+        }
+        filtered, skipped = filter_by_characterization_report(experiment, nonzero_only)
+        self.assertEqual([phase["id"] for phase in filtered["phases"]], ["reference"])
+        self.assertEqual(skipped[0]["phase_id"], "pulse_range_zero")
+
+        range_zero_supported = {
+            "control_characterization": {
+                "outcomes": [
+                    {
+                        "setting": "pulse_width",
+                        "requested": 1,
+                        "context": "pulse_width_by_range:range:0:value:1",
+                        "outcome": "supported",
+                    },
+                    {
+                        "setting": "pulse_width",
+                        "requested": 1,
+                        "context": "pulse_width_by_range:range:1:value:1",
+                        "outcome": "supported",
+                    },
+                ]
+            }
+        }
+        filtered, skipped = filter_by_characterization_report(experiment, range_zero_supported)
+        self.assertEqual(
+            [phase["id"] for phase in filtered["phases"]],
+            ["reference", "pulse_range_zero"],
+        )
+        self.assertEqual(skipped, [])
+
     def test_gain_matrix_keeps_active_value_consistent_with_mode(self) -> None:
         expanded = expand_control_matrix(
             {
@@ -986,6 +1135,121 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(outcomes[0]["outcome"], "supported")
         self.assertEqual(len(merged["control_characterization"]["outcomes_all_sources"]), 2)
         self.assertEqual(merged["sources"][1]["provenance"]["git_commit"], "corrected-build")
+
+    def test_characterization_merge_preserves_context_specific_outcomes(self) -> None:
+        merged = merge_characterization_reports(
+            [
+                (
+                    "primary.json",
+                    {
+                        "control_characterization": {
+                            "outcomes": [
+                                {
+                                    "setting": "pulse_width",
+                                    "requested": 1,
+                                    "context": "range:0",
+                                    "outcome": "supported",
+                                },
+                                {
+                                    "setting": "pulse_width",
+                                    "requested": 1,
+                                    "context": "range:15",
+                                    "outcome": "clamped",
+                                },
+                            ]
+                        }
+                    },
+                ),
+                (
+                    "correction.json",
+                    {
+                        "control_characterization": {
+                            "outcomes": [
+                                {
+                                    "setting": "pulse_width",
+                                    "requested": 1,
+                                    "context": "range:15",
+                                    "outcome": "supported",
+                                }
+                            ]
+                        }
+                    },
+                ),
+            ]
+        )
+        outcomes = merged["control_characterization"]["outcomes"]
+        self.assertEqual(
+            {(item["context"], item["outcome"]) for item in outcomes},
+            {("range:0", "supported"), ("range:15", "supported")},
+        )
+
+    def test_characterization_merge_plain_supplement_supersedes_context_label(self) -> None:
+        merged = merge_characterization_reports(
+            [
+                (
+                    "primary.json",
+                    {
+                        "control_characterization": {
+                            "outcomes": [
+                                {
+                                    "setting": "interference_rejection",
+                                    "requested": True,
+                                    "context": "interference_rejection:value:True",
+                                    "outcome": "supported",
+                                }
+                            ]
+                        }
+                    },
+                ),
+                (
+                    "correction.json",
+                    {
+                        "control_characterization": {
+                            "outcomes": [
+                                {
+                                    "setting": "interference_rejection",
+                                    "requested": True,
+                                    "context": "corrected-selector-0",
+                                    "outcome": "clamped",
+                                }
+                            ]
+                        }
+                    },
+                ),
+            ]
+        )
+        outcomes = merged["control_characterization"]["outcomes"]
+        self.assertEqual(len(outcomes), 1)
+        self.assertEqual(outcomes[0]["outcome"], "clamped")
+
+    def test_characterization_merge_preserves_antenna_high_rpm_context(self) -> None:
+        merged = merge_characterization_reports(
+            [
+                (
+                    "primary.json",
+                    {
+                        "control_characterization": {
+                            "outcomes": [
+                                {
+                                    "setting": "antenna_speed",
+                                    "requested": 1,
+                                    "context": "antenna_speed_and_hi_rpm:speed:1:hi_rpm:False",
+                                    "outcome": "supported",
+                                },
+                                {
+                                    "setting": "antenna_speed",
+                                    "requested": 1,
+                                    "context": "antenna_speed_and_hi_rpm:speed:1:hi_rpm:True",
+                                    "outcome": "supported",
+                                },
+                            ]
+                        }
+                    },
+                )
+            ]
+        )
+        outcomes = merged["control_characterization"]["outcomes"]
+        self.assertEqual(len(outcomes), 2)
 
     def test_characterization_restores_baseline(self) -> None:
         baseline_values = {field: 0 for field in REQUIRED_READBACK_FIELDS}

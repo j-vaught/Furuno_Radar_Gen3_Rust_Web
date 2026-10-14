@@ -92,7 +92,11 @@ class RunnerSafetyTests(unittest.TestCase):
             with (
                 patch.object(sys, "argv", argv),
                 patch.object(capture_runner, "mounted_and_writable", return_value=(True, "test")),
-                patch.object(capture_runner, "receive_raw", return_value=(_Thread(), {})),
+                patch.object(
+                    capture_runner,
+                    "receive_raw",
+                    return_value=(_Thread(), {}, None),
+                ),
                 patch.object(capture_runner, "http_request", side_effect=fake_request),
             ):
                 with self.assertRaises(RuntimeError):
