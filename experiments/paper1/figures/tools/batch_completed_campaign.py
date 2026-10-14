@@ -143,6 +143,46 @@ def complete_children(
     return complete, skipped
 
 
+def apply_quality_gate(
+    complete: list[dict[str, Any]],
+    skipped: list[dict[str, Any]],
+    quality_path: Path | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Hold new buffered-v2 children until the closed observer passes them.
+
+    Legacy selected sessions retain their independently audited status. The
+    observer is required only for the new broad-sweep campaign, and mirroring
+    occurs before this promotion gate is applied.
+    """
+    if quality_path is None:
+        return complete, skipped
+    observer = read_json(quality_path) if quality_path.exists() else {}
+    sessions = observer.get("sessions", {})
+    promoted: list[dict[str, Any]] = []
+    held = list(skipped)
+    for item in complete:
+        if "buffered-" not in str(item.get("campaign", "")):
+            promoted.append(item)
+            continue
+        quality = sessions.get(item["session_id"], {})
+        passed = (
+            quality.get("status") == "pass"
+            and quality.get("quality", {}).get("quality_status") == "pass"
+        )
+        if passed:
+            promoted.append(item)
+        else:
+            held.append(
+                {
+                    **item,
+                    "child_status": "quality_pending",
+                    "reason": "closed observer has not recorded quality pass",
+                    "quality_status": quality.get("status", "missing"),
+                }
+            )
+    return promoted, held
+
+
 def analyze_child(
     child: dict[str, Any],
     analyzer: Path,
@@ -258,6 +298,7 @@ def main() -> int:
     parser.add_argument("--analysis-root", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--path-map", action="append", default=[])
+    parser.add_argument("--quality-state", type=Path)
     parser.add_argument("--reuse-existing", action="store_true")
     args = parser.parse_args()
     campaigns = args.campaign_manifest or sorted(args.session_root.glob("*/campaign_manifest.json"))
@@ -265,6 +306,7 @@ def main() -> int:
         raise SystemExit("no campaign manifests found")
     path_maps = parse_maps(args.path_map)
     complete, skipped = complete_children(campaigns, args.session_root)
+    complete, skipped = apply_quality_gate(complete, skipped, args.quality_state)
     if not complete:
         raise SystemExit("no validated complete children found")
     analysis_dirs = [

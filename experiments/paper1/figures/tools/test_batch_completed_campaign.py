@@ -5,6 +5,7 @@ from pathlib import Path
 
 from batch_completed_campaign import (
     analysis_cache_valid,
+    apply_quality_gate,
     complete_children,
     mapped_path,
     write_analysis_cache_marker,
@@ -83,6 +84,32 @@ class CompletedCampaignTests(unittest.TestCase):
                 '{"payload":"changed"}\n', encoding="utf-8"
             )
             self.assertFalse(analysis_cache_valid(out, session))
+
+    def test_quality_gate_holds_buffered_v2_but_keeps_legacy_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            quality = Path(temp) / "quality_state.json"
+            quality.write_text(
+                json.dumps(
+                    {
+                        "sessions": {
+                            "v2-good": {
+                                "status": "pass",
+                                "quality": {"quality_status": "pass"},
+                            },
+                            "v2-pending": {"status": "pending"},
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            complete = [
+                {"session_id": "v2-good", "campaign": "buffered-v2/campaign_manifest.json"},
+                {"session_id": "v2-pending", "campaign": "buffered-v2/campaign_manifest.json"},
+                {"session_id": "legacy", "campaign": "resume/campaign_manifest.json"},
+            ]
+            promoted, held = apply_quality_gate(complete, [], quality)
+            self.assertEqual([item["session_id"] for item in promoted], ["v2-good", "legacy"])
+            self.assertEqual(held[0]["reason"], "closed observer has not recorded quality pass")
 
 
 if __name__ == "__main__":

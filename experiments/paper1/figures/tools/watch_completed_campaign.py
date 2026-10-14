@@ -176,6 +176,7 @@ def render_remote(
     local_data: Path,
     local_figures: Path,
     path_map: str,
+    quality_state: Path,
 ) -> None:
     remote_out = remote_analysis / "aggregate"
     remote_session_root = remote_data / "paper1-experiments"
@@ -192,6 +193,7 @@ def render_remote(
         f"--analysis-root {shlex.quote(str(remote_analysis / 'sessions'))} "
         f"--out {shlex.quote(str(remote_out))} "
         f"--path-map {shlex.quote(path_map)} --reuse-existing"
+        f" --quality-state {shlex.quote(str(quality_state))}"
     )
     ssh(host, batch)
     aggregate_manifest = remote_out / "complete_campaign_manifest.json"
@@ -258,6 +260,7 @@ def cycle(
         local_data=args.local_data,
         local_figures=args.local_figures,
         path_map=f"{args.local_data}={args.remote_data}",
+        quality_state=args.remote_quality_state,
     )
     pull_results(args.host, args.remote_figures, args.local_figures)
     state.update({item["session_id"]: item["digest"] for item in new})
@@ -274,6 +277,14 @@ def main() -> int:
     parser.add_argument("--remote-figures", type=Path, required=True)
     parser.add_argument("--remote-analyzer", type=Path, required=True)
     parser.add_argument("--remote-analysis", type=Path, required=True)
+    parser.add_argument(
+        "--remote-quality-state",
+        type=Path,
+        default=Path(
+            "/mnt/12TB_Drive/dspire/atlantis-master/jvaught2/"
+            "radar-papers-20261014/analysis/complete-campaign/closed-observer/quality_state.json"
+        ),
+    )
     parser.add_argument("--state", type=Path, default=Path("/tmp/paper1_campaign_watch_state.json"))
     parser.add_argument("--interval-s", type=float, default=45.0)
     parser.add_argument("--once", action="store_true")
