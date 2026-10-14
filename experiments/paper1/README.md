@@ -130,6 +130,7 @@ python3 experiments/paper1/scripts/capture_runner.py \
   --metadata /Volumes/MacApplications/Radar_papers/data/paper1-metadata.json \
   --output-root /Volumes/MacApplications/Radar_papers/data/paper1-experiments \
   --session-id 2026-10-14-e7-rotation-writer \
+  --http-timeout 60 \
   --transmit --physical-ready
 ```
 

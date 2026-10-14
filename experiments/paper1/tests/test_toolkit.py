@@ -22,7 +22,11 @@ from scripts.capture_runner import (
     parse_system_info,
     readback,
     readback_with_retry,
+    recording_dir_from_info,
+    recording_dir_from_stop_text,
     require_confirmed_readback,
+    require_optional_writer_drain,
+    require_success,
     require_system_info_settings,
     require_transmitting_readback,
     restore_verified_baseline,
@@ -84,6 +88,37 @@ class ToolkitTests(unittest.TestCase):
     def test_system_info_rejects_http_failure_without_dumping_payload(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
             parse_system_info(500, '{"error":null}', "recording status")
+
+    def test_recording_stop_native_suffix_uses_bounded_path_fallback(self) -> None:
+        body = (
+            "Recording stopped. Files in "
+            "/Volumes/MacApplications/Radar_papers/data/live/macos-recordings/20261014_075938/; "
+            "rotation output drained."
+        )
+        self.assertEqual(
+            recording_dir_from_stop_text(body),
+            Path(
+                "/Volumes/MacApplications/Radar_papers/data/live/"
+                "macos-recordings/20261014_075938"
+            ),
+        )
+        self.assertEqual(
+            recording_dir_from_info({"record_dir": "/tmp/canonical-recording"}),
+            Path("/tmp/canonical-recording"),
+        )
+
+    def test_recording_stop_rejects_incomplete_drain_and_writer_failures(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "drain is incomplete"):
+            require_success(
+                200,
+                "Recording stopped, but rotation output drain is incomplete after 45 s.",
+                "recording stop",
+            )
+        with self.assertRaisesRegex(RuntimeError, "did not drain cleanly"):
+            require_optional_writer_drain(
+                {"rotation_writer": {"pending_after": 1, "failed_after": 0}},
+                "recording stop",
+            )
 
     def test_restore_readback_retry_recovers_transient_failure(self) -> None:
         responses = iter(

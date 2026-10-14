@@ -235,7 +235,7 @@ def write_manifest_atomic(path: Path, manifest: dict[str, Any]) -> None:
 
 
 def http_request(
-    base: str, path: str, params: dict[str, Any] | None = None, timeout: float = 8.0
+    base: str, path: str, params: dict[str, Any] | None = None, timeout: float = 60.0
 ) -> tuple[int, str]:
     query = urllib.parse.urlencode(
         {k: str(v).lower() if isinstance(v, bool) else str(v) for k, v in (params or {}).items()}
@@ -561,6 +561,7 @@ def require_success(status: int, body: str, context: str) -> None:
     if (
         status < 200
         or status >= 300
+        or "drain is incomplete" in lowered
         or any(
             token in lowered
             for token in ("failed", "failure", "error", "rejected", "denied", "not recording")
@@ -580,6 +581,61 @@ def parse_system_info(status: int, body: str, context: str) -> dict[str, Any]:
     if not isinstance(info, dict):
         raise RuntimeError(f"{context} JSON root was not an object")
     return info
+
+
+def recording_dir_from_info(info: dict[str, Any]) -> Path | None:
+    """Return the structured recording path, without parsing status text."""
+    for key in ("record_dir", "recording_dir"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            return Path(value.strip()).expanduser()
+    return None
+
+
+def recording_dir_from_stop_text(body: str) -> Path | None:
+    """Parse only the bounded success form used by older controller builds."""
+    match = re.search(
+        r"Files in\s+(.+?)/;\s*rotation output drained\.\s*$",
+        body.strip(),
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    return Path(match.group(1).strip()).expanduser()
+
+
+def optional_json_object(body: str) -> dict[str, Any] | None:
+    try:
+        value = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def require_optional_writer_drain(info: dict[str, Any], context: str) -> None:
+    """Reject explicit queued or failed writer output when a response exposes it."""
+    candidates: list[dict[str, Any]] = []
+    for key in (
+        "rotation_writer",
+        "rotation_writer_metrics",
+        "writer",
+        "rotation_output_drain",
+    ):
+        value = info.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+    if any(
+        key in info for key in ("pending", "pending_after", "failed", "failed_after", "drained")
+    ):
+        candidates.append(info)
+    for metrics in candidates:
+        drained = metrics.get("drained")
+        pending = metrics.get("pending_after", metrics.get("pending"))
+        failed = metrics.get("failed_after", metrics.get("failed"))
+        if drained is False or (isinstance(pending, (int, float)) and pending > 0) or (
+            isinstance(failed, (int, float)) and failed > 0
+        ):
+            raise RuntimeError(f"{context}: rotation writer did not drain cleanly: {metrics}")
 
 
 def require_system_info_settings(
@@ -2547,7 +2603,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--peer", default=None)
     parser.add_argument("--timeout-per-phase", type=float, default=90.0)
     parser.add_argument("--campaign-timeout", type=float, default=7200.0)
-    parser.add_argument("--http-timeout", type=float, default=8.0)
+    parser.add_argument("--http-timeout", type=float, default=60.0)
     return parser.parse_args()
 
 
@@ -2944,6 +3000,9 @@ def main() -> int:
                         f"phase {phase['id']} recording start",
                     )
                     phase_record["recording_start_info"] = recording_info
+                    start_record_dir = recording_dir_from_info(recording_info)
+                    if start_record_dir is not None:
+                        phase_record["record_dir"] = str(start_record_dir)
                     start = time.monotonic()
                     log_event(
                         events, "recording_window_start", phase_id=phase["id"], record_s=record_s
@@ -3015,21 +3074,47 @@ def main() -> int:
                         http_status=status,
                         response=body,
                     )
-                    record_match = re.search(r"Files in (.+?)/?$", body.strip())
-                    if record_match:
-                        record_dir = Path(record_match.group(1).rstrip("/"))
-                        phase_record["record_dir"] = str(record_dir)
-                        phase_record["rotation_files"] = [
-                            str(path) for path in sorted(record_dir.glob("csv/*.csv"))
-                        ]
-                        phase_record["recording_output"] = inspect_recording_output(
-                            record_dir, int(phase["scans"])
+                    stop_info = optional_json_object(body)
+                    if stop_info is not None:
+                        phase_record["recording_stop_response"] = stop_info
+                        require_optional_writer_drain(
+                            stop_info, f"phase {phase['id']} recording stop"
                         )
-                    else:
+                    record_dir = recording_dir_from_info(
+                        phase_record.get("recording_start_info", {})
+                    )
+                    if record_dir is None and stop_info is not None:
+                        record_dir = recording_dir_from_info(stop_info)
+                    if record_dir is None:
+                        # Newer controllers expose record_dir in get_system_info;
+                        # use a post-stop snapshot only when the start snapshot
+                        # and structured stop response did not provide it.
+                        poststop_status, poststop_body = http_request(
+                            args.base_url,
+                            "/get_system_info",
+                            timeout=args.http_timeout,
+                        )
+                        poststop_info = parse_system_info(
+                            poststop_status,
+                            poststop_body,
+                            f"phase {phase['id']} recording stop status",
+                        )
+                        phase_record["recording_stop_info"] = poststop_info
+                        record_dir = recording_dir_from_info(poststop_info)
+                    if record_dir is None:
+                        record_dir = recording_dir_from_stop_text(body)
+                    if record_dir is None:
                         raise RuntimeError(
                             f"phase {phase['id']} recording stop did not identify "
                             "a recording directory"
                         )
+                    phase_record["record_dir"] = str(record_dir)
+                    phase_record["rotation_files"] = [
+                        str(path) for path in sorted(record_dir.glob("csv/*.csv"))
+                    ]
+                    phase_record["recording_output"] = inspect_recording_output(
+                        record_dir, int(phase["scans"])
+                    )
                 if experiment.get("reset_to_baseline"):
                     phase_record["baseline_reset_readback"] = restore_settings_baseline(
                         args.base_url,
