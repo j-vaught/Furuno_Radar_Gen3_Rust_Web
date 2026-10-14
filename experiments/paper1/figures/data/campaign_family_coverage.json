@@ -1,0 +1,116 @@
+{
+  "status": "ready",
+  "planned_family_count": 25,
+  "family_status": [
+    {
+      "family": "antenna_height_raw",
+      "status": "pending"
+    },
+    {
+      "family": "antenna_speed",
+      "status": "pending"
+    },
+    {
+      "family": "bird_mode",
+      "status": "pending"
+    },
+    {
+      "family": "doppler",
+      "status": "complete"
+    },
+    {
+      "family": "far_stc",
+      "status": "pending"
+    },
+    {
+      "family": "gain_auto",
+      "status": "complete"
+    },
+    {
+      "family": "gain_auto_value",
+      "status": "complete"
+    },
+    {
+      "family": "gain_value",
+      "status": "complete"
+    },
+    {
+      "family": "interference_rejection",
+      "status": "pending"
+    },
+    {
+      "family": "main_bang",
+      "status": "pending"
+    },
+    {
+      "family": "middle_stc",
+      "status": "pending"
+    },
+    {
+      "family": "near_stc",
+      "status": "pending"
+    },
+    {
+      "family": "noise_reduction",
+      "status": "pending"
+    },
+    {
+      "family": "pulse_width",
+      "status": "pending"
+    },
+    {
+      "family": "rain_clutter",
+      "status": "pending"
+    },
+    {
+      "family": "rain_clutter_auto",
+      "status": "pending"
+    },
+    {
+      "family": "rain_clutter_auto_value",
+      "status": "pending"
+    },
+    {
+      "family": "rain_clutter_ftc_mode",
+      "status": "pending"
+    },
+    {
+      "family": "rain_clutter_mode",
+      "status": "pending"
+    },
+    {
+      "family": "range_index",
+      "status": "pending"
+    },
+    {
+      "family": "rezboost",
+      "status": "pending"
+    },
+    {
+      "family": "sea_clutter",
+      "status": "pending"
+    },
+    {
+      "family": "sea_clutter_auto",
+      "status": "pending"
+    },
+    {
+      "family": "sea_clutter_auto_value",
+      "status": "pending"
+    },
+    {
+      "family": "sea_clutter_mode",
+      "status": "pending"
+    }
+  ],
+  "status_labels": [
+    "complete",
+    "failed",
+    "pending"
+  ],
+  "status_counts": [
+    4,
+    0,
+    21
+  ]
+}

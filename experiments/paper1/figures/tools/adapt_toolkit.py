@@ -177,6 +177,7 @@ def main() -> int:
         # family so a large campaign does not create a legend entry for every
         # individual setting value.
         grouped: dict[str, list[dict[str, Any]]] = {}
+        by_phase_id = {row.get("phase_id", ""): row for row in responses}
         for row in responses:
             family = row.get("control_family", row.get("setting", "unknown"))
             grouped.setdefault(family, []).append(row)
@@ -185,53 +186,49 @@ def main() -> int:
             rows.sort(
                 key=lambda row: integer(row.get("phase_index", row.get("rotation_index"))) or 0
             )
-            conditions.append(
-                {
-                    "label": family,
-                    "rotation_index": [
-                        integer(row.get("phase_index", row.get("rotation_index"))) for row in rows
-                    ],
-                    "condition_labels": [
-                        row.get("condition", row.get("phase_id", "")) for row in rows
-                    ],
-                    "zero_fraction": [
-                        first_value(row, ("decoded_zero_fraction", "zero_fraction")) for row in rows
-                    ],
-                    "exported_code_support": [
-                        first_value(
-                            row,
-                            (
-                                "exported_code_support",
-                                "code_support",
-                                "observed_code_count",
-                            ),
-                        )
-                        for row in rows
-                    ],
-                    "angular_support": [
-                        first_value(
-                            row,
-                            ("angular_support", "unique_angle_count"),
-                        )
-                        for row in rows
-                    ],
-                    # Retain legacy aliases for downstream readers while the
-                    # figure uses representation support explicitly.
-                    "mean_code": [
-                        first_value(row, ("decoded_mean_code", "mean_code")) for row in rows
-                    ],
-                    "max_code_fraction": [
-                        first_value(
-                            row,
-                            ("decoded_max_code_fraction", "max_code_fraction"),
-                        )
-                        for row in rows
-                    ],
-                    "unique_angle_count": [
-                        first_value(row, ("unique_angle_count", "angular_support")) for row in rows
-                    ],
-                }
-            )
+
+            def series(items: list[dict[str, Any]], names: tuple[str, ...]) -> list[float | None]:
+                return [first_value(row, names) for row in items]
+
+            condition = {
+                "label": family,
+                "rotation_index": list(range(len(rows)))
+                if family != "reference"
+                else [integer(row.get("phase_index", row.get("rotation_index"))) for row in rows],
+                "condition_labels": [row.get("condition", row.get("phase_id", "")) for row in rows],
+                "zero_fraction": series(rows, ("decoded_zero_fraction", "zero_fraction")),
+                "exported_code_support": series(
+                    rows, ("exported_code_support", "code_support", "observed_code_count")
+                ),
+                "angular_support": series(rows, ("unique_angle_count", "angular_support")),
+                "mean_code": series(rows, ("decoded_mean_code", "mean_code")),
+                "max_code_fraction": series(
+                    rows, ("decoded_max_code_fraction", "max_code_fraction")
+                ),
+                "unique_angle_count": series(rows, ("unique_angle_count", "angular_support")),
+            }
+            if family != "reference":
+                paired = [
+                    by_phase_id[row["reference_phase_id"]]
+                    for row in rows
+                    if row.get("reference_phase_id") in by_phase_id
+                ]
+                condition.update(
+                    {
+                        "paired_reference_rotation_index": list(range(len(paired))),
+                        "paired_reference_zero_fraction": series(
+                            paired, ("decoded_zero_fraction", "zero_fraction")
+                        ),
+                        "paired_reference_exported_code_support": series(
+                            paired,
+                            ("exported_code_support", "code_support", "observed_code_count"),
+                        ),
+                        "paired_reference_angular_support": series(
+                            paired, ("unique_angle_count", "angular_support")
+                        ),
+                    }
+                )
+            conditions.append(condition)
         write(
             args.out / "setting_response.json",
             {

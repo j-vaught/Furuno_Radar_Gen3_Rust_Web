@@ -20,6 +20,14 @@ derived only from the E1 session summary, not from the larger E6 plan.
 The EF paired-condition figure is `fig_ef_paired_response`. It uses the four
 completed EF records with EF0 as the observed within-context reference and
 EF1 or EF2 as the matched condition.
+The completed-campaign helper writes `family_coverage.json` and filters the
+response figures to validated complete children. `fig_campaign_family_coverage`
+summarizes all 25 planned control families by complete, failed, and pending
+status; pending families are not plotted as zero measurements.
+Run `tools/batch_completed_campaign.py` on `comech-2080` with one or more
+`--campaign-manifest` arguments, the mirrored session root, the analyzer path,
+and a `--path-map` from the Mac recording root to the server mirror. It emits
+merged analyzer metrics, a selection report, and per-family response inputs.
 For a completed campaign, pass the manifest and analyzer rotation metrics as
 the third and fourth arguments. An optional fifth argument recovers standby
 control-characterization outcomes. The campaign adapter groups phase rows by
@@ -30,6 +38,9 @@ non-reference control family when campaign data are ready. Each companion
 figure compares that family with the matched reference using two legend
 entries. The standalone `fig_setting_response` output is a reference-series
 overview and does not expand into one legend entry per family.
+The source family key `doppler` is retained for data and filename compatibility;
+its visible figure label is `EF processing-mode selector` and carries no
+unverified Doppler or velocity interpretation.
 The E6 plan validation enumerates 25 non-reference control families plus the
 reference condition. The reference is counted separately from the control
 family total.
@@ -53,3 +64,7 @@ Coverage bars use the documented schema classes accepted, rejected, clamped,
 deferred, restored, and superseded. Superseded records remain separate from
 deferred records, while missing or unknown classes are reported as
 `unclassified_count` and are not inferred from readback equality.
+`tools/watch_completed_campaign.py` incrementally mirrors only validated
+completed children to comech-2080. It copies each closed child's raw UDP and
+event JSONL before analysis and reuses an analysis cache only when the recorded
+raw-input hashes still match.

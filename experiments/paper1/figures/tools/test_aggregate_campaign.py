@@ -67,6 +67,18 @@ class CampaignFamilyTests(unittest.TestCase):
         settings = {0: self.reference_settings, 1: self.reference_settings.copy()}
         self.assertEqual(related_reference(1, phases, settings), (0, "previous"))
 
+    def test_related_reference_does_not_cross_control_families(self) -> None:
+        gain_reference = {**self.reference, "control_family": "gain_value"}
+        doppler_variant = {
+            "phase_id": "doppler_0",
+            "source_phase_id": "doppler_0",
+            "control_family": "doppler",
+            "requested_settings": self.reference_settings.copy(),
+        }
+        phases = [gain_reference, doppler_variant]
+        settings = {0: self.reference_settings, 1: self.reference_settings.copy()}
+        self.assertEqual(related_reference(1, phases, settings), (None, "none"))
+
     def test_transition_latency_accepts_unix_millisecond_readback(self) -> None:
         self.assertEqual(elapsed_ms("unix_ms:1000", "unix_ms:2500"), 1500.0)
 

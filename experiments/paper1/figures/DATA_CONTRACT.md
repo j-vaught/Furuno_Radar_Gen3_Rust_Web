@@ -44,6 +44,10 @@ processing context, using the explicit `ef0-per-fixed-context` rule. It plots
 decoded zero fraction, observed code count, and unique angle count from the
 four completed records. The phase labels remain EF0, EF1, and EF2; they do not
 establish a manufacturer Doppler or velocity interpretation.
+The completed-campaign helper writes `family_coverage.json` with one status per
+planned control family. Its complete subset feeds `setting_response.csv`; the
+coverage figure reports pending and failed families separately from measured
+response values.
 The settings coverage adapter emits the same event index and match indicator,
 plus setting, requested, and observed labels for audit. It maps only documented
 schema outcomes. Missing or unknown outcomes increment `unclassified_count`

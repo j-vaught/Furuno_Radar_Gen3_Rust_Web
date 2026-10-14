@@ -14,19 +14,26 @@
     align(center + horizon, text(size: 10pt,
       [PREVIEW. Awaiting a selected control-family response series.]))))
 } else {
+  let family-title = if family == "doppler" {
+    [EF processing-mode selector]
+  } else {
+    none
+  }
   let panel(metric, label) = {
-    let ref-plots = if reference.len() > 0 {
+    let selected-series = selected.at(0)
+    let paired-reference-key = "paired_reference_" + metric
+    let ref-plots = if selected-series.at(paired-reference-key).len() > 0 {
       (lq.plot(
-        reference.at(0).rotation_index,
-        reference.at(0).at(metric),
+        selected-series.paired_reference_rotation_index,
+        selected-series.at(paired-reference-key),
         label: [Reference],
         stroke: 1pt,
         mark: none,
       ),)
     } else { () }
     let condition-plot = lq.plot(
-      selected.at(0).rotation_index,
-      selected.at(0).at(metric),
+      selected-series.rotation_index,
+      selected-series.at(metric),
       label: [Condition],
       stroke: 1pt,
       mark: none,
@@ -42,11 +49,18 @@
       yaxis: (subticks: none),
     )
   }
-  align(center, grid(
-    columns: 2,
-    column-gutter: 0.24in,
-    panel("zero_fraction", [Decoded zero fraction]),
-    panel("exported_code_support", [Exported-code support]),
-    panel("angular_support", [Angular support]),
+  align(center, stack(
+    dir: ttb,
+    spacing: 0.04in,
+    if family-title != none {
+      block(width: 6.4in, align(center, text(size: 8pt, family-title)))
+    } else { none },
+    grid(
+      columns: 2,
+      column-gutter: 0.24in,
+      panel("zero_fraction", [Decoded zero fraction]),
+      panel("exported_code_support", [Exported-code support]),
+      panel("angular_support", [Angular support]),
+    )
   ))
 }

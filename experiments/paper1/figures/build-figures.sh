@@ -10,6 +10,7 @@ campaign_metrics=${4:-}
 characterization=${5:-}
 ef_session_summary=${6:-}
 ef_rotation_metrics=${7:-}
+family_coverage=${8:-}
 
 cd "$figure_root"
 if [[ -n "$campaign_manifest" || -n "$campaign_metrics" || -n "$characterization" ]]; then
@@ -51,6 +52,10 @@ if [[ -n "$ef_session_summary" || -n "$ef_rotation_metrics" ]]; then
     --out data/ef_paired_response.json
 fi
 
+if [[ -n "$family_coverage" ]]; then
+  cp "$family_coverage" data/campaign_family_coverage.json
+fi
+
 mkdir -p "$output_dir"
 sources=(
   fig_capture_contract
@@ -64,6 +69,7 @@ sources=(
   fig_setting_response
   fig_bit_planes
   fig_ef_paired_response
+  fig_campaign_family_coverage
   fig_range_bearing_residuals
 )
 for source in "${sources[@]}"; do

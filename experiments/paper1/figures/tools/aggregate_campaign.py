@@ -133,6 +133,17 @@ def related_reference(
     for phase_index, phase in enumerate(phases):
         if is_reference_phase(phase):
             references.append(phase_index)
+    family = phases[index].get("control_family") if 0 <= index < len(phases) else None
+    if family:
+        same_family = [
+            phase_index
+            for phase_index in references
+            if phases[phase_index].get("control_family") == family
+        ]
+        if same_family:
+            references = same_family
+        else:
+            references = []
     if not references:
         return None, "none"
     if index in references:
