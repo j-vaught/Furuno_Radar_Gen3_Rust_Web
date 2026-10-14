@@ -19,6 +19,7 @@ import re
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.error
@@ -156,6 +157,31 @@ def log_event(fp: Any, event: str, **fields: Any) -> dict[str, Any]:
     fp.write(json.dumps(item, sort_keys=True) + "\n")
     fp.flush()
     return item
+
+
+def write_manifest_atomic(path: Path, manifest: dict[str, Any]) -> None:
+    """Persist a checkpoint with an atomic same-directory replacement."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            json.dump(manifest, temporary, indent=2)
+            temporary.write("\n")
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def http_request(
@@ -1878,7 +1904,7 @@ def run_restore_only(
             if cleanup_errors:
                 manifest["cleanup_errors"] = cleanup_errors
             log_event(events, "restore_session_end", status=manifest.get("status"))
-            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            write_manifest_atomic(manifest_path, manifest)
     return 0 if manifest.get("status") == "complete" else 2
 
 
@@ -1928,6 +1954,24 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
                 expanded.append(dict(reference))
     result = dict(experiment)
     result["phases"] = expanded
+    return result
+
+
+def select_control_family(experiment: dict[str, Any], family: str) -> dict[str, Any]:
+    """Select one matrix setting while retaining the shared reference phase."""
+    matrix = experiment.get("control_matrix")
+    if not isinstance(matrix, list):
+        raise ValueError("--control-family requires an experiment control matrix")
+    selected = [entry for entry in matrix if entry.get("setting") == family]
+    if not selected:
+        available = sorted({str(entry.get("setting")) for entry in matrix if entry.get("setting")})
+        raise ValueError(f"unknown control family {family!r}; available={available}")
+    result = dict(experiment)
+    result["control_matrix"] = selected
+    # E6 has one reference phase. Preserve only that shared phase before the
+    # matrix expansion adds the before/after reference around each condition.
+    result["phases"] = list(experiment.get("phases", []))[:1]
+    result["selected_control_family"] = family
     return result
 
 
@@ -2107,6 +2151,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--experiment", required=True)
+    parser.add_argument(
+        "--control-family",
+        help="For a matrix experiment, run one setting family with its interleaved references",
+    )
     parser.add_argument("--metadata", type=Path, required=True)
     parser.add_argument("--target-manifest", type=Path)
     parser.add_argument(
@@ -2181,6 +2229,8 @@ def main() -> int:
     experiment = next((item for item in plan["experiments"] if item["id"] == args.experiment), None)
     if experiment is None:
         raise SystemExit(f"unknown experiment: {args.experiment}")
+    if args.control_family:
+        experiment = select_control_family(experiment, args.control_family)
     experiment = expand_control_matrix(experiment)
     skipped_controls: list[dict[str, Any]] = []
     characterization_merge: dict[str, Any] | None = None
@@ -2251,6 +2301,7 @@ def main() -> int:
         "schema_version": "paper1-session-manifest-1.0",
         "session_id": args.session_id,
         "experiment_id": args.experiment,
+        "selected_control_family": experiment.get("selected_control_family"),
         "operator": metadata.get("operator", "unknown"),
         "host": {
             "name": platform.node(),
@@ -2290,6 +2341,15 @@ def main() -> int:
         float(phase.get("settle_s", 0)) + float(phase.get("record_s", 0))
         for phase in experiment["phases"]
     )
+    timing_estimate = metadata.get("timing_estimate", {})
+    control_write_s = timing_estimate.get("control_write_s_per_phase")
+    restoration_s = timing_estimate.get("restoration_s_per_phase")
+    measured_overhead_s: float | None = None
+    if isinstance(control_write_s, (int, float)) and isinstance(restoration_s, (int, float)):
+        measured_overhead_s = len(experiment["phases"]) * (
+            float(control_write_s) + float(restoration_s)
+        )
+        estimated_runtime_s += measured_overhead_s
     packet_rate = metadata.get("capture_estimate", {}).get("packets_per_second")
     payload_bytes = metadata.get("capture_estimate", {}).get("payload_bytes")
     estimated_raw_bytes = (
@@ -2301,8 +2361,19 @@ def main() -> int:
         "phase_count": len(experiment["phases"]),
         "record_s": estimated_record_s,
         "runtime_s": estimated_runtime_s,
+        "runtime_lower_bound_s": sum(
+            float(phase.get("settle_s", 0)) + float(phase.get("record_s", 0))
+            for phase in experiment["phases"]
+        ),
+        "control_write_s_per_phase": control_write_s,
+        "restoration_s_per_phase": restoration_s,
+        "runtime_is_lower_bound": measured_overhead_s is None,
         "raw_udp_bytes": estimated_raw_bytes,
-        "basis": "operator metadata capture_estimate; otherwise raw size is unknown",
+        "basis": (
+            "settle and record windows plus operator timing_estimate"
+            if measured_overhead_s is not None
+            else "settle and record windows only; control and restoration time not supplied"
+        ),
     }
     if not args.dry_run and estimated_runtime_s > args.campaign_timeout:
         raise SystemExit(
@@ -2339,7 +2410,7 @@ def main() -> int:
                 for phase in experiment["phases"]
             ]
             manifest["status"] = "dry_run_validated"
-            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            write_manifest_atomic(manifest_path, manifest)
             log_event(events, "session_end", status="dry_run_validated")
             return 0
 
@@ -2369,6 +2440,9 @@ def main() -> int:
             )
             require_confirmed_readback(before, "initial device readback")
             manifest["initial_device_readback"] = before
+            manifest["status"] = "running"
+            manifest["checkpoint"] = "initial_readback"
+            write_manifest_atomic(manifest_path, manifest)
             if is_characterization:
                 characterization_spec = experiment.get(
                     "control_characterization_override",
@@ -2408,6 +2482,9 @@ def main() -> int:
                     "rotation_files": [],
                 }
                 manifest["active_phase"] = phase_record
+                manifest["status"] = "running"
+                manifest["checkpoint"] = "phase_started"
+                write_manifest_atomic(manifest_path, manifest)
                 phase_record["raw_receiver_start"] = dict(receiver_counts)
                 phase_record["command_events"] = apply_phase(
                     args.base_url, phase, events, args.http_timeout
@@ -2621,6 +2698,12 @@ def main() -> int:
                     )
                 manifest["phases"].append(phase_record)
                 manifest.pop("active_phase", None)
+                manifest["status"] = "running"
+                manifest["checkpoint"] = "phase_completed"
+                manifest["completed_phase_count"] = len(manifest["phases"])
+                manifest["last_completed_phase_index"] = phase_record.get("phase_index")
+                manifest["last_completed_phase_id"] = phase_record.get("phase_id")
+                write_manifest_atomic(manifest_path, manifest)
             manifest["raw_receiver"] = receiver_counts
             if not is_characterization:
                 manifest["status"] = "complete" if not STOP.is_set() else "interrupted"
@@ -2672,7 +2755,7 @@ def main() -> int:
             log_event(
                 events, "session_end", status=manifest.get("status"), raw_receiver=receiver_counts
             )
-            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            write_manifest_atomic(manifest_path, manifest)
     return 0
 
 

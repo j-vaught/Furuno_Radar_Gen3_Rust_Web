@@ -24,10 +24,36 @@ from scripts.capture_runner import (
     require_confirmed_readback,
     require_transmitting_readback,
     restore_verified_baseline,
+    select_control_family,
+    write_manifest_atomic,
 )
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_atomic_manifest_checkpoint_replaces_previous_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session_manifest.json"
+            write_manifest_atomic(path, {"status": "running", "phase_index": 2})
+            self.assertEqual(json.loads(path.read_text())["phase_index"], 2)
+            self.assertFalse(list(Path(tmp).glob("*.tmp")))
+
+    def test_control_family_selection_keeps_reference_matrix_context(self) -> None:
+        experiment = {
+            "phases": [{"id": "reference", "settings": {"range_index": 0}}],
+            "control_matrix": [
+                {"setting": "gain_value", "values": [0, 64]},
+                {"setting": "doppler", "values": [1, 2]},
+            ],
+        }
+        selected = select_control_family(experiment, "doppler")
+        expanded = expand_control_matrix(selected)
+        self.assertEqual(selected["selected_control_family"], "doppler")
+        self.assertEqual(
+            [phase["id"] for phase in expanded["phases"]],
+            ["reference", "doppler_1", "reference", "doppler_2", "reference"],
+        )
+        self.assertTrue(all(phase["settings"]["range_index"] == 0 for phase in expanded["phases"]))
+
     def test_system_info_json_error_null_is_not_a_failure(self) -> None:
         info = parse_system_info(
             200,

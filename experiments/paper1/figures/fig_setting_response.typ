@@ -9,22 +9,28 @@
   align(center, block(width: 6.4in, height: 2.0in, stroke: (paint: black, thickness: 0.7pt),
     inset: 0.12in, fill: white,
     align(center + horizon, text(size: 10pt, [PREVIEW. Awaiting matched setting-response data.]))))
+} else if d.conditions.filter(c => c.label == "reference").len() == 0 {
+  align(center, block(width: 6.4in, height: 2.0in, stroke: (paint: black, thickness: 0.7pt),
+    inset: 0.12in, fill: white,
+    align(center + horizon, text(size: 10pt,
+      [PREVIEW. Awaiting a reference series for the campaign overview.]))))
 } else {
+  let reference = d.conditions.filter(c => c.label == "reference").at(0)
   let panel(metric, label) = {
-    let plots = d.conditions.map(c => lq.plot(
-      c.rotation_index,
-      c.at(metric),
-      label: c.label,
+    let plots = (lq.plot(
+      reference.rotation_index,
+      reference.at(metric),
+      label: [Reference],
       stroke: 1pt,
       mark: none,
-    ))
+    ),)
     lq.diagram(
       ..plots,
       width: 3.12in,
       height: 1.78in,
       xlabel: [Condition index],
       ylabel: label,
-      legend: if d.conditions.len() > 1 { (position: top + right, radius: 0pt) } else { none },
+      legend: none,
       xaxis: (subticks: none),
       yaxis: (subticks: none),
     )

@@ -48,9 +48,14 @@ accepts campaign phase rows with `phase_index`, `phase_id`, `control_family`,
 The campaign aggregator computes these means from completed rotation metrics
 and preserves the phase and settings provenance. It groups the figure output by
 control family so the plot does not create one legend entry per setting value.
+The build uses the resulting family labels to compile one companion Typst
+figure per non-reference family. Each companion selects one family series and
+the matched reference series, so a campaign with many control families does
+not create a dense multi-family legend. No companion is emitted while the
+setting-response contract remains in `preview` state.
 The adapter also consumes `control_characterization.csv` for settings coverage;
-outcomes are mapped to accepted, rejected, clamped, deferred, and restored
-without treating an unverified command as an accepted response. The bit-plane adapter
+outcomes are mapped to accepted, rejected, clamped, deferred, restored, and
+superseded without treating an unverified command as an accepted response. The bit-plane adapter
 consumes the Doppler audit JSON and retains the pre-shift histogram, upper-six
 histogram, decoded low-two occupancy, and exact CSV replay match fractions.
 Those fields are representation and alignment evidence. They do not establish

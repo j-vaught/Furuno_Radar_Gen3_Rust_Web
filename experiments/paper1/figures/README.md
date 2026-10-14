@@ -20,6 +20,11 @@ the third and fourth arguments. An optional fifth argument recovers standby
 control-characterization outcomes. The campaign adapter groups phase rows by
 control family and retains phase identifiers, settings hashes, and neighboring
 reference identifiers in `setting_response.csv`.
+The build emits one `fig_setting_response_family_<family>.pdf` and PNG pair per
+non-reference control family when campaign data are ready. Each companion
+figure compares that family with the matched reference using two legend
+entries. The standalone `fig_setting_response` output is a reference-series
+overview and does not expand into one legend entry per family.
 The full invocation is `./build-figures.sh <figure_data> <bit_audit.json>
 <session_manifest.json> <rotation_metrics.csv>
 <characterization_recovered.json>`.

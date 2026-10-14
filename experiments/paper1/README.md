@@ -117,7 +117,23 @@ For each transmitting phase, the runner verifies the requested state in standby,
 
 The TX gates require a transmitting readback state of 2 or 3, a successful recording-start response, and a `get_system_info` response with recording active. During acquisition the runner stops on an explicit recording or controller disconnect. After stopping, it requires the requested number of CSV rotations and checks each `furuno-web-2` CSV header for `settings_verified,true`, nonempty output, and recording start and stop boundaries. An active phase is retained in the failure manifest until its output checks and baseline restoration complete.
 
-The current finite E6 matrix expands to 191 phases. At the configured 5 s settling interval and 30 s recording window, this is 5,730 s of recording and 6,685 s, or about 111.4 min, including settling before HTTP and file-system overhead. The runner writes this estimate into `session_manifest.json` and refuses a live run when it exceeds `--campaign-timeout`; use a fresh session identifier and a deliberately larger timeout only after confirming available storage and operator coverage.
+The current finite E6 matrix expands to 191 phases. At the configured 5 s settling interval and 30 s recording window, the runner reports the 6,685 s window-and-settle lower bound. Control writes, readback, and baseline restoration add time and are not treated as zero-cost. Fill `metadata.timing_estimate` from a measured phase or dry run before a long campaign; the runner adds those per-phase values to its runtime estimate and records the basis in `session_manifest.json`. The wall-clock deadline still protects the run, so use a fresh session identifier and a deliberately larger timeout only after confirming available storage and operator coverage.
+
+For a long E6 campaign, batch one control family at a time with `--control-family`, for example `--control-family gain_value`. The runner retains the complete reference settings and inserts a reference phase before and after every condition in that family. Each completed phase is checkpointed through an atomic manifest replacement with its actual readback and recording file paths, so a server-side analysis can begin while later batches remain pending.
+
+The campaign driver performs that batching sequence and stops on the first failed child or failed final restoration. It writes `campaign_manifest.json` after each family and stores each child log beside its session directory.
+
+```sh
+python3 experiments/paper1/scripts/run_indoor_campaign.py \
+  --plan experiments/paper1/plans/paper1_experiments.json \
+  --metadata /Volumes/MacApplications/Radar_papers/data/paper1-metadata.json \
+  --characterization-report /Volumes/MacApplications/Radar_papers/data/paper1-experiments/2026-10-14-indoor-controls-01/session_manifest.json \
+  --output-root /Volumes/MacApplications/Radar_papers/data/paper1-experiments \
+  --campaign-id 2026-10-14-e6-indoor-all \
+  --transmit --physical-ready
+```
+
+Use `--family gain_value` or repeat `--family` to select a subset after checking the master manifest. The driver requires matching initial and final verified settings with `tx_state=1` for every completed child and rejects cleanup errors even when the child process exits successfully.
 
 Each generated E6 condition reapplies the complete reference settings before applying its one requested variant and any explicit context fields. The runner reads the complete setting snapshot afterward and stops before recording if any requested field is missing or differs. This keeps an automatic gain, range, pulse, clutter, and antenna state from carrying over from the preceding condition.
 

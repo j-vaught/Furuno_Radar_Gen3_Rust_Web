@@ -55,3 +55,13 @@ for source in "${sources[@]}"; do
   typst compile "$source.typ" "$output_dir/$source.pdf"
   pdftoppm -png -r 180 -singlefile "$output_dir/$source.pdf" "$output_dir/$source"
 done
+
+# Campaign response data is rendered once per control family. Each companion
+# figure contains at most the selected condition and the matched reference,
+# keeping legends compact when a campaign has many control families.
+while IFS=$'\t' read -r family slug; do
+  [[ -n "$family" ]] || continue
+  output="$output_dir/fig_setting_response_family_${slug}"
+  typst compile --input "family=$family" fig_setting_response_family.typ "$output.pdf"
+  pdftoppm -png -r 180 -singlefile "$output.pdf" "$output"
+done < <(python3 tools/list_setting_families.py --data data/setting_response.json)

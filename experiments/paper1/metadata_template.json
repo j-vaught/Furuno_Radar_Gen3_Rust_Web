@@ -2,6 +2,11 @@
   "operator": "J.C. Vaught",
   "clock_sync": "record the observed macOS time synchronization state before the run",
   "capture_estimate": {"packets_per_second": null, "payload_bytes": null},
+  "timing_estimate": {
+    "control_write_s_per_phase": null,
+    "restoration_s_per_phase": null,
+    "source": "Fill from a measured dry-run or prior completed phase before a long campaign."
+  },
   "radar": {
     "model": "Furuno DRS4D-NXT",
     "serial_number": "RECORD_FROM_LABEL",
