@@ -17,6 +17,9 @@ production names are `fig_capture_contract`, `fig_target_geometry`,
 `fig_range_bearing_residuals`.
 The E1 fixed-scene export figure is `fig_stationary_repeatability_e1` and is
 derived only from the E1 session summary, not from the larger E6 plan.
+The EF paired-condition figure is `fig_ef_paired_response`. It uses the four
+completed EF records with EF0 as the observed within-context reference and
+EF1 or EF2 as the matched condition.
 For a completed campaign, pass the manifest and analyzer rotation metrics as
 the third and fourth arguments. An optional fifth argument recovers standby
 control-characterization outcomes. The campaign adapter groups phase rows by
@@ -27,9 +30,14 @@ non-reference control family when campaign data are ready. Each companion
 figure compares that family with the matched reference using two legend
 entries. The standalone `fig_setting_response` output is a reference-series
 overview and does not expand into one legend entry per family.
+The E6 plan validation enumerates 25 non-reference control families plus the
+reference condition. The reference is counted separately from the control
+family total.
 The full invocation is `./build-figures.sh <figure_data> <bit_audit.json>
 <session_manifest.json> <rotation_metrics.csv>
-<characterization_recovered.json>`.
+<characterization_recovered.json>`. For the completed EF pairs, append the
+session-summary CSV and rotation-metrics CSV as arguments six and seven. The
+adapter applies the explicit `ef0-per-fixed-context` rule.
 The CeTZ diagrams use square corners, New Computer Modern, garnet only as an
 accent, and filled stealth arrows. The Lilaq plots retain the package default
 palette.

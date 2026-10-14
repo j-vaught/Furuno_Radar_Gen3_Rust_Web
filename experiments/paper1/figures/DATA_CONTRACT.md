@@ -38,6 +38,12 @@ The E1 repeatability contract is stored separately in
 by configuration export and resets rotation index within each export. Its
 ordinate is decoded zero fraction expressed as a percentage for plotting; it
 does not encode surveyed geometry or physical calibration.
+The EF paired-response contract is stored in `data/ef_paired_response.json`.
+It pairs the observed EF0 record with EF1 or EF2 within the same fixed
+processing context, using the explicit `ef0-per-fixed-context` rule. It plots
+decoded zero fraction, observed code count, and unique angle count from the
+four completed records. The phase labels remain EF0, EF1, and EF2; they do not
+establish a manufacturer Doppler or velocity interpretation.
 The settings coverage adapter emits the same event index and match indicator,
 plus setting, requested, and observed labels for audit. It maps only documented
 schema outcomes. Missing or unknown outcomes increment `unclassified_count`

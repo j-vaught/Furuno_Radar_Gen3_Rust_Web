@@ -8,6 +8,8 @@ bit_audit=${2:-}
 campaign_manifest=${3:-}
 campaign_metrics=${4:-}
 characterization=${5:-}
+ef_session_summary=${6:-}
+ef_rotation_metrics=${7:-}
 
 cd "$figure_root"
 if [[ -n "$campaign_manifest" || -n "$campaign_metrics" || -n "$characterization" ]]; then
@@ -38,6 +40,17 @@ if [[ -n "$figure_data" || -n "$bit_audit" || -n "$campaign_manifest" || -n "$ca
   python3 tools/adapt_toolkit.py "${adapter_args[@]}"
 fi
 
+if [[ -n "$ef_session_summary" || -n "$ef_rotation_metrics" ]]; then
+  if [[ -z "$ef_session_summary" || -z "$ef_rotation_metrics" ]]; then
+    echo "both EF session summary and rotation metrics are required" >&2
+    exit 2
+  fi
+  python3 tools/derive_ef_pairs.py \
+    --session-summary "$ef_session_summary" \
+    --rotation-metrics "$ef_rotation_metrics" \
+    --out data/ef_paired_response.json
+fi
+
 mkdir -p "$output_dir"
 sources=(
   fig_capture_contract
@@ -50,6 +63,7 @@ sources=(
   fig_settings_coverage
   fig_setting_response
   fig_bit_planes
+  fig_ef_paired_response
   fig_range_bearing_residuals
 )
 for source in "${sources[@]}"; do
