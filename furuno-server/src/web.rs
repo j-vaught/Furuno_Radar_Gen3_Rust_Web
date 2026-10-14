@@ -1229,8 +1229,19 @@ async fn handle_set_gain(
         return msg;
     }
     let auto = params.status == 1;
-    let value = if auto { params.auto_value.unwrap_or(0) } else { params.manual_value.unwrap_or(50) };
-    let cmd = protocol::cmd_gain(auto, value);
+    let (manual_value, auto_value) = match (state.settings.read(), state.settings_readback.read()) {
+        (Ok(settings), Ok(readback)) if readback.verified => {
+            let manual = params.manual_value.unwrap_or(settings.gain_manual_value);
+            let automatic = params.auto_value.unwrap_or(settings.gain_auto_value);
+            (manual, automatic)
+        }
+        (Ok(_), Ok(_)) => {
+            return "Gain change unavailable: a verified current gain readback is required to preserve the inactive value".into();
+        }
+        _ => return "Gain change unavailable: settings state lock is unavailable".into(),
+    };
+    let value = if auto { auto_value } else { manual_value };
+    let cmd = protocol::cmd_gain_full(auto, manual_value, auto_value);
     apply_settings_update(
         &state,
         vec![
@@ -1740,6 +1751,37 @@ fn format_pattern_value<T: std::fmt::Display>(value: Option<T>) -> String {
     value.map(|v| v.to_string()).unwrap_or_else(|| "NaN".to_string())
 }
 
+fn pattern_commands_with_preserved_gain(
+    state: &AppState,
+    commands: Vec<String>,
+) -> Result<Vec<String>, String> {
+    if !commands.iter().any(|command| command.starts_with("$S63,")) {
+        return Ok(commands);
+    }
+    let auto_value = {
+        let settings = state.settings.read().map_err(|_| "settings lock poisoned".to_string())?;
+        let readback = state.settings_readback.read().map_err(|_| "settings readback lock poisoned".to_string())?;
+        if !readback.verified {
+            return Err("pattern gain change requires verified readback to preserve automatic gain".into());
+        }
+        settings.gain_auto_value
+    };
+    commands
+        .into_iter()
+        .map(|command| {
+            if !command.starts_with("$S63,") {
+                return Ok(command);
+            }
+            let manual_value = command
+                .split(',')
+                .nth(2)
+                .and_then(|value| value.trim().parse::<u16>().ok())
+                .ok_or_else(|| format!("invalid pattern gain command {command:?}"))?;
+            Ok(protocol::cmd_gain_full(false, manual_value, auto_value))
+        })
+        .collect()
+}
+
 fn pattern_step_allows_override(step: &protocol::ControlStep, setting: &str) -> bool {
     match setting {
         "range" => step.range.is_none(),
@@ -2238,7 +2280,16 @@ fn execute_pattern(
             }
 
             // Send commands for changed parameters
-            let cmds = step.commands_vs(prev_step);
+            let cmds = match pattern_commands_with_preserved_gain(&state, step.commands_vs(prev_step)) {
+                Ok(commands) => commands,
+                Err(error) => {
+                    invalidate_settings_readback(&state, "pattern_gain_readback_missing", &error);
+                    disable_recording_on_error(&state, "pattern gain command", &error);
+                    if let Ok(mut status) = state.pattern_status.write() { *status = format!("Pattern stopped: {error}"); }
+                    state.pattern_running.store(false, Ordering::Relaxed);
+                    return;
+                }
+            };
             if !cmds.is_empty() {
                 let mut command_error = None;
                 if let Ok(mut conn) = state.conn.lock() {
@@ -2460,7 +2511,15 @@ async fn handle_run_pattern_queue(
                     if let Ok(mut step_state) = st.active_pattern_step.write() {
                         *step_state = Some(step.clone());
                     }
-                    let cmds = step.commands_vs(prev_step);
+                    let cmds = match pattern_commands_with_preserved_gain(&st, step.commands_vs(prev_step)) {
+                        Ok(commands) => commands,
+                        Err(error) => {
+                            invalidate_settings_readback(&st, "queued_pattern_gain_readback_missing", &error);
+                            disable_recording_on_error(&st, "queued pattern gain command", &error);
+                            if let Ok(mut status) = st.pattern_status.write() { *status = format!("Queue stopped: {error}"); }
+                            break 'outer;
+                        }
+                    };
                     if !cmds.is_empty() {
                         let mut command_error = None;
                         if let Ok(mut conn) = st.conn.lock() {

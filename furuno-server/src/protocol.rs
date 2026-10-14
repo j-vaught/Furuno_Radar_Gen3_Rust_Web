@@ -490,9 +490,21 @@ pub fn cmd_range_meters(meters: u32) -> String {
     cmd_range(meters_to_wire_index(meters))
 }
 
-/// Gain: mode 0=manual, 1=auto. value=0-255 for manual.
+/// Gain convenience command. Manual mode preserves the established automatic
+/// value of 80, while automatic mode places `value` in the active field.
 pub fn cmd_gain(auto: bool, value: u16) -> String {
-    build_command("63", &[auto as i32, value as i32, 0, 80, 0])
+    if auto {
+        cmd_gain_full(true, 0, value)
+    } else {
+        cmd_gain_full(false, value, 80)
+    }
+}
+
+/// Gain command with both retained control values explicit. N63 field 1 is
+/// manual gain and field 3 is automatic gain; the inactive value must be
+/// carried through so a mode change does not overwrite it.
+pub fn cmd_gain_full(auto: bool, manual: u16, auto_value: u16) -> String {
+    build_command("63", &[auto as i32, manual as i32, 0, auto_value as i32, 0])
 }
 
 /// Sea clutter (A/C SEA): status 0=manual, 1=auto. value=0-255.
@@ -1340,5 +1352,9 @@ mod network_tests {
     fn pulse_and_rain_commands_preserve_confirmed_wire_fields() {
         assert_eq!(cmd_pulse_width(0, 1), "$S68,0,0,1,0,0\r\n");
         assert_eq!(cmd_rain_clutter_full(true, 2, 3, 4, 5), "$S65,1,2,3,4,5,0\r\n");
+        assert_eq!(cmd_gain_full(true, 0, 80), "$S63,1,0,0,80,0\r\n");
+        assert_eq!(cmd_gain_full(false, 0, 80), "$S63,0,0,0,80,0\r\n");
+        assert_eq!(cmd_gain(true, 50), "$S63,1,0,0,50,0\r\n");
+        assert_eq!(cmd_gain(false, 0), "$S63,0,0,0,80,0\r\n");
     }
 }
