@@ -46,6 +46,12 @@ pub struct CurrentSettings {
     pub rain_clutter_mode: u16,
     pub rezboost: u16,
     pub interference_rejection: bool,
+    pub interference_rejection_level: u16,
+    pub noise_reduction: bool,
+    pub noise_reduction_level: u16,
+    /// Raw N84 field 1 value. The protocol source calls this antenna height;
+    /// the application does not infer physical installation units.
+    pub antenna_height_raw: u16,
     pub bird_mode: u16,
     pub doppler: u16,
     pub antenna_speed: u16,
@@ -208,6 +214,8 @@ impl Default for CurrentSettings {
             rain_clutter: 0, rain_clutter_auto: false, rain_clutter_auto_value: 0,
             rain_clutter_ftc_mode: 0, rain_clutter_mode: 0,
             rezboost: 0, interference_rejection: false,
+            interference_rejection_level: 0, noise_reduction: false, noise_reduction_level: 0,
+            antenna_height_raw: 0,
             bird_mode: 0, doppler: 0, antenna_speed: 0, antenna_hi_rpm: false,
             main_bang: 0, near_stc: 0, middle_stc: 0, far_stc: 0,
             status: "commanded_cache_unverified".into(),
@@ -335,6 +343,8 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         // Settings (new)
         .route("/set_main_bang", get(handle_set_main_bang))
         .route("/set_interference_rejection", get(handle_set_ir))
+        .route("/set_noise_reduction", get(handle_set_noise_reduction))
+        .route("/set_antenna_height", get(handle_set_antenna_height))
         .route("/set_bird_mode", get(handle_set_bird_mode))
         .route("/set_doppler", get(handle_set_doppler))
         // Recording
@@ -491,6 +501,17 @@ fn read_for<'a>(reads: &'a [RegisterReadback], register: &str) -> Option<&'a Reg
     reads.iter().find(|read| read.register == register)
 }
 
+fn read_for_selector<'a>(
+    reads: &'a [RegisterReadback],
+    register: &str,
+    selector: u16,
+) -> Option<&'a RegisterReadback> {
+    reads.iter().find(|read| {
+        read.register == register
+            && read.values.get(1).and_then(|value| value.parse::<u16>().ok()) == Some(selector)
+    })
+}
+
 fn value_u16(read: Option<&RegisterReadback>, index: usize) -> Option<u16> {
     read.and_then(|item| item.values.get(index))
         .and_then(|value| value.trim().parse::<u16>().ok())
@@ -552,7 +573,9 @@ fn build_settings_readback(
     let red = read_for(reads, "$NED");
     let ree = read_for(reads, "$NEE");
     let ref_ = read_for(reads, "$NEF");
-    let r67 = read_for(reads, "$N67");
+    let r67_ir = read_for_selector(reads, "$N67", 0);
+    let r67_noise = read_for_selector(reads, "$N67", 2);
+    let r84 = read_for(reads, "$N84");
 
     let range = value_u16(r62, 0);
     let gain_auto = value_u16(r63, 0).map(|value| value != 0);
@@ -592,7 +615,11 @@ fn build_settings_readback(
         (Some(1), Some(1)) => Some(2),
         _ => None,
     };
-    let interference_rejection = value_u16(r67, 2).map(|value| value != 0);
+    let ir_level = value_u16(r67_ir, 2);
+    let interference_rejection = ir_level.map(|value| value != 0);
+    let noise_reduction_level = value_u16(r67_noise, 2);
+    let noise_reduction = noise_reduction_level.map(|value| value != 0);
+    let antenna_height_raw = value_u16(r84, 1);
 
     let mut fields = BTreeMap::new();
     fields.insert("tx_state".into(), verified_field(r69, &captured_at, tx_state.map(|v| serde_json::json!(v))));
@@ -621,7 +648,11 @@ fn build_settings_readback(
     fields.insert("bird_mode".into(), verified_field(red, &captured_at, bird_mode.map(|v| serde_json::json!(v))));
     fields.insert("rezboost".into(), verified_field(ree, &captured_at, rezboost.map(|v| serde_json::json!(v))));
     fields.insert("doppler".into(), verified_field(ref_, &captured_at, doppler.map(|v| serde_json::json!(v))));
-    fields.insert("interference_rejection".into(), verified_field(r67, &captured_at, interference_rejection.map(|v| serde_json::json!(v))));
+    fields.insert("interference_rejection_level".into(), verified_field(r67_ir, &captured_at, ir_level.map(|v| serde_json::json!(v))));
+    fields.insert("interference_rejection".into(), verified_field(r67_ir, &captured_at, interference_rejection.map(|v| serde_json::json!(v))));
+    fields.insert("noise_reduction_level".into(), verified_field(r67_noise, &captured_at, noise_reduction_level.map(|v| serde_json::json!(v))));
+    fields.insert("noise_reduction".into(), verified_field(r67_noise, &captured_at, noise_reduction.map(|v| serde_json::json!(v))));
+    fields.insert("antenna_height_raw".into(), verified_field(r84, &captured_at, antenna_height_raw.map(|v| serde_json::json!(v))));
 
     let raw_register_responses = reads.iter().map(|read| RawRegisterResponse {
         requested: read.requested.clone(),
@@ -654,6 +685,10 @@ fn build_settings_readback(
         rain_clutter_mode: rain_mode.unwrap_or_default(),
         rezboost: rezboost.unwrap_or_default(),
         interference_rejection: interference_rejection.unwrap_or_default(),
+        interference_rejection_level: ir_level.unwrap_or_default(),
+        noise_reduction: noise_reduction.unwrap_or_default(),
+        noise_reduction_level: noise_reduction_level.unwrap_or_default(),
+        antenna_height_raw: antenna_height_raw.unwrap_or_default(),
         bird_mode: bird_mode.unwrap_or_default(),
         doppler: doppler.unwrap_or_default(),
         antenna_speed: antenna_speed.unwrap_or_default(),
@@ -692,6 +727,22 @@ fn raw_readback_signature(readback: &SettingsReadback) -> Vec<(String, Vec<Strin
         .collect()
 }
 
+fn readback_capture_millis(readback: &SettingsReadback) -> Option<u128> {
+    readback
+        .captured_at
+        .strip_prefix("unix_ms:")
+        .and_then(|value| value.parse::<u128>().ok())
+}
+
+fn readback_is_newer_or_equal(candidate: &SettingsReadback, current: &SettingsReadback) -> bool {
+    match (readback_capture_millis(candidate), readback_capture_millis(current)) {
+        (Some(candidate), Some(current)) => candidate >= current,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => true,
+    }
+}
+
 fn invalidate_settings_readback(state: &AppState, source: &str, error: &str) {
     let transition_id = state.readback_generation.fetch_add(1, Ordering::Relaxed) + 1;
     if let Ok(mut readback) = state.settings_readback.write() {
@@ -715,13 +766,31 @@ fn invalidate_settings_readback(state: &AppState, source: &str, error: &str) {
 }
 
 fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), String> {
-    let (snapshot, firmware, radar_ip, host_ip) = {
-        let mut conn = state.conn.lock().map_err(|_| "connection lock poisoned".to_string())?;
-        let snapshot = conn.read_current_settings();
-        (snapshot, conn.firmware.clone().unwrap_or_default(), conn.radar_ip, conn.host_ip)
-    };
+    // Keep the connection guard through publication. Without this, two
+    // refreshes can read in order A/B but publish in order B/A, restoring an
+    // older settings snapshot after a newer setter readback completed.
+    let mut conn = state.conn.lock().map_err(|_| "connection lock poisoned".to_string())?;
+    let snapshot = conn.read_current_settings();
+    let firmware = conn.firmware.clone().unwrap_or_default();
+    let radar_ip = conn.radar_ip;
+    let host_ip = conn.host_ip;
     let (settings, readback) = build_settings_readback(&snapshot, &firmware, radar_ip, host_ip, source);
     let mut readback = readback;
+    let current_readback = state.settings_readback
+        .read()
+        .map(|current| current.clone())
+        .unwrap_or_else(|_| SettingsReadback::empty(radar_ip, host_ip));
+    if !readback_is_newer_or_equal(&readback, &current_readback) {
+        let failures = current_readback.fields.iter()
+            .filter(|(_, field)| !field.verified)
+            .map(|(name, field)| format!("{name}: {}", field.error.as_deref().unwrap_or("unverified")))
+            .collect::<Vec<_>>();
+        return if current_readback.verified {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        };
+    }
     let raw_signature = raw_readback_signature(&readback);
     let settings_changed = state.settings.read()
         .map(|previous| *previous != settings)
@@ -1404,6 +1473,30 @@ async fn handle_set_ir(
     );
     let label = if enabled { "ON" } else { "OFF" };
     send_cmd(state, cmd, "$N67,", format!("Interference Rejection {label}")).await
+}
+
+async fn handle_set_noise_reduction(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ModeParam>,
+) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "noise_reduction") {
+        return msg;
+    }
+    let enabled = params.enabled.unwrap_or(0) != 0;
+    let cmd = protocol::cmd_noise_reduction(enabled);
+    let label = if enabled { "ON" } else { "OFF" };
+    send_cmd(state, cmd, "$N67,", format!("Noise Reduction {label}")).await
+}
+
+async fn handle_set_antenna_height(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ValueParam>,
+) -> String {
+    if let Some(msg) = reject_manual_setting_change(&state, "antenna_height_raw") {
+        return msg;
+    }
+    let cmd = protocol::cmd_antenna_height(params.value);
+    send_cmd(state, cmd, "$N84,", format!("Antenna height raw value set to {}", params.value)).await
 }
 
 async fn handle_set_bird_mode(
@@ -2953,7 +3046,11 @@ fn write_echo_csv(
     writeln!(f, "# rain_clutter_ftc_mode,{}", settings.rain_clutter_ftc_mode)?;
     writeln!(f, "# rain_clutter_mode,{}", settings.rain_clutter_mode)?;
     writeln!(f, "# rezboost,{}", settings.rezboost)?;
+    writeln!(f, "# interference_rejection_level,{}", settings.interference_rejection_level)?;
     writeln!(f, "# interference_rejection,{}", settings.interference_rejection)?;
+    writeln!(f, "# noise_reduction_level,{}", settings.noise_reduction_level)?;
+    writeln!(f, "# noise_reduction,{}", settings.noise_reduction)?;
+    writeln!(f, "# antenna_height_raw,{}", settings.antenna_height_raw)?;
     writeln!(f, "# bird_mode,{}", settings.bird_mode)?;
     writeln!(f, "# doppler,{}", settings.doppler)?;
     writeln!(f, "# antenna_speed,{}", settings.antenna_speed)?;
@@ -3054,6 +3151,18 @@ mod tests {
     }
 
     #[test]
+    fn older_refresh_snapshot_cannot_replace_newer_capture() {
+        let mut current = SettingsReadback::empty(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST);
+        current.captured_at = "unix_ms:200".into();
+        let mut older = current.clone();
+        older.captured_at = "unix_ms:199".into();
+        let mut equal = current.clone();
+        equal.captured_at = "unix_ms:200".into();
+        assert!(!readback_is_newer_or_equal(&older, &current));
+        assert!(readback_is_newer_or_equal(&equal, &current));
+    }
+
+    #[test]
     fn readback_maps_device_fields_and_retains_raw_registers() {
         let snapshot = CurrentRadarReadback {
             reads: vec![
@@ -3071,7 +3180,9 @@ mod tests {
                 synthetic_read("$NED", &["2", "0"]),
                 synthetic_read("$NEE", &["3", "0"]),
                 synthetic_read("$NEF", &["1", "1", "0", "1"]),
-                synthetic_read("$N67", &["0", "2", "2", "0"]),
+                synthetic_read("$N67", &["0", "0", "2", "0"]),
+                synthetic_read("$N67", &["0", "2", "1", "0"]),
+                synthetic_read("$N84", &["0", "0", "0"]),
             ],
         };
         let (settings, readback) = build_settings_readback(
@@ -3099,10 +3210,43 @@ mod tests {
         assert!(settings.antenna_hi_rpm);
         assert_eq!(settings.doppler, 2);
         assert!(settings.interference_rejection);
+        assert_eq!(settings.interference_rejection_level, 2);
         assert!(readback.valid_until.as_deref().is_some_and(|value| value.starts_with("unix_ms:")));
-        assert_eq!(readback.raw_register_responses.len(), 15);
+        assert!(settings.noise_reduction);
+        assert_eq!(settings.noise_reduction_level, 1);
+        assert_eq!(settings.antenna_height_raw, 0);
+        assert_eq!(readback.raw_register_responses.len(), 17);
         assert_eq!(readback.raw_register_responses[1].raw.as_deref(), Some("$N63,1,12,0,80,0"));
         assert_eq!(readback.raw_register_responses[3].values.last().map(String::as_str), Some("999"));
+
+        let mut wrong_selector = snapshot.clone();
+        let ir = wrong_selector.reads.iter_mut().find(|read| read.register == "$N67").expect("IR readback");
+        ir.values[1] = "2".into();
+        ir.raw = Some("$N67,0,2,2,0".into());
+        let (_, wrong_readback) = build_settings_readback(
+            &wrong_selector,
+            "firmware",
+            Ipv4Addr::new(172, 31, 3, 226),
+            Ipv4Addr::new(172, 31, 1, 100),
+            "wrong_selector",
+        );
+        assert!(!wrong_readback.verified);
+        assert!(!wrong_readback.fields["interference_rejection"].verified);
+        assert!(!wrong_readback.fields["interference_rejection_level"].verified);
+
+        let mut short_n84 = snapshot.clone();
+        let antenna = short_n84.reads.iter_mut().find(|read| read.register == "$N84").expect("antenna height readback");
+        antenna.values = vec!["0".into(), "15".into()];
+        antenna.raw = Some("$N84,0,15".into());
+        let (short_settings, short_readback) = build_settings_readback(
+            &short_n84,
+            "firmware",
+            Ipv4Addr::new(172, 31, 3, 226),
+            Ipv4Addr::new(172, 31, 1, 100),
+            "short_n84",
+        );
+        assert!(short_readback.verified);
+        assert_eq!(short_settings.antenna_height_raw, 15);
     }
 
     #[test]
@@ -3139,7 +3283,9 @@ mod tests {
             synthetic_read("$NED", &["2", "0"]),
             synthetic_read("$NEE", &["3", "0"]),
             synthetic_read("$NEF", &["1", "1", "0", "1"]),
-            synthetic_read("$N67", &["0", "2", "2", "0"]),
+            synthetic_read("$N67", &["0", "0", "2", "0"]),
+            synthetic_read("$N67", &["0", "2", "1", "0"]),
+            synthetic_read("$N84", &["0", "0", "0"]),
         ];
         let snapshot = CurrentRadarReadback { reads: std::mem::take(&mut reads) };
         let (settings, readback) = build_settings_readback(

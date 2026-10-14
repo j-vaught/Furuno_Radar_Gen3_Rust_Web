@@ -65,6 +65,8 @@ const fallbackReadCommandMap = Object.freeze({
   STC: 'STC',
   CLUTTER: 'CLUTTER',
   ANTREV: 'ANTREV',
+  NOISE: 'NOISE',
+  ANTHEIGHT: 'ANTHEIGHT',
   SWEEP: 'SWEEP',
   ALL: 'ALL'
 });
@@ -1041,6 +1043,23 @@ function refreshDoppler(){
   return readback('DOPPLER', 'signalResult');
 }
 
+function setNoiseReduction(){
+  fetch(`/set_noise_reduction?enabled=${v('noiseReductionMode')}`)
+    .then(r=>r.text()).then(t=>showServerResponse('hardwareSettingResult', t))
+    .catch(err=>setCallout('hardwareSettingResult', `Noise reduction update failed: ${err.message}`, 'error'));
+}
+function refreshNoiseReduction(){
+  return readback('NOISE', 'hardwareSettingResult');
+}
+function setAntennaHeight(){
+  fetch(`/set_antenna_height?value=${encodeURIComponent(v('antennaHeightRaw'))}`)
+    .then(r=>r.text()).then(t=>showServerResponse('hardwareSettingResult', t))
+    .catch(err=>setCallout('hardwareSettingResult', `Antenna height update failed: ${err.message}`, 'error'));
+}
+function refreshAntennaHeight(){
+  return readback('ANTHEIGHT', 'hardwareSettingResult');
+}
+
 /* ---------- RECORDING ---------- */
 function toggleRecording(mode){
   fetch(`/toggle_recording?mode=${mode}`)
@@ -1224,6 +1243,17 @@ function normaliseReadback(name, payload) {
   } else if (name === 'IR') {
     const value = firstNumber(object, ['interference_rejection', 'interferenceRejection', 'enabled', 'value'], fields);
     if (value !== null) values.interference_rejection = Boolean(value);
+    const level = firstNumber(object, ['interference_rejection_level', 'interferenceRejectionLevel', 'level'], fields.slice(2, 3));
+    if (level !== null) values.interference_rejection_level = level;
+  } else if (name === 'NOISE') {
+    const level = firstNumber(object, ['noise_reduction_level', 'noiseReductionLevel', 'noise_reduction', 'noiseReduction', 'enabled', 'value'], fields.slice(2, 3));
+    if (level !== null) {
+      values.noise_reduction_level = level;
+      values.noise_reduction = Boolean(level);
+    }
+  } else if (name === 'ANTHEIGHT') {
+    const height = firstNumber(object, ['antenna_height_raw', 'antennaHeightRaw', 'antenna_height', 'antennaHeight', 'value'], fields.slice(1, 2));
+    if (height !== null) values.antenna_height_raw = height;
   } else if (name === 'BIRDMODE') {
     const value = firstNumber(object, ['bird_mode', 'birdMode', 'level', 'value'], fields);
     if (value !== null) values.bird_mode = value;
@@ -1253,6 +1283,8 @@ function applyReadbackToControls(values) {
   if (values.far_stc !== undefined) set('farStc', values.far_stc);
   if (values.main_bang !== undefined) set('mainBangVal', values.main_bang);
   if (values.interference_rejection !== undefined) set('irMode', values.interference_rejection ? 1 : 0);
+  if (values.noise_reduction !== undefined) set('noiseReductionMode', values.noise_reduction ? 1 : 0);
+  if (values.antenna_height_raw !== undefined) set('antennaHeightRaw', values.antenna_height_raw);
   if (values.bird_mode !== undefined) set('birdMode', values.bird_mode);
   if (values.doppler !== undefined) set('dopplerMode', values.doppler);
   if (values.antenna_speed !== undefined) set('rollSpd', values.antenna_speed);
@@ -1270,8 +1302,10 @@ const READBACK_FIELDS = Object.freeze({
   GAIN: ['gain_auto', 'gain_value', 'gain_manual_value', 'gain_auto_value'],
   CLUTTER: ['sea_clutter', 'sea_clutter_auto', 'sea_clutter_auto_value', 'sea_clutter_mode',
     'rain_clutter', 'rain_clutter_auto', 'rain_clutter_auto_value', 'rain_clutter_ftc_mode', 'rain_clutter_mode'],
-  ANTREV: ['antenna_speed', 'antenna_hi_rpm'], STC: ['near_stc', 'middle_stc', 'far_stc'],
-  MAINBANG: ['main_bang'], IR: ['interference_rejection'], BIRDMODE: ['bird_mode'], DOPPLER: ['doppler']
+  ANTREV: ['antenna_speed', 'antenna_hi_rpm'], ANTHEIGHT: ['antenna_height_raw'],
+  STC: ['near_stc', 'middle_stc', 'far_stc'], MAINBANG: ['main_bang'],
+  IR: ['interference_rejection', 'interference_rejection_level'], NOISE: ['noise_reduction', 'noise_reduction_level'],
+  BIRDMODE: ['bird_mode'], DOPPLER: ['doppler']
 });
 
 function clearReadback(name) {
@@ -1368,8 +1402,8 @@ async function refreshAllReadbacks() {
   const names = [
     ['RANGE', 'rangeResult'], ['PULSE', 'rangeResult'], ['GAIN', 'gainResult'],
     ['CLUTTER', 'clutterResult'], ['ANTREV', 'antennaResult'], ['STC', 'gainResult'],
-    ['MAINBANG', 'signalResult'], ['IR', 'signalResult'], ['BIRDMODE', 'signalResult'],
-    ['DOPPLER', 'signalResult']
+    ['MAINBANG', 'signalResult'], ['IR', 'signalResult'], ['NOISE', 'hardwareSettingResult'],
+    ['ANTHEIGHT', 'hardwareSettingResult'], ['BIRDMODE', 'signalResult'], ['DOPPLER', 'signalResult']
   ];
   try {
     const fresh = await readFreshSnapshot();
@@ -1527,8 +1561,11 @@ function updateSystemInfo() {
         set('siRezboost', s.rezboost == null ? '--' : (REZBOOST_LABELS[s.rezboost] || s.rezboost));
         set('siAntenna', s.antenna_speed == null ? '--' : (ANTENNA_LABELS[s.antenna_speed] || s.antenna_speed));
         set('siAntennaHiRpm', s.antenna_hi_rpm == null ? '--' : (s.antenna_hi_rpm ? 'On' : 'Off'));
+        set('siAntennaHeight', s.antenna_height_raw == null ? '--' : `${s.antenna_height_raw} (raw protocol setting)`);
         set('siDoppler', s.doppler == null ? '--' : (DOPPLER_LABELS[s.doppler] || s.doppler));
         set('siIR', s.interference_rejection == null ? '--' : (s.interference_rejection ? 'On' : 'Off'));
+        set('siIRLevel', s.interference_rejection_level ?? '--');
+        set('siNoiseReduction', s.noise_reduction_level == null ? '--' : `${s.noise_reduction ? 'On' : 'Off'} (level ${s.noise_reduction_level})`);
         set('siBird', s.bird_mode == null ? '--' : (BIRD_LABELS[s.bird_mode] || s.bird_mode));
         set('siMainBang', s.main_bang ?? '--');
         set('siSTC', s.near_stc == null || s.middle_stc == null || s.far_stc == null ? '--' : `${s.near_stc} / ${s.middle_stc} / ${s.far_stc}`);
@@ -1537,7 +1574,7 @@ function updateSystemInfo() {
         set('siRain', s.rain_clutter ?? '--');
         set('siRainMode', s.rain_clutter_auto == null ? '--' : `${s.rain_clutter_auto ? 'Auto' : 'Manual'} / ${s.rain_clutter_auto_value ?? '--'} (FTC ${s.rain_clutter_ftc_mode ?? '--'}, mode ${s.rain_clutter_mode ?? '--'})`);
       } else {
-        ['siRange', 'siPulse', 'siPulseRange', 'siGain', 'siGainValues', 'siRezboost', 'siAntenna', 'siAntennaHiRpm', 'siDoppler', 'siIR', 'siBird', 'siMainBang', 'siSTC', 'siSea', 'siSeaMode', 'siRain', 'siRainMode'].forEach(id => set(id, '--'));
+        ['siRange', 'siPulse', 'siPulseRange', 'siGain', 'siGainValues', 'siRezboost', 'siAntenna', 'siAntennaHiRpm', 'siAntennaHeight', 'siDoppler', 'siIR', 'siIRLevel', 'siNoiseReduction', 'siBird', 'siMainBang', 'siSTC', 'siSea', 'siSeaMode', 'siRain', 'siRainMode'].forEach(id => set(id, '--'));
       }
       if (d.settings_read_at || d.settings_readback_at || d.settings_readback?.captured_at) {
         set('siSettingsReadAt', d.settings_read_at || d.settings_readback_at || d.settings_readback.captured_at);

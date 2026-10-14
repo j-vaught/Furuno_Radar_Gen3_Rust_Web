@@ -580,7 +580,7 @@ pub fn cmd_interference_rejection(enabled: bool) -> String {
 /// Noise reduction: 0=off, 1=on
 pub fn cmd_noise_reduction(enabled: bool) -> String {
     let val = if enabled { 1 } else { 0 };
-    build_command("67", &[0, 3, val, 0])
+    build_command("67", &[0, 2, val, 0])
 }
 
 /// No-transmit sectors (blind zones).

@@ -212,6 +212,31 @@
     </section>
 
     <section class="panel calib-lock-card">
+      <h2>Noise Reduction and Antenna Height</h2>
+      <div class="stack">
+        <label for="noiseReductionMode">Noise reduction <span class="info-tip" data-tip="Protocol S67 noise-reduction selector. The UI records the raw radar state separately from interference rejection.">i</span></label>
+        <select id="noiseReductionMode">
+          <option value="0">Off</option>
+          <option value="1">On</option>
+        </select>
+        <div class="inline-actions">
+          <button class="secondary" onclick="setNoiseReduction()" style="flex: 1;">Apply</button>
+          <button class="secondary" onclick="refreshNoiseReduction()" style="flex: 1;">Refresh</button>
+        </div>
+      </div>
+      <div class="stack">
+        <label for="antennaHeightRaw">Antenna height raw setting <span class="info-tip" data-tip="Numeric S84 antenna-height protocol value. This is the radar setting only and does not document the physical mounting height or units.">i</span></label>
+        <input id="antennaHeightRaw" type="number" value="0" min="0" step="1">
+        <div class="inline-actions">
+          <button class="secondary" onclick="setAntennaHeight()" style="flex: 1;">Apply</button>
+          <button class="secondary" onclick="refreshAntennaHeight()" style="flex: 1;">Refresh</button>
+        </div>
+      </div>
+      <div id="hardwareSettingResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+      <p class="small-note">Physical mounting height, antenna geometry, and installation orientation are experiment metadata and must be recorded separately.</p>
+    </section>
+
+    <section class="panel calib-lock-card">
       <h2>Gain</h2>
       <div class="stack">
         <label for="gainMode">Gain mode <span class="info-tip" data-tip="Manual: set gain directly. Auto: radar adjusts gain automatically with a bias offset.">i</span></label>

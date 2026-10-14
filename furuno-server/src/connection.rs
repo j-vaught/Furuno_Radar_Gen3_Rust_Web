@@ -302,7 +302,11 @@ impl RadarConnection {
         append_register_readback(&mut result, self, "$RED,0,0\r\n".into(), "$NED,");
         append_register_readback(&mut result, self, "$REE,0,0\r\n".into(), "$NEE,");
         append_register_readback(&mut result, self, "$REF,0,0,0\r\n".into(), "$NEF,");
+        // Query the interference-rejection subregister. Field 1 is the
+        // selector and field 2 is the numeric IR level (0 or 2).
+        append_register_readback(&mut result, self, "$R67,0,0,,0\r\n".into(), "$N67,");
         append_register_readback(&mut result, self, "$R67,0,2,,0\r\n".into(), "$N67,");
+        append_register_readback(&mut result, self, "$R84,0,0,0\r\n".into(), "$N84,");
         result
     }
 
@@ -586,9 +590,13 @@ pub fn validate_setting_ack(command: &str, response: &str) -> Result<(), RadarEr
             let active_value = if command_values.first() == Some(&0) { 1 } else { 2 };
             vec![(0, 0), (active_value, active_value), (3, 3), (4, 4)]
         }
-        // N67 field 2 is the selected interference-rejection value; fields 0,
-        // 1, and 3 are protocol selectors/retained state.
-        "S67" => vec![(2, 2)],
+        // N67 field 2 is the selected value; field 1 identifies whether the
+        // command addresses interference rejection (0) or noise reduction
+        // (2). Field 0 and field 3 are retained protocol state.
+        "S67" => vec![(1, 1), (2, 2)],
+        // S84 field 1 is the mutable antenna-height register; the selector
+        // and trailing protocol field are not independent settings.
+        "S84" => vec![(1, 1)],
         // Pulse responses echo the range in response field 2; S68 field 1 is
         // the radar/channel selector and remains zero for this controller.
         "S68" => vec![(0, 0), (2, 2)],
@@ -718,7 +726,11 @@ mod socket_tests {
         assert!(validate_setting_ack("$S63,0,12,0,80,0\r\n", "$N63,0,13,0,80,0").is_err());
         assert!(validate_setting_ack("$S64,1,23,45,2,0,0\r\n", "$N64,1,99,45,2,0,0").is_ok());
         assert!(validate_setting_ack("$S65,0,34,56,1,2,0\r\n", "$N65,0,35,56,1,2,0").is_err());
-        assert!(validate_setting_ack("$S67,0,0,2,0\r\n", "$N67,0,2,2,0").is_ok());
+        assert!(validate_setting_ack("$S67,0,0,2,0\r\n", "$N67,0,0,2,0").is_ok());
+        assert!(validate_setting_ack("$S67,0,2,1,0\r\n", "$N67,0,2,1,0").is_ok());
+        assert!(validate_setting_ack("$S67,0,2,1,0\r\n", "$N67,0,0,1,0").is_err());
+        assert!(validate_setting_ack("$S84,0,15,0\r\n", "$N84,0,15,0").is_ok());
+        assert!(validate_setting_ack("$S84,0,15,0\r\n", "$N84,0,14").is_err());
         assert!(validate_setting_ack("$S68,5,0,4,0,0\r\n", "$N68,5,0,4,0,0").is_ok());
         assert!(validate_setting_ack("$S68,5,0,4,0,0\r\n", "$N68,5,0,3,0,0").is_err());
         assert!(validate_setting_ack("$S89,1,1\r\n", "$N89,1,1").is_ok());
