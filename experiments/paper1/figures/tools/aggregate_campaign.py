@@ -53,6 +53,18 @@ def phase_id(phase: dict[str, Any], index: int) -> str:
     return str(phase.get("phase_id", phase.get("id", f"phase_{index}")))
 
 
+def source_phase_id(phase: dict[str, Any]) -> str:
+    return str(phase.get("source_phase_id", "")).strip()
+
+
+def is_reference_phase(phase: dict[str, Any]) -> bool:
+    """Use the manifest's explicit response-source identity for references."""
+    source = source_phase_id(phase).lower()
+    identifier = str(phase.get("phase_id", "")).lower()
+    prefixes = ("response_reference", "reference", "baseline")
+    return source.startswith(prefixes) or (not source and identifier.startswith(prefixes))
+
+
 def phase_files(phase: dict[str, Any]) -> set[str]:
     values: list[Any] = []
     for key in ("rotation_files", "rotations", "csv_files", "files"):
@@ -69,7 +81,7 @@ def phase_files(phase: dict[str, Any]) -> set[str]:
 
 
 def phase_settings(phase: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    for key in ("settings", "commanded_settings"):
+    for key in ("settings", "requested_settings", "commanded_settings"):
         if isinstance(phase.get(key), dict):
             settings = phase[key]
             return settings, key
@@ -119,8 +131,7 @@ def related_reference(
 ) -> tuple[int | None, str]:
     references = []
     for phase_index, phase in enumerate(phases):
-        label = phase_id(phase, phase_index).lower()
-        if any(token in label for token in ("reference", "baseline", "control")):
+        if is_reference_phase(phase):
             references.append(phase_index)
     if not references:
         return None, "none"
@@ -133,17 +144,36 @@ def related_reference(
     return following[0], "next"
 
 
-def family_for(phase: dict[str, Any], reference: dict[str, Any] | None) -> str:
-    explicit = phase.get("control_family", phase.get("setting_family"))
-    if explicit:
-        return str(explicit)
+def family_for(
+    phase: dict[str, Any],
+    reference: dict[str, Any] | None,
+    campaign_family: Any = None,
+) -> str:
+    for key in ("control_family", "setting_family", "selected_control_family"):
+        explicit = phase.get(key)
+        if explicit:
+            return str(explicit)
+    if campaign_family:
+        return str(campaign_family)
     settings, _ = phase_settings(phase)
     ref_settings = reference or {}
-    keys = [key for key in settings if settings.get(key) != ref_settings.get(key)]
-    if len(keys) == 1:
-        return keys[0]
-    label = phase.get("phase_id", phase.get("id", "condition"))
-    return str(label).split("_")[0]
+    keys = set(settings) | set(ref_settings)
+    readback = phase.get("device_readback", {})
+    if isinstance(readback, dict) and isinstance(readback.get("settings"), dict):
+        keys.update(readback["settings"])
+    identifiers = (phase_id(phase, 0), source_phase_id(phase))
+    for identifier in identifiers:
+        normalized = identifier.lower()
+        matches = sorted(
+            (str(key) for key in keys if normalized.startswith(f"{key.lower()}_")),
+            key=len,
+            reverse=True,
+        )
+        if matches:
+            return matches[0]
+    label = phase_id(phase, 0)
+    pieces = label.rsplit("_", 1)
+    return pieces[0] if len(pieces) == 2 else label
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
@@ -251,6 +281,7 @@ def main() -> int:
                 by_key[path_key].append(row)
 
     phase_rows = []
+    campaign_family = manifest.get("selected_control_family")
     settings_by_index: dict[int, dict[str, Any]] = {
         index: phase_settings(phase)[0] for index, phase in enumerate(phases)
     }
@@ -281,8 +312,11 @@ def main() -> int:
             for key in set(settings) | set(reference_settings)
             if settings.get(key) != reference_settings.get(key)
         )
-        reference_phase = phases[reference_index] if reference_index is not None else {}
-        family = "reference" if not delta_keys else family_for(phase, reference_settings)
+        reference_phase_record = phases[reference_index] if reference_index is not None else {}
+        is_reference = is_reference_phase(phase)
+        family = (
+            "reference" if is_reference else family_for(phase, reference_settings, campaign_family)
+        )
         phase_rows.append(
             {
                 "campaign_id": manifest.get(
@@ -292,8 +326,8 @@ def main() -> int:
                 "phase_id": phase_id(phase, index),
                 "control_family": family,
                 "condition": phase_id(phase, index),
-                "role": "reference" if not delta_keys else "variant",
-                "reference_phase_id": phase_id(reference_phase, reference_index)
+                "role": "reference" if is_reference else "variant",
+                "reference_phase_id": phase_id(reference_phase_record, reference_index)
                 if reference_index is not None
                 else "",
                 "reference_relation": relation,

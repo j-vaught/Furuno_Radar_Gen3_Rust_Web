@@ -38,15 +38,26 @@ def boolean(value: str | None) -> bool | None:
     return value.strip().lower() in {"1", "true", "yes"}
 
 
+def timestamp_seconds(value: str) -> float | None:
+    if value.startswith("unix_ms:"):
+        try:
+            return float(value.removeprefix("unix_ms:")) / 1000.0
+        except ValueError:
+            return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
 def elapsed_ms(ack: str | None, readback: str | None) -> float | None:
     if not ack or not readback:
         return None
-    try:
-        start = datetime.fromisoformat(ack.replace("Z", "+00:00"))
-        stop = datetime.fromisoformat(readback.replace("Z", "+00:00"))
-    except ValueError:
+    start = timestamp_seconds(ack)
+    stop = timestamp_seconds(readback)
+    if start is None or stop is None:
         return None
-    return (stop - start).total_seconds() * 1000.0
+    return (stop - start) * 1000.0
 
 
 def write(path: Path, value: dict[str, Any]) -> None:
@@ -258,6 +269,8 @@ def main() -> int:
             for index, row in rows
         ]
         latency_rows = [(index, value) for index, value in latency_rows if value is not None]
+        match_rows = [(index, boolean(row.get("readback_match"))) for index, row in rows]
+        match_rows = [(index, value) for index, value in match_rows if value is not None]
         write(
             args.out / "setting_transition.json",
             {
@@ -267,10 +280,12 @@ def main() -> int:
                 "settle_s": [number(row.get("settle_s")) for _, row in rows],
                 "latency_event_index": [index for index, _ in latency_rows],
                 "latency_ms": [value for _, value in latency_rows],
-                "readback_match": [
-                    1 if boolean(row.get("readback_match")) else 0 for _, row in rows
+                "match_event_index": [index for index, _ in match_rows],
+                "readback_match": [1 if value else 0 for _, value in match_rows],
+                "setting_labels": [
+                    row.get("setting") or row.get("control_family") or row.get("field") or "control"
+                    for _, row in rows
                 ],
-                "setting_labels": [row.get("setting", "") for _, row in rows],
             },
         )
     else:

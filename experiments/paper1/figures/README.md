@@ -15,6 +15,8 @@ production names are `fig_capture_contract`, `fig_target_geometry`,
 `fig_stationary_repeatability`, `fig_setting_transition`,
 `fig_settings_coverage`, `fig_setting_response`, `fig_bit_planes`, and
 `fig_range_bearing_residuals`.
+The E1 fixed-scene export figure is `fig_stationary_repeatability_e1` and is
+derived only from the E1 session summary, not from the larger E6 plan.
 For a completed campaign, pass the manifest and analyzer rotation metrics as
 the third and fourth arguments. An optional fifth argument recovers standby
 control-characterization outcomes. The campaign adapter groups phase rows by

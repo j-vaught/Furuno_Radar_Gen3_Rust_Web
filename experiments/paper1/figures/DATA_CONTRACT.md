@@ -27,9 +27,17 @@ Typst source to render an explicit preview panel. A production result sets
 
 The repeatability adapter emits `runs` and `metric` from rotation index and
 `zero_fraction`. The transition adapter emits `latency_event_index`,
-`latency_ms`, `event_index`, and `readback_match` from the command/readback CSV.
-`latency_ms` is computed from the ISO-8601 ACK and readback timestamps and
-remains empty when either timestamp is absent.
+`latency_ms`, `event_index`, `match_event_index`, and `readback_match` from the
+command/readback CSV.
+`latency_ms` is computed from ISO-8601 or `unix_ms:` ACK and readback
+timestamps and remains empty when either timestamp is absent. Readback-match
+points are retained only when the source field is present, so missing actual
+values are not plotted as mismatches.
+The E1 repeatability contract is stored separately in
+`data/repeatability_e1.json`. It groups the 30-s fixed-scene session summary
+by configuration export and resets rotation index within each export. Its
+ordinate is decoded zero fraction expressed as a percentage for plotting; it
+does not encode surveyed geometry or physical calibration.
 The settings coverage adapter emits the same event index and match indicator,
 plus setting, requested, and observed labels for audit. It maps only documented
 schema outcomes. Missing or unknown outcomes increment `unclassified_count`

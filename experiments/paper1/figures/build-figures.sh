@@ -45,6 +45,7 @@ sources=(
   fig_live_receive
   fig_live_codes_support
   fig_stationary_repeatability
+  fig_stationary_repeatability_e1
   fig_setting_transition
   fig_settings_coverage
   fig_setting_response

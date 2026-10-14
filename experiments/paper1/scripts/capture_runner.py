@@ -1086,6 +1086,44 @@ def apply_phase(base: str, phase: dict[str, Any], fp: Any, timeout: float) -> li
     if current.get("tx_state") != 1:
         raise RuntimeError("phase settings may only be applied while TX is in standby")
 
+    # Doppler mode can force gain and sea-clutter modes on the installed unit.
+    # Apply it first, then refresh the complete snapshot before constructing
+    # grouped register payloads. An unchanged mode is deliberately skipped so
+    # a reference phase cannot trigger those side effects again.
+    if "doppler" in settings:
+        requested_doppler = settings.pop("doppler")
+        if current.get("doppler") == requested_doppler:
+            event = {
+                "setting": "doppler",
+                "requested": requested_doppler,
+                "skipped": True,
+                "reason": "fresh readback already matched requested mode",
+                "command_time_utc": utc_now(),
+            }
+            log_event(fp, "setting_skipped", **event)
+            changes.append(event)
+        else:
+            path, params = setting_requests("doppler", requested_doppler, current)
+            status, body = http_request(base, path, params, timeout)
+            require_success(status, body, f"phase {phase.get('id', '<unknown>')} doppler")
+            event = {
+                "setting": "doppler",
+                "requested": requested_doppler,
+                "request_path": path,
+                "request_params": params,
+                "http_status": status,
+                "response": body,
+                "command_time_utc": utc_now(),
+                "ack_time_utc": utc_now(),
+            }
+            log_event(fp, "setting_command", **event)
+            changes.append(event)
+            current_result = readback(base, fp, timeout, fresh_required=True)
+            require_confirmed_readback(
+                current_result, f"phase {phase.get('id', '<unknown>')} post-doppler readback"
+            )
+            current = _verified_settings(current_result)
+
     groups = {
         "gain_register": {"gain_auto", "gain_value", "gain_manual_value", "gain_auto_value"},
         "sea_clutter_register": {
@@ -1365,6 +1403,9 @@ def _restore_grouped_baseline(
         if current.get("tx_state") != 1:
             errors.append({"setting": "<initial_readback>", "error": "TX state was not standby"})
         else:
+            target_doppler = target.get("doppler")
+            if target_doppler is not None and current.get("doppler") not in {None, 0}:
+                perform("doppler", 0, target, {"tx_state", "doppler"})
             # Scalar settings are only sent when the verified value differs.
             for setting in ("range_index", "pulse_width"):
                 if setting in target and current.get(setting) != target[setting]:
@@ -1456,12 +1497,14 @@ def _restore_grouped_baseline(
                 "noise_reduction",
                 "antenna_height_raw",
                 "bird_mode",
-                "doppler",
                 "main_bang",
             ):
                 if setting in target and current.get(setting) != target[setting]:
                     if not perform(setting, target[setting], target, {"tx_state", setting}):
                         break
+            if target_doppler is not None and target_doppler != 0:
+                if current.get("doppler") != target_doppler:
+                    perform("doppler", target_doppler, target, {"tx_state", "doppler"})
 
     try:
         final = readback(base, fp, timeout, fresh_required=True)
@@ -1559,7 +1602,6 @@ def restore_verified_baseline(
         "noise_reduction",
         "antenna_height_raw",
         "bird_mode",
-        "doppler",
         "main_bang",
         "antenna_speed",
         "antenna_hi_rpm",
@@ -1589,6 +1631,12 @@ def restore_verified_baseline(
             command_order.append(("range_index", target.get("range_index")))
         if target.get("pulse_width") is not None:
             command_order.append(("pulse_width", target.get("pulse_width")))
+
+    target_doppler = target.get("doppler")
+    if target_doppler is not None:
+        command_order.insert(0, ("doppler", 0))
+        if target_doppler != 0:
+            command_order.append(("doppler", target_doppler))
 
     active_range: Any = None
     for index, (setting, desired) in enumerate(command_order):
@@ -1642,6 +1690,17 @@ def restore_verified_baseline(
                     "missing": missing,
                 }
             )
+            log_event(fp, "baseline_restore_skipped", context=context, **outcome)
+            continue
+
+        if setting == "doppler" and current.get("doppler") == desired:
+            outcome = {
+                "setting": setting,
+                "requested": desired,
+                "outcome": "unchanged",
+                "reason": "fresh readback already matched requested mode",
+            }
+            outcomes.append(outcome)
             log_event(fp, "baseline_restore_skipped", context=context, **outcome)
             continue
 
@@ -1971,6 +2030,27 @@ def select_control_family(experiment: dict[str, Any], family: str) -> dict[str, 
     # E6 has one reference phase. Preserve only that shared phase before the
     # matrix expansion adds the before/after reference around each condition.
     result["phases"] = list(experiment.get("phases", []))[:1]
+    if family == "doppler" and result["phases"]:
+        # Doppler changes can force gain and sea-clutter mode registers. Keep
+        # those fields identical for the reference and all Doppler variants so
+        # a response comparison does not confound mode side effects.
+        result["phases"][0] = dict(result["phases"][0])
+        common_settings = {
+            "gain_auto": True,
+            "gain_value": 80,
+            "gain_manual_value": 0,
+            "gain_auto_value": 80,
+            "sea_clutter_auto": True,
+            "sea_clutter": 0,
+            "sea_clutter_auto_value": 10,
+            "rain_clutter_auto": True,
+            "rain_clutter": 0,
+            "rain_clutter_auto_value": 0,
+        }
+        result["phases"][0]["settings"] = {
+            **result["phases"][0].get("settings", {}),
+            **common_settings,
+        }
     result["selected_control_family"] = family
     return result
 

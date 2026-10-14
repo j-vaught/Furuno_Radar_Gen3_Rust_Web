@@ -370,27 +370,58 @@ def _csv_rows(path: Path) -> Iterable[tuple[int, list[int]]]:
             yield angle, values
 
 
+def _contiguous_match(text: list[tuple[int, str]], pattern: list[tuple[int, str]]) -> list[int]:
+    """Return the first exact contiguous match using linear-time KMP search."""
+
+    if not pattern or len(pattern) > len(text):
+        return []
+    prefix = [0] * len(pattern)
+    matched = 0
+    for index in range(1, len(pattern)):
+        while matched and pattern[index] != pattern[matched]:
+            matched = prefix[matched - 1]
+        if pattern[index] == pattern[matched]:
+            matched += 1
+        prefix[index] = matched
+    matched = 0
+    for index, value in enumerate(text):
+        while matched and value != pattern[matched]:
+            matched = prefix[matched - 1]
+        if value == pattern[matched]:
+            matched += 1
+        if matched == len(pattern):
+            start = index - len(pattern) + 1
+            return list(range(start, index + 1))
+    return []
+
+
 def compare_csv(csv_paths: Iterable[Path], spokes: list[SpokeRecord]) -> list[dict[str, Any]]:
     """Compare rendered upper-six-bit sequences with replayed spoke sequences."""
 
     index: dict[tuple[int, str], list[int]] = defaultdict(list)
+    replay_keys: list[tuple[int, str]] = []
     for spoke_index, spoke in enumerate(spokes):
         displayed = bytes(value >> 2 for value in spoke.values)
         key = (spoke.angle_ticks, hashlib.sha256(displayed).hexdigest())
         index[key].append(spoke_index)
+        replay_keys.append(key)
 
     results = []
     for path in sorted(csv_paths):
         rows = list(_csv_rows(path))
-        matches: list[int] = []
-        previous_match = -1
-        for angle, values in rows:
-            key = (angle, hashlib.sha256(bytes(values)).hexdigest())
-            candidates = index.get(key, [])
-            candidate = next((item for item in candidates if item > previous_match), -1)
-            matches.append(candidate)
-            if candidate >= 0:
-                previous_match = candidate
+        row_keys = [(angle, hashlib.sha256(bytes(values)).hexdigest()) for angle, values in rows]
+        contiguous_matches = _contiguous_match(replay_keys, row_keys)
+        if contiguous_matches:
+            matches = contiguous_matches
+        else:
+            matches = []
+            previous_match = -1
+            for key in row_keys:
+                candidates = index.get(key, [])
+                candidate = next((item for item in candidates if item > previous_match), -1)
+                matches.append(candidate)
+                if candidate >= 0:
+                    previous_match = candidate
         found = [match for match in matches if match >= 0]
         monotonic = all(a <= b for a, b in zip(found, found[1:], strict=False))
         contiguous = bool(found) and all(b == a + 1 for a, b in zip(found, found[1:], strict=False))
@@ -749,6 +780,40 @@ def write_outputs(raw_path: Path, out_dir: Path, csv_paths: list[Path]) -> dict[
     return summary
 
 
+def remap_csv_paths(csv_paths: Iterable[Path], path_maps: Iterable[str]) -> list[Path]:
+    """Resolve CSV paths from a capture host onto the analysis host.
+
+    A map is written as ``/source/prefix=/analysis/prefix``.  Existing paths
+    are retained, while missing paths are rewritten by the first matching
+    prefix.  Failing closed prevents an audit from silently omitting a CSV.
+    """
+
+    maps: list[tuple[Path, Path]] = []
+    for value in path_maps:
+        source_text, separator, target_text = value.partition("=")
+        if not separator or not source_text or not target_text:
+            raise ValueError(f"path map must be SOURCE=TARGET: {value}")
+        maps.append((Path(source_text), Path(target_text)))
+
+    resolved: list[Path] = []
+    for path in csv_paths:
+        if path.exists():
+            resolved.append(path)
+            continue
+        for source, target in maps:
+            try:
+                relative = path.relative_to(source)
+            except ValueError:
+                continue
+            candidate = target / relative
+            if candidate.exists():
+                resolved.append(candidate)
+                break
+        else:
+            raise FileNotFoundError(f"CSV path does not exist and has no valid map: {path}")
+    return resolved
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--raw", type=Path, required=True, help="Saved echo UDP JSONL")
@@ -756,8 +821,16 @@ def main() -> int:
     parser.add_argument(
         "--csv", type=Path, nargs="*", default=[], help="Rendered rotation CSV files"
     )
+    parser.add_argument(
+        "--path-map",
+        action="append",
+        default=[],
+        metavar="SOURCE=TARGET",
+        help="Map a capture-host CSV prefix onto this host; repeatable",
+    )
     args = parser.parse_args()
-    summary = write_outputs(args.raw, args.out, args.csv)
+    csv_paths = remap_csv_paths(args.csv, args.path_map)
+    summary = write_outputs(args.raw, args.out, csv_paths)
     print(
         json.dumps(
             {

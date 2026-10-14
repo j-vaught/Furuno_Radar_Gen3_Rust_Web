@@ -425,6 +425,196 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(requests, [])
         self.assertTrue(all(event["skipped"] for event in events))
 
+    def test_doppler_is_applied_before_mode_sensitive_registers(self) -> None:
+        state = {field: 0 for field in REQUIRED_READBACK_FIELDS}
+        state.update(
+            {
+                "tx_state": 1,
+                "doppler": 1,
+                "gain_auto": True,
+                "gain_value": 80,
+                "gain_manual_value": 0,
+                "gain_auto_value": 80,
+                "sea_clutter_auto": True,
+                "sea_clutter": 0,
+                "sea_clutter_auto_value": 10,
+                "rain_clutter_auto": True,
+                "rain_clutter": 0,
+                "rain_clutter_auto_value": 0,
+                "rain_clutter_ftc_mode": 0,
+                "rain_clutter_mode": 0,
+                "sea_clutter_mode": 0,
+            }
+        )
+        requests: list[str] = []
+
+        def fake_readback(_base, _fp, _timeout, fresh_required=False):
+            self.assertTrue(fresh_required)
+            return {"confirmed": True, "fresh": True, "settings": dict(state)}
+
+        def fake_http(_base, path, params, _timeout):
+            requests.append(path)
+            if path == "/set_doppler":
+                state["doppler"] = params["mode"]
+                state["gain_auto"] = False
+                state["gain_value"] = 64
+                state["gain_manual_value"] = 64
+                state["sea_clutter_auto"] = False
+                state["sea_clutter"] = 4
+                if params["mode"] == 2:
+                    state["rain_clutter_auto"] = False
+                    state["rain_clutter"] = 3
+            elif path == "/set_gain":
+                state["gain_auto"] = bool(params["status"])
+                state["gain_manual_value"] = params["manualValue"]
+                state["gain_auto_value"] = params["autoValue"]
+                state["gain_value"] = (
+                    state["gain_auto_value"] if state["gain_auto"] else state["gain_manual_value"]
+                )
+            elif path == "/set_acsea":
+                state["sea_clutter_auto"] = bool(params["status"])
+                state["sea_clutter"] = params["manual"]
+                state["sea_clutter_auto_value"] = params["auto"]
+                state["sea_clutter_mode"] = params["mode"]
+            return 200, "ACK"
+
+        phase = {
+            "id": "doppler-mode",
+            "settings": {
+                "doppler": 2,
+                "gain_auto": True,
+                "gain_value": 80,
+                "gain_manual_value": 0,
+                "gain_auto_value": 80,
+                "sea_clutter_auto": True,
+                "sea_clutter": 0,
+                "sea_clutter_auto_value": 10,
+                "rain_clutter_auto": True,
+                "rain_clutter": 0,
+                "rain_clutter_auto_value": 0,
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("scripts.capture_runner.readback", fake_readback),
+            patch("scripts.capture_runner.http_request", fake_http),
+        ):
+            with (Path(tmp) / "events.jsonl").open("w", encoding="utf-8") as fp:
+                apply_phase("mock://controller", phase, fp, 1.0)
+        self.assertEqual(requests, ["/set_doppler", "/set_gain", "/set_acsea", "/set_acrain"])
+
+    def test_doppler_restore_neutralizes_before_gain_and_sea(self) -> None:
+        target = {field: 0 for field in REQUIRED_READBACK_FIELDS}
+        target.update(
+            {
+                "tx_state": 1,
+                "doppler": 0,
+                "gain_auto": True,
+                "gain_value": 80,
+                "gain_manual_value": 0,
+                "gain_auto_value": 80,
+                "sea_clutter_auto": True,
+                "sea_clutter": 0,
+                "sea_clutter_auto_value": 10,
+            }
+        )
+        state = dict(target)
+        state.update(
+            {
+                "doppler": 1,
+                "gain_auto": False,
+                "gain_value": 64,
+                "gain_manual_value": 64,
+                "sea_clutter_auto": False,
+                "sea_clutter": 4,
+                "rain_clutter_auto": False,
+                "rain_clutter": 3,
+            }
+        )
+        commands: list[str] = []
+
+        def fake_readback(_base, _fp, _timeout, fresh_required=False):
+            return {"confirmed": True, "fresh": True, "settings": dict(state)}
+
+        def fake_issue(_base, setting, value, settings, _fp, _timeout, _context):
+            commands.append(setting)
+            if setting == "doppler":
+                state["doppler"] = value
+                state["gain_auto"] = False
+                state["gain_value"] = 64
+                state["gain_manual_value"] = 64
+                state["sea_clutter_auto"] = False
+                state["sea_clutter"] = 4
+            elif setting == "gain_auto":
+                _path, params = capture_runner.setting_requests(setting, value, settings)
+                state["gain_auto"] = bool(value)
+                state["gain_manual_value"] = params["manualValue"]
+                state["gain_auto_value"] = params["autoValue"]
+                state["gain_value"] = params["autoValue"] if value else params["manualValue"]
+            elif setting == "sea_clutter_auto":
+                _path, params = capture_runner.setting_requests(setting, value, settings)
+                state["sea_clutter_auto"] = bool(value)
+                state["sea_clutter"] = params["manual"]
+                state["sea_clutter_auto_value"] = params["auto"]
+                state["sea_clutter_mode"] = params["mode"]
+            elif setting == "rain_clutter_auto":
+                _path, params = capture_runner.setting_requests(setting, value, settings)
+                state["rain_clutter_auto"] = bool(value)
+                state["rain_clutter"] = params["manual"]
+                state["rain_clutter_auto_value"] = params["auto"]
+                state["rain_clutter_ftc_mode"] = params["ftcMode"]
+                state["rain_clutter_mode"] = params["rainMode"]
+            return {"http_status": 200, "response": "ACK"}
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("scripts.capture_runner.readback", fake_readback),
+            patch("scripts.capture_runner.issue_setting", fake_issue),
+        ):
+            with (Path(tmp) / "events.jsonl").open("w", encoding="utf-8") as fp:
+                report = restore_verified_baseline(
+                    "mock://controller", {"settings": target}, fp, 1.0, "doppler-restore"
+                )
+        self.assertTrue(report["restore_complete"])
+        self.assertEqual(commands[:3], ["doppler", "gain_auto", "sea_clutter_auto"])
+
+    def test_doppler_family_uses_common_mode_context(self) -> None:
+        selected = select_control_family(
+            {
+                "phases": [{"id": "reference", "settings": {"gain_auto": False}}],
+                "control_matrix": [{"setting": "doppler", "values": [0, 1, 2]}],
+            },
+            "doppler",
+        )
+        context = selected["phases"][0]["settings"]
+        self.assertEqual(
+            {
+                key: context[key]
+                for key in (
+                    "gain_auto",
+                    "gain_value",
+                    "gain_auto_value",
+                    "sea_clutter_auto",
+                    "sea_clutter_auto_value",
+                    "sea_clutter",
+                    "rain_clutter_auto",
+                    "rain_clutter_auto_value",
+                    "rain_clutter",
+                )
+            },
+            {
+                "gain_auto": True,
+                "gain_value": 80,
+                "gain_auto_value": 80,
+                "sea_clutter_auto": True,
+                "sea_clutter_auto_value": 10,
+                "sea_clutter": 0,
+                "rain_clutter_auto": True,
+                "rain_clutter_auto_value": 0,
+                "rain_clutter": 0,
+            },
+        )
+
     def test_response_conditions_include_reference_settings(self) -> None:
         experiment = {
             "phases": [

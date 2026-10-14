@@ -4,7 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.doppler_audit import _decode_sweep, replay_raw
+from scripts.doppler_audit import (
+    SpokeRecord,
+    _decode_sweep,
+    compare_csv,
+    remap_csv_paths,
+    replay_raw,
+)
 
 
 def packet(encoding: int, sweep_len: int, sweeps: list[tuple[int, int, bytes]]) -> bytes:
@@ -22,6 +28,35 @@ def packet(encoding: int, sweep_len: int, sweeps: list[tuple[int, int, bytes]]) 
 
 
 class DopplerAuditTests(unittest.TestCase):
+    def test_remaps_capture_host_csv_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "capture-host" / "csv"
+            target = root / "analysis-host" / "csv"
+            source.mkdir(parents=True)
+            target.mkdir(parents=True)
+            requested = source / "rotation.csv"
+            mapped = target / "rotation.csv"
+            mapped.write_text("data", encoding="utf-8")
+            self.assertEqual(
+                remap_csv_paths([requested], [f"{source}={target}"]),
+                [mapped],
+            )
+
+    def test_csv_alignment_prefers_a_contiguous_duplicate_signature_run(self) -> None:
+        spokes = [
+            SpokeRecord(0, index, 0, 0, 3, 1, [value], True, index, index)
+            for index, value in enumerate([0, 4, 8, 0, 4, 12])
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rotation.csv"
+            path.write_text("Angle\tEchoValues\n0\t0\n0\t1\n0\t3\n", encoding="utf-8")
+            result = compare_csv([path], spokes)[0]
+        self.assertEqual(result["matched_row_count"], 3)
+        self.assertEqual(result["first_match_replay_index"], 3)
+        self.assertEqual(result["last_match_replay_index"], 5)
+        self.assertTrue(result["match_indices_contiguous"])
+
     def test_encoding_zero_preserves_raw_values_and_shift_is_separate(self) -> None:
         decoded = _decode_sweep(bytes([0, 1, 2, 252]), 0, 4, [])
         self.assertEqual(decoded.values, [0, 1, 2, 252])
