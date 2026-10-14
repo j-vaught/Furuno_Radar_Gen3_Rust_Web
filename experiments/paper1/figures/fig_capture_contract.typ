@@ -23,14 +23,11 @@
 
   // Control state timeline. A timeout while draining is an explicit error.
   node("standby_a", 1.00, 3.25, 1.25, [Standby])
-  node("settings", 2.75, 3.25, 1.40, [Apply settings])
-  node("tx_on", 4.65, 3.25, 1.45, [TX on ACK])
-  node("readback", 6.65, 3.25, 1.60,
-    [Fresh #linebreak() verified #linebreak() settings], height: 0.54)
-  node("record", 8.65, 3.25, 1.45,
-    [Record #linebreak() rotations], height: 0.48)
-  node("stop_drain", 10.75, 3.25, 2.40,
-    [Stop native #linebreak() drain <= 45 s #linebreak() timeout = error], height: 0.62)
+  node("settings", 2.75, 3.25, 1.20, [Set])
+  node("tx_on", 4.65, 3.25, 1.45, [Transmit])
+  node("readback", 6.65, 3.25, 1.35, [Readback])
+  node("record", 8.65, 3.25, 1.25, [Record])
+  node("stop_drain", 10.75, 3.25, 1.30, [Drain])
   node("standby_b", 13.05, 3.25, 1.25, [Standby])
   line("standby_a.east", "settings.west", stroke: edge, mark: arrow)
   line("settings.east", "tx_on.west", stroke: (paint: garnet, thickness: 0.85pt), mark: tx-arrow)
@@ -39,32 +36,35 @@
   line("record.east", "stop_drain.west", stroke: edge, mark: arrow)
   line("stop_drain.east", "standby_b.west", stroke: edge, mark: arrow)
 
-  // The independent raw receiver logs payloads directly; native persistence
-  // begins only after decode and uses a bounded queue for CSV/PNG/PPI products.
-  node("receive_raw", 8.65, 1.35, 1.65,
-    [Python UDP #linebreak() receive_raw], height: 0.48)
-  node("raw", 6.25, 1.35, 2.25,
-    [Raw archive #linebreak() base64 JSONL #linebreak() session metadata], height: 0.58)
-  node("decode", 10.55, 1.35, 1.65,
-    [Native decode #linebreak() rotations], height: 0.48)
-  node("queue", 12.45, 1.35, 1.75,
-    [Native queue #linebreak() 16 jobs], height: 0.50)
-  node("metadata", 7.65, 0.05, 2.20,
-    [Immutable settings #linebreak() snapshot on job], height: 0.50)
-  node("writer", 12.45, 0.00, 1.85,
-    [Native writer #linebreak() CSV + PNG + PPI], height: 0.58)
-  node("products", 12.45, -1.18, 1.95,
-    [CSV + PNG #linebreak() PPI preview], height: 0.48)
-  line("record.south", "receive_raw.north", stroke: edge, mark: arrow)
-  line("receive_raw.west", "raw.east", stroke: edge, mark: arrow)
-  line("receive_raw.east", "decode.west", stroke: edge, mark: arrow)
-  line("decode.east", "queue.west", stroke: edge, mark: arrow)
+  // The multicast stream fans out to independent raw and native receivers.
+  node("multicast", 8.65, 1.35, 1.65,
+    [Radar #linebreak() multicast], height: 0.48)
+  node("raw_receiver", 6.55, 1.35, 1.65, [Raw receiver], height: 0.48)
+  node("raw_fifo", 4.45, 1.35, 1.55, [Raw FIFO], height: 0.48)
+  node("archive_writer", 2.25, 1.35, 1.90,
+    [Archive writer], height: 0.48)
+  node("jsonl", 2.25, 0.05, 1.55, [JSONL], height: 0.38)
+  node("native_receiver", 10.70, 1.35, 1.90,
+    [Native receiver], height: 0.48)
+  node("decoder", 12.80, 1.35, 1.35, [Decoder], height: 0.48)
+  node("rotation_queue", 14.35, 1.35, 1.65,
+    [Rotation queue], height: 0.48)
+  node("metadata", 7.65, 0.05, 1.85, [Settings snapshot], height: 0.38)
+  node("products", 14.35, 0.00, 1.75,
+    [CSV / PNG], height: 0.38)
+  line("record.south", "multicast.north", stroke: edge, mark: arrow)
+  line("multicast.west", "raw_receiver.east", stroke: edge, mark: arrow)
+  line("raw_receiver.west", "raw_fifo.east", stroke: edge, mark: arrow)
+  line("raw_fifo.west", "archive_writer.east", stroke: edge, mark: arrow)
+  line("archive_writer.south", "jsonl.north", stroke: edge, mark: arrow)
+  line("multicast.east", "native_receiver.west", stroke: edge, mark: arrow)
+  line("native_receiver.east", "decoder.west", stroke: edge, mark: arrow)
+  line("decoder.east", "rotation_queue.west", stroke: edge, mark: arrow)
   line("readback.south", (7.65, 2.35), stroke: dashed-edge)
-  line((7.65, 2.35), (7.65, 0.55), stroke: dashed-edge)
-  line((7.65, 0.55), "metadata.north", stroke: dashed-edge)
-  line("metadata.east", (11.25, 0.05), stroke: dashed-edge)
-  line((11.25, 0.05), (11.25, 0.75), stroke: dashed-edge)
-  line((11.25, 0.75), "queue.south", stroke: dashed-edge, mark: dashed-arrow)
-  line("queue.south", "writer.north", stroke: edge, mark: arrow)
-  line("writer.south", "products.north", stroke: edge, mark: arrow)
+  line((7.65, 2.35), (7.65, 0.43), stroke: dashed-edge)
+  line((7.65, 0.43), "metadata.north", stroke: dashed-edge)
+  line("metadata.east", (13.50, 0.05), stroke: dashed-edge)
+  line((13.50, 0.05), (13.50, 0.87), stroke: dashed-edge)
+  line((13.50, 0.87), "rotation_queue.south", stroke: dashed-edge, mark: dashed-arrow)
+  line("rotation_queue.south", "products.north", stroke: edge, mark: arrow)
 }))
