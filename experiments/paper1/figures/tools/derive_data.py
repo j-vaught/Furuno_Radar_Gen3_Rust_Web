@@ -94,7 +94,7 @@ def csv_stats(path: Path) -> dict[str, object]:
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     times, lengths, packet_codes = load_raw()
-    intervals_ms = [(b - a) / 1e6 for a, b in zip(times, times[1:])]
+    intervals_ms = [(b - a) / 1e6 for a, b in zip(times, times[1:], strict=False)]
     # A fixed-width decimation keeps the Typst source small while retaining
     # the complete capture in the JSONL artifact and its recorded digest.
     stride = max(1, math.ceil(len(intervals_ms) / 600))

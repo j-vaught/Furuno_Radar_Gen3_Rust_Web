@@ -219,18 +219,28 @@ def render_remote(
 
 
 def pull_results(host: str, remote_figures: Path, local_figures: Path) -> None:
-    run(["rsync", "-a", f"{host}:{remote_figures / 'output'}/", f"{local_figures / 'output'}/"], quiet=True)
+    run(
+        ["rsync", "-a", f"{host}:{remote_figures / 'output'}/", f"{local_figures / 'output'}/"],
+        quiet=True,
+    )
     for name in [
         "setting_response.json",
         "setting_transition.json",
         "campaign_family_coverage.json",
     ]:
-        run(["scp", f"{host}:{remote_figures / 'data' / name}", str(local_figures / "data" / name)], quiet=True)
+        run(
+            ["scp", f"{host}:{remote_figures / 'data' / name}", str(local_figures / "data" / name)],
+            quiet=True,
+        )
 
 
-def cycle(args: argparse.Namespace, state: dict[str, str]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+def cycle(
+    args: argparse.Namespace, state: dict[str, str]
+) -> tuple[dict[str, str], list[dict[str, Any]]]:
     campaigns = [Path(value) for value in args.campaign_manifest]
-    sync_campaigns(campaigns, host=args.host, local_data=args.local_data, remote_data=args.remote_data)
+    sync_campaigns(
+        campaigns, host=args.host, local_data=args.local_data, remote_data=args.remote_data
+    )
     complete = complete_children(campaigns)
     new = [item for item in complete if state.get(item["session_id"]) != item["digest"]]
     if not new:
@@ -273,7 +283,10 @@ def main() -> int:
         state, new = cycle(args, state)
         args.state.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
         if new:
-            print("processed completed families: " + ", ".join(str(item["family"]) for item in new), flush=True)
+            print(
+                "processed completed families: " + ", ".join(str(item["family"]) for item in new),
+                flush=True,
+            )
         if args.once:
             return 0
         time.sleep(args.interval_s)

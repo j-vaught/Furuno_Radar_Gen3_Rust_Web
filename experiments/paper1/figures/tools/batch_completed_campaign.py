@@ -71,8 +71,7 @@ def analysis_cache_valid(out: Path, session: Path) -> bool:
         expected["events.jsonl"] = events
     recorded = marker_data.get("files", {})
     return all(
-        recorded.get(name, {}).get("sha256") == file_sha256(path)
-        for name, path in expected.items()
+        recorded.get(name, {}).get("sha256") == file_sha256(path) for name, path in expected.items()
     )
 
 

@@ -79,7 +79,9 @@ class CompletedCampaignTests(unittest.TestCase):
             (out / "raw_replay_summary.json").write_text('{"missing":false}\n', encoding="utf-8")
             write_analysis_cache_marker(out, session)
             self.assertTrue(analysis_cache_valid(out, session))
-            (session / "raw_udp_payloads.jsonl").write_text('{"payload":"changed"}\n', encoding="utf-8")
+            (session / "raw_udp_payloads.jsonl").write_text(
+                '{"payload":"changed"}\n', encoding="utf-8"
+            )
             self.assertFalse(analysis_cache_valid(out, session))
 
 
