@@ -117,7 +117,21 @@ For each transmitting phase, the runner verifies the requested state in standby,
 
 The TX gates require a transmitting readback state of 2 or 3, a successful recording-start response, and a `get_system_info` response with recording active. The system-info snapshot must also report `settings_verified,true` and match every requested setting at recording start and during every status poll. During acquisition the runner stops on an explicit recording, settings drift, or controller disconnect. After stopping, it requires the requested number of CSV rotations and checks each `furuno-web-2` CSV header for `settings_verified,true`, nonempty output, and recording start and stop boundaries. An active phase is retained in the failure manifest until its output checks and baseline restoration complete.
 
-The current finite E6 matrix expands to 221 phases. At the configured 5 s settling interval and 30 s recording window, the runner reports the 7,735 s window-and-settle lower bound. Control writes, readback, and baseline restoration add time and are not treated as zero-cost. Fill `metadata.timing_estimate` from a measured phase or dry run before a long campaign; the runner adds those per-phase values to its runtime estimate and records the basis in `session_manifest.json`. The wall-clock deadline still protects the run, so use a fresh session identifier and a deliberately larger timeout only after confirming available storage and operator coverage.
+The current finite E6 matrix expands to 197 phases after the merged characterization reports filter unsupported outcomes. At the configured 5 s settling interval and 30 s recording window, the runner reports the 6,895 s window-and-settle lower bound. Control writes, readback, and baseline restoration add time and are not treated as zero-cost. Fill `metadata.timing_estimate` from a measured phase or dry run before a long campaign; the runner adds those per-phase values to its runtime estimate and records the basis in `session_manifest.json`. The wall-clock deadline still protects the run, so use a fresh session identifier and a deliberately larger timeout only after confirming available storage and operator coverage.
+
+Before resuming the full E6 family campaign after a controller or rotation-writer update, run `E7_rotation_writer_validation`. It uses four complete 30 s windows with 5 s post-TX settling and six required rotations per window. The sequence covers the strict manual-gain-64 baseline, manual gain 100 at range index 0, manual gain 64 at range index 6, and a final baseline reference. The range-transition phase is a guard condition, so the run must stop if its complete readback or six-rotation requirement fails. Use a new session identifier, `--transmit`, and `--physical-ready`; the runner still restores and verifies the original strict baseline on every exit.
+
+Run E7 with a fresh session directory after the native controller build is deployed.
+
+```sh
+python3 experiments/paper1/scripts/capture_runner.py \
+  --plan experiments/paper1/plans/paper1_experiments.json \
+  --experiment E7_rotation_writer_validation \
+  --metadata /Volumes/MacApplications/Radar_papers/data/paper1-metadata.json \
+  --output-root /Volumes/MacApplications/Radar_papers/data/paper1-experiments \
+  --session-id 2026-10-14-e7-rotation-writer \
+  --transmit --physical-ready
+```
 
 For a long E6 campaign, batch one control family at a time with `--control-family`, for example `--control-family gain_value`. The runner retains the complete reference settings and inserts a reference phase before and after every condition in that family. Each completed phase is checkpointed through an atomic manifest replacement with its actual readback and recording file paths, so a server-side analysis can begin while later batches remain pending.
 
