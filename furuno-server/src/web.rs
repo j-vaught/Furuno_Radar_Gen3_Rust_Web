@@ -1110,6 +1110,7 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
     };
     readback.transition_id = transition_id;
     let verified = readback.verified;
+    let authoritative_tx_is_active = authoritative_tx_active(verified, settings.tx_state);
     let published_captured_at = readback.captured_at.clone();
     let published_valid_until = readback.valid_until.clone();
     let failures = readback.fields.iter()
@@ -1122,6 +1123,9 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
         .map_err(|_| "recording snapshot lock poisoned".to_string())?;
     *state.settings.write().map_err(|_| "settings lock poisoned".to_string())? = settings;
     *state.settings_readback.write().map_err(|_| "readback lock poisoned".to_string())? = readback;
+    if let Some(tx_active) = authoritative_tx_is_active {
+        state.tx_active.store(tx_active, Ordering::Release);
+    }
     if let Ok(mut refreshed) = state.readback_last_refresh.lock() {
         *refreshed = Instant::now();
     }
@@ -1350,6 +1354,18 @@ fn observed_tx_active(state: &AppState) -> Option<bool> {
         .and_then(|field| field.value.as_ref())
         .and_then(serde_json::Value::as_u64)
         .map(|value| value == 2)
+}
+
+fn authoritative_tx_active(readback_verified: bool, tx_state: u16) -> Option<bool> {
+    readback_verified.then_some(tx_state == 2)
+}
+
+fn recording_tx_guard(tx_active: bool) -> Result<(), &'static str> {
+    if tx_active {
+        Ok(())
+    } else {
+        Err("Recording unavailable: radar TX is not active")
+    }
 }
 
 // --- Helper: send a command and return ack text ---
@@ -2272,6 +2288,9 @@ async fn handle_toggle_recording(
             if let Err(error) = refresh_settings_from_radar(&state, "recording_start") {
                 disable_recording_on_error(&state, "recording-start readback", &error);
                 return format!("Recording unavailable: settings readback failed: {error}");
+            }
+            if let Err(message) = recording_tx_guard(state.tx_active.load(Ordering::Acquire)) {
+                return message.into();
             }
             let active_pattern = state.active_pattern.read().ok().and_then(|p| p.clone());
             let dir = if let Some(pattern) = active_pattern {
@@ -3796,6 +3815,18 @@ mod tests {
         assert!(readback_valid_now(&readback));
         readback.valid_until = Some("unix_ms:0".into());
         assert!(!readback_valid_now(&readback));
+    }
+
+    #[test]
+    fn verified_tx_off_clears_authoritative_activity() {
+        assert_eq!(authoritative_tx_active(true, 2), Some(true));
+        assert_eq!(authoritative_tx_active(true, 1), Some(false));
+        assert_eq!(authoritative_tx_active(false, 2), None);
+        assert!(recording_tx_guard(true).is_ok());
+        assert_eq!(
+            recording_tx_guard(false),
+            Err("Recording unavailable: radar TX is not active")
+        );
     }
 
     fn synthetic_read(register: &str, values: &[&str]) -> RegisterReadback {
