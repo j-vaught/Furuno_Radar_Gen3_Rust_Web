@@ -474,7 +474,9 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
 }
 
 const SETTINGS_READBACK_TTL: Duration = Duration::from_secs(5);
-const SETTINGS_READBACK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+// Refresh before the validity interval expires. The interval remains strict;
+// this only increases scheduling headroom for a multi-register read.
+const SETTINGS_READBACK_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ROTATION_WRITER_CAPACITY: usize = 16;
 const ROTATION_WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -571,11 +573,22 @@ fn rotation_capture_error(readback: &SettingsReadback, generation: u64, reason: 
         .filter(|(_, field)| !field.verified)
         .map(|(name, field)| format!("{name}: {}", field.error.as_deref().unwrap_or("unverified")))
         .collect::<Vec<_>>();
+    let capture_age_ms = readback
+        .captured_at
+        .strip_prefix("unix_ms:")
+        .and_then(|value| value.parse::<u128>().ok())
+        .and_then(|captured| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|now| now.as_millis().saturating_sub(captured))
+        });
     format!(
-        "rotation capture rejected: {reason}; expected_generation={generation}; readback_generation={}; verified={}; captured_at={}; valid_until={}; source={}; failures=[{}]",
+        "rotation capture rejected: {reason}; expected_generation={generation}; readback_generation={}; verified={}; captured_at={}; capture_age_ms={}; valid_until={}; source={}; failures=[{}]",
         readback.transition_id,
         readback.verified,
         readback.captured_at,
+        capture_age_ms.map(|age| age.to_string()).unwrap_or_else(|| "unknown".into()),
         readback.valid_until.as_deref().unwrap_or("none"),
         readback.source,
         failures.join(" | "),
@@ -1058,6 +1071,8 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
     // Keep the connection guard through publication. Without this, two
     // refreshes can read in order A/B but publish in order B/A, restoring an
     // older settings snapshot after a newer setter readback completed.
+    let refresh_started = Instant::now();
+    let refresh_started_at = timestamp_precise();
     let mut conn = state.conn.lock().map_err(|_| "connection lock poisoned".to_string())?;
     let snapshot = conn.read_current_settings();
     let firmware = conn.firmware.clone().unwrap_or_default();
@@ -1095,6 +1110,8 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
     };
     readback.transition_id = transition_id;
     let verified = readback.verified;
+    let published_captured_at = readback.captured_at.clone();
+    let published_valid_until = readback.valid_until.clone();
     let failures = readback.fields.iter()
         .filter(|(_, field)| !field.verified)
         .map(|(name, field)| format!("{name}: {}", field.error.as_deref().unwrap_or("unverified")))
@@ -1115,6 +1132,10 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
             "transition_id": state.readback_generation.load(Ordering::Relaxed),
             "verified": verified,
             "source": source,
+            "duration_ms": refresh_started.elapsed().as_millis(),
+            "refresh_started_at": refresh_started_at,
+            "published_captured_at": published_captured_at,
+            "published_valid_until": published_valid_until,
         }),
     );
     if verified { Ok(()) } else { Err(failures.join("; ")) }
