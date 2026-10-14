@@ -1516,8 +1516,8 @@ async fn handle_get_current(
             "DOPPLER" => {
                 let cmd = "$REF,,,,,,,\r\n";
                 match conn.send_and_read_ack(cmd, "$NEF,", Duration::from_secs(3)) {
-                    Ok((true, line)) => format!("Doppler: {line}"),
-                    _ => "Doppler: Unknown".into(),
+                    Ok((true, line)) => format!("EF processing mode: {line}"),
+                    _ => "EF processing mode: Unknown".into(),
                 }
             }
             "SWEEP" => "Sweep: controlled locally (640x640 PPI)".into(),
@@ -1814,9 +1814,7 @@ async fn handle_set_doppler(
     apply_settings_update(&state, vec![("doppler", serde_json::json!(mode))], |s| {
         s.doppler = mode;
     });
-    let names = ["Off", "On (internal heading)", "On (external heading)"];
-    let name = names.get(mode as usize).unwrap_or(&"?");
-    send_cmd(state, cmd, "$NEF,", format!("Doppler set to {name}")).await
+    send_cmd(state, cmd, "$NEF,", format!("EF processing mode set to {mode}")).await
 }
 
 async fn handle_newest_png(

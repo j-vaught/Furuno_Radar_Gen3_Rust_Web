@@ -22,6 +22,7 @@ from scripts.capture_runner import (
     parse_system_info,
     readback,
     require_confirmed_readback,
+    require_system_info_settings,
     require_transmitting_readback,
     restore_verified_baseline,
     select_control_family,
@@ -66,6 +67,28 @@ class ToolkitTests(unittest.TestCase):
     def test_system_info_rejects_http_failure_without_dumping_payload(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
             parse_system_info(500, '{"error":null}', "recording status")
+
+    def test_system_info_rejects_unverified_or_drifted_settings(self) -> None:
+        requested = {"gain_auto": True, "gain_value": 80}
+        with self.assertRaisesRegex(RuntimeError, "settings_verified"):
+            require_system_info_settings(
+                {"settings_verified": False, "settings": requested}, requested, "poll"
+            )
+        with self.assertRaisesRegex(RuntimeError, "drifted"):
+            require_system_info_settings(
+                {
+                    "settings_verified": True,
+                    "settings": {"gain_auto": True, "gain_value": 64},
+                },
+                requested,
+                "poll",
+            )
+        self.assertEqual(
+            require_system_info_settings(
+                {"settings_verified": True, "settings": requested}, requested, "poll"
+            ),
+            requested,
+        )
 
     def test_recording_output_requires_verified_furuno_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -328,6 +351,51 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(filtered["phases"][1]["characterization_deferred_fields"], ["near_stc"])
         self.assertEqual(len(skipped), 2)
 
+    def test_paired_doppler_references_survive_characterization_filter(self) -> None:
+        experiment = select_control_family(
+            {
+                "phases": [{"id": "reference", "settings": {}}],
+                "control_matrix": [
+                    {
+                        "setting": "doppler",
+                        "context_id": "rain_manual_modes_0_1",
+                        "values": [0, 1],
+                        "reference_settings": {"rain_clutter_auto": False},
+                    },
+                    {
+                        "setting": "doppler",
+                        "context_id": "rain_auto_modes_0_2",
+                        "values": [0, 2],
+                        "reference_settings": {"rain_clutter_auto": True},
+                    },
+                ],
+            },
+            "doppler",
+        )
+        expanded = expand_control_matrix(experiment)
+        filtered, skipped = filter_by_characterization_report(
+            expanded,
+            {
+                "control_characterization": {
+                    "outcomes": [
+                        {"setting": "doppler", "requested": 0, "outcome": "supported"},
+                        {"setting": "doppler", "requested": 1, "outcome": "supported"},
+                        {"setting": "doppler", "requested": 2, "outcome": "supported"},
+                    ]
+                }
+            },
+        )
+        self.assertEqual(len(filtered["phases"]), 10)
+        self.assertEqual(len(skipped), 0)
+        references = [
+            phase for phase in filtered["phases"] if phase.get("phase_role") == "reference"
+        ]
+        self.assertEqual(len(references), 6)
+        self.assertEqual(
+            {phase["reference_context"] for phase in references},
+            {"rain_manual_modes_0_1", "rain_auto_modes_0_2"},
+        )
+
     def test_inactive_auto_register_writes_preserve_mode(self) -> None:
         _path, gain_params = capture_runner.setting_requests(
             "gain_auto_value", 40, {"gain_auto": False, "gain_manual_value": 90}
@@ -458,7 +526,7 @@ class ToolkitTests(unittest.TestCase):
                 state["doppler"] = params["mode"]
                 state["gain_auto"] = False
                 state["gain_value"] = 64
-                state["gain_manual_value"] = 64
+                state["gain_manual_value"] = 0
                 state["sea_clutter_auto"] = False
                 state["sea_clutter"] = 4
                 if params["mode"] == 2:
@@ -484,7 +552,7 @@ class ToolkitTests(unittest.TestCase):
                 "doppler": 2,
                 "gain_auto": True,
                 "gain_value": 80,
-                "gain_manual_value": 0,
+                "gain_manual_value": 64,
                 "gain_auto_value": 80,
                 "sea_clutter_auto": True,
                 "sea_clutter": 0,
@@ -501,7 +569,13 @@ class ToolkitTests(unittest.TestCase):
         ):
             with (Path(tmp) / "events.jsonl").open("w", encoding="utf-8") as fp:
                 apply_phase("mock://controller", phase, fp, 1.0)
-        self.assertEqual(requests, ["/set_doppler", "/set_gain", "/set_acsea", "/set_acrain"])
+        self.assertEqual(
+            requests,
+            ["/set_doppler", "/set_gain", "/set_gain", "/set_acsea", "/set_acrain"],
+        )
+        self.assertEqual(state["gain_manual_value"], 64)
+        self.assertEqual(state["gain_auto_value"], 80)
+        self.assertTrue(state["gain_auto"])
 
     def test_doppler_restore_neutralizes_before_gain_and_sea(self) -> None:
         target = {field: 0 for field in REQUIRED_READBACK_FIELDS}
@@ -693,6 +767,45 @@ class ToolkitTests(unittest.TestCase):
                 "middle_stc": 1,
                 "near_stc": 3,
             },
+        )
+
+    def test_gain_matrix_keeps_active_value_consistent_with_mode(self) -> None:
+        expanded = expand_control_matrix(
+            {
+                "phases": [{"id": "reference", "settings": {}}],
+                "control_matrix": [
+                    {
+                        "setting": "gain_auto",
+                        "values": [False, True],
+                        "reference_settings": {
+                            "gain_auto": False,
+                            "gain_value": 64,
+                            "gain_manual_value": 64,
+                            "gain_auto_value": 80,
+                        },
+                        "value_settings": {
+                            "false": {
+                                "gain_value": 64,
+                                "gain_manual_value": 64,
+                                "gain_auto_value": 80,
+                            },
+                            "true": {
+                                "gain_value": 80,
+                                "gain_manual_value": 64,
+                                "gain_auto_value": 80,
+                            },
+                        },
+                    }
+                ],
+            }
+        )
+        conditions = [phase for phase in expanded["phases"] if phase["id"].startswith("gain_auto_")]
+        self.assertEqual(
+            [
+                (phase["settings"]["gain_auto"], phase["settings"]["gain_value"])
+                for phase in conditions
+            ],
+            [(False, 64), (True, 80)],
         )
 
     def test_characterization_merge_uses_latest_corrected_outcome(self) -> None:

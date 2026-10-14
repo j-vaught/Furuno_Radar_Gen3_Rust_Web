@@ -596,14 +596,37 @@
             64,
             75,
             100
-          ]
+          ],
+          "fixed_settings": {
+            "gain_auto": false,
+            "gain_auto_value": 80
+          },
+          "active_value_field": "gain_manual_value"
         },
         {
           "setting": "gain_auto",
           "values": [
             false,
             true
-          ]
+          ],
+          "reference_settings": {
+            "gain_auto": false,
+            "gain_value": 64,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80
+          },
+          "value_settings": {
+            "false": {
+              "gain_value": 64,
+              "gain_manual_value": 64,
+              "gain_auto_value": 80
+            },
+            "true": {
+              "gain_value": 80,
+              "gain_manual_value": 64,
+              "gain_auto_value": 80
+            }
+          }
         },
         {
           "setting": "gain_auto_value",
@@ -616,7 +639,14 @@
           ],
           "fixed_settings": {
             "gain_auto": true
-          }
+          },
+          "reference_settings": {
+            "gain_auto": true,
+            "gain_value": 80,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80
+          },
+          "active_value_field": "gain_value"
         },
         {
           "setting": "sea_clutter",
@@ -642,6 +672,11 @@
           ],
           "fixed_settings": {
             "sea_clutter_auto": true
+          },
+          "reference_settings": {
+            "sea_clutter_auto": true,
+            "sea_clutter": 0,
+            "sea_clutter_auto_value": 10
           }
         },
         {
@@ -675,6 +710,11 @@
           ],
           "fixed_settings": {
             "rain_clutter_auto": true
+          },
+          "reference_settings": {
+            "rain_clutter_auto": true,
+            "rain_clutter": 0,
+            "rain_clutter_auto_value": 0
           }
         },
         {

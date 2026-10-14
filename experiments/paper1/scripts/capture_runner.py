@@ -479,6 +479,25 @@ def parse_system_info(status: int, body: str, context: str) -> dict[str, Any]:
     return info
 
 
+def require_system_info_settings(
+    info: dict[str, Any], requested: dict[str, Any], context: str
+) -> dict[str, Any]:
+    """Reject acquisition when the recording status snapshot is unverified or drifts."""
+    if info.get("settings_verified") is not True:
+        raise RuntimeError(f"{context}: controller settings_verified is not true")
+    actual = info.get("settings")
+    if not isinstance(actual, dict):
+        raise RuntimeError(f"{context}: controller did not return full settings")
+    mismatches = {
+        field: {"requested": expected, "actual": actual.get(field)}
+        for field, expected in requested.items()
+        if actual.get(field) != expected
+    }
+    if mismatches:
+        raise RuntimeError(f"{context}: settings drifted: {mismatches}")
+    return actual
+
+
 def inspect_recording_output(record_dir: Path, expected_rotations: int) -> dict[str, Any]:
     """Check recording count and lightweight furuno-web-2 CSV metadata."""
     if not record_dir.is_dir():
@@ -1247,17 +1266,37 @@ def apply_phase(base: str, phase: dict[str, Any], fp: Any, timeout: float) -> li
                 continue
             path, params = request
             requested = value
-        sent = {
-            "setting": setting,
-            "requested": requested,
-            "request_path": path,
-            "request_params": params,
-            "command_time_utc": utc_now(),
-        }
-        status, body = http_request(base, path, params, timeout)
-        sent.update({"http_status": status, "response": body, "ack_time_utc": utc_now()})
-        log_event(fp, "setting_command", **sent)
-        changes.append(sent)
+        requests_to_send: list[tuple[dict[str, Any], Any]] = [(params, requested)]
+        if (
+            setting == "gain_register"
+            and params.get("status") != actual.get("status")
+            and params.get("manualValue") is not None
+            and params.get("autoValue") is not None
+        ):
+            # Preserve both gain registers by first writing the inactive value
+            # while its mode is active, then select the requested mode.
+            staged_params = dict(params)
+            staged_params["status"] = actual["status"]
+            if staged_params != actual:
+                requests_to_send.insert(
+                    0,
+                    (
+                        staged_params,
+                        {**requested, "staged_mode": bool(actual["status"])},
+                    ),
+                )
+        for request_params, request_value in requests_to_send:
+            sent = {
+                "setting": setting,
+                "requested": request_value,
+                "request_path": path,
+                "request_params": request_params,
+                "command_time_utc": utc_now(),
+            }
+            status, body = http_request(base, path, request_params, timeout)
+            sent.update({"http_status": status, "response": body, "ack_time_utc": utc_now()})
+            log_event(fp, "setting_command", **sent)
+            changes.append(sent)
     return changes
 
 
@@ -1991,6 +2030,7 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
         if context_id:
             reference_phase["id"] = f"reference_{context_id}"
             reference_phase["control"] = {
+                "role": "reference",
                 "setting": setting,
                 "reference_context": context_id,
                 "reference_settings": dict(entry.get("reference_settings", {})),
@@ -2017,6 +2057,7 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
                     "record_s": entry.get("record_s", 30),
                     "scans": entry.get("scans", 6),
                     "control": {
+                        "role": "condition",
                         "setting": setting,
                         "requested": requested,
                         "companion_setting": companion,
@@ -2028,8 +2069,30 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
                 }
                 phase["settings"].update(entry.get("fixed_settings", {}))
                 phase["settings"][setting] = requested
+                value_settings_map = entry.get("value_settings", {})
+                value_settings = value_settings_map.get(
+                    str(requested).lower(), value_settings_map.get(str(requested), {})
+                )
+                phase["settings"].update(value_settings)
+                active_value_field = entry.get("active_value_field")
+                if active_value_field:
+                    phase["settings"][active_value_field] = requested
                 if companion:
                     phase["settings"][companion] = companion_value
+                if (
+                    phase["settings"].get("gain_auto") is True
+                    and phase["settings"].get("gain_value") is not None
+                    and phase["settings"].get("gain_auto_value") is not None
+                    and phase["settings"]["gain_value"] != phase["settings"]["gain_auto_value"]
+                ):
+                    raise ValueError(f"{phase_id} has inconsistent active automatic gain value")
+                if (
+                    phase["settings"].get("gain_auto") is False
+                    and phase["settings"].get("gain_value") is not None
+                    and phase["settings"].get("gain_manual_value") is not None
+                    and phase["settings"]["gain_value"] != phase["settings"]["gain_manual_value"]
+                ):
+                    raise ValueError(f"{phase_id} has inconsistent active manual gain value")
                 expanded.append(phase)
             after_reference = dict(reference_phase)
             expanded.append(after_reference)
@@ -2142,6 +2205,14 @@ def filter_by_characterization_report(
             if kept and kept[-1].get("id") == phase.get("id"):
                 continue
             kept.append(phase)
+            continue
+        if control.get("role") == "reference":
+            # Context-specific references are valid phases, not characterization
+            # probes. They intentionally have no requested control value.
+            candidate = dict(phase)
+            candidate["phase_role"] = "reference"
+            candidate["reference_context"] = control.get("reference_context")
+            kept.append(candidate)
             continue
         key_prefix = (
             control.get("setting", ""),
@@ -2508,6 +2579,10 @@ def main() -> int:
                     "phase_index": phase.get("phase_index"),
                     "repeat_index": phase.get("repeat_index", 0),
                     "repeat_count": phase.get("repeat_count", 1),
+                    "phase_role": phase.get("phase_role")
+                    or phase.get("control", {}).get("role", "condition"),
+                    "control": phase.get("control", {}),
+                    "reference_context": phase.get("control", {}).get("reference_context"),
                     "requested_settings": phase.get("settings", {}),
                     "device_readback": None,
                     "settle_s": phase.get("settle_s", 0),
@@ -2583,6 +2658,10 @@ def main() -> int:
                     "phase_index": phase.get("phase_index"),
                     "repeat_index": phase.get("repeat_index", 0),
                     "repeat_count": phase.get("repeat_count", 1),
+                    "phase_role": phase.get("phase_role")
+                    or phase.get("control", {}).get("role", "condition"),
+                    "control": phase.get("control", {}),
+                    "reference_context": phase.get("control", {}).get("reference_context"),
                     "requested_settings": phase.get("settings", {}),
                     "settle_s": phase.get("settle_s", 0),
                     "record_s": phase.get("record_s", 0),
@@ -2707,6 +2786,11 @@ def main() -> int:
                         raise RuntimeError(
                             f"phase {phase['id']} controller disconnected at recording start"
                         )
+                    require_system_info_settings(
+                        recording_info,
+                        phase.get("settings", {}),
+                        f"phase {phase['id']} recording start",
+                    )
                     phase_record["recording_start_info"] = recording_info
                     start = time.monotonic()
                     log_event(
@@ -2727,6 +2811,11 @@ def main() -> int:
                             )
                         if info.get("connected") is False:
                             raise RuntimeError(f"phase {phase['id']} controller disconnected")
+                        require_system_info_settings(
+                            info,
+                            phase.get("settings", {}),
+                            f"phase {phase['id']} recording status poll",
+                        )
                         start_rotations = (
                             info.get("rotation_count")
                             if start_rotations is None

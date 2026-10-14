@@ -612,7 +612,8 @@ pub fn cmd_bird_mode(level: u16) -> String {
     build_command("ED", &[level as i32, 0])
 }
 
-/// Doppler / Target analyzer: 0=off, 1=target, 2=rain
+/// Raw EF processing selector. The legacy function name is retained for API compatibility.
+/// Manufacturer Doppler semantics are unverified; wire states map to (0,0), (1,0), (1,1).
 pub fn cmd_doppler(mode: u16) -> String {
     let (enabled, wire_mode) = match mode {
         0 => (0, 0),
