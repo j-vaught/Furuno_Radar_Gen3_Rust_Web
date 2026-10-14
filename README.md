@@ -43,7 +43,7 @@ Build the native release executable and place it at `runtime/macos/furuno-server
 
 The launcher stores recordings at `/Volumes/MacApplications/Radar_papers/data/live/macos-recordings` and refuses to start when the volume is unmounted. `FURUNO_STORAGE_VOLUME` and `FURUNO_RECORDING_ROOT` select another mounted volume and a recording directory on that volume. The server checks that the directory remains writable before saving each rotation.
 
-The status page and recording metadata mark commanded settings as unverified. Use each control's Refresh action to retrieve radar readback. The current metadata cache is not hydrated from those responses. Unsupported sweep/interpolation controls are disabled, and unavailable macOS resource metrics display `--`.
+The settings page keeps command inputs separate from radar state. Use `Read all confirmed settings` or an individual Refresh action to request a fresh radar snapshot. The status page displays a setting only after a response for that field has been parsed and validated; failed, stale, and mode-incomplete fields display as unavailable. The server refreshes the snapshot periodically, gives each readback a capture time, validity deadline, transition identifier, and raw register responses, and records the same structured snapshot in each session. Gain manual and automatic values, sea and rain modes, pulse range, and antenna high-RPM state remain separate fields. Unsupported sweep count and interpolation controls are disabled. Doppler modes 1 and 2 are shown as raw protocol modes until their vendor semantics are verified. Clutter input ranges are left device-specific and must be established by the hardware response. Unavailable macOS resource metrics display `--`.
 
 The CLI, network, socket, and recording-root tests are software-only. The tests in `tests.rs` and the `full`, `validate`, and `test-commands` modes operate real hardware and can enable transmission.
 
@@ -84,7 +84,7 @@ When recording is enabled, each antenna rotation produces:
 - `recordings/<timestamp>/png/rotation_<ts>.png` -- PPI image
 - `recordings/<timestamp>/settings.json` -- Session settings snapshot
 
-CSV files include a metadata header (lines starting with `#`) containing the commanded settings cache and `settings_verified,false`, followed by spoke data with per-bin echo amplitudes. Preserve radar register readbacks separately when recording experiments.
+CSV files include a metadata header (lines starting with `#`) containing the settings readback verification state, capture time, validity deadline, transition identifier, source, raw structured readback JSON, and the values associated with the recorded session, followed by spoke data with per-bin echo amplitudes. `settings_verified,true` means that the server captured and validated every required radar field for that session. A false value is an explicit indication that a setting read failed, became stale, or was not collected and must not be used as experimental ground truth. Rotations spanning a settings transition are discarded so one file cannot silently mix two configurations. The session `settings.json` file retains the structured readback snapshot and command history.
 
 ## Project Structure
 

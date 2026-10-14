@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::net::Ipv4Addr;
@@ -16,33 +17,98 @@ use axum::{
 use tower_http::services::ServeDir;
 use serde::{Deserialize, Serialize};
 
-use crate::connection::{RadarConnection, try_create_echo_socket};
+use crate::connection::{CurrentRadarReadback, RadarConnection, RegisterReadback, try_create_echo_socket};
 use crate::protocol::{self, Spoke, decode_echo_packet};
 use crate::render::{self, PPI_SIZE};
 
 // --- Shared state ---
 
 /// Tracks the current radar settings for CSV metadata.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, PartialEq)]
 pub struct CurrentSettings {
+    pub tx_state: u16,
     pub range_index: u16,
     pub range_label: String,
     pub gain_auto: bool,
     pub gain_value: u16,
+    pub gain_manual_value: u16,
+    pub gain_auto_value: u16,
     pub pulse_width: u16,
+    pub pulse_range_index: u16,
     pub sea_clutter: u16,
+    pub sea_clutter_auto: bool,
+    pub sea_clutter_auto_value: u16,
+    pub sea_clutter_mode: u16,
     pub rain_clutter: u16,
+    pub rain_clutter_auto: bool,
+    pub rain_clutter_auto_value: u16,
+    pub rain_clutter_ftc_mode: u16,
+    pub rain_clutter_mode: u16,
     pub rezboost: u16,
     pub interference_rejection: bool,
     pub bird_mode: u16,
     pub doppler: u16,
     pub antenna_speed: u16,
+    pub antenna_hi_rpm: bool,
     pub main_bang: u16,
     pub near_stc: u16,
     pub middle_stc: u16,
     pub far_stc: u16,
-    /// These values are the last commanded values or startup defaults.
-    pub status: &'static str,
+    /// These values are the latest parsed radar readback when status is verified.
+    pub status: String,
+}
+
+#[derive(Clone, Serialize)]
+struct RawRegisterResponse {
+    requested: String,
+    register: String,
+    raw: Option<String>,
+    values: Vec<String>,
+    error: Option<String>,
+    requested_at: String,
+    read_at: String,
+}
+
+#[derive(Clone, Serialize)]
+struct VerifiedField {
+    verified: bool,
+    value: Option<serde_json::Value>,
+    register: String,
+    raw: Option<String>,
+    requested_at: String,
+    read_at: String,
+    error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct SettingsReadback {
+    verified: bool,
+    transition_id: u64,
+    captured_at: String,
+    valid_until: Option<String>,
+    source: String,
+    firmware: String,
+    radar_ip: String,
+    host_ip: String,
+    fields: BTreeMap<String, VerifiedField>,
+    raw_register_responses: Vec<RawRegisterResponse>,
+}
+
+impl SettingsReadback {
+    fn empty(radar_ip: Ipv4Addr, host_ip: Ipv4Addr) -> Self {
+        Self {
+            verified: false,
+            transition_id: 0,
+            captured_at: String::new(),
+            valid_until: None,
+            source: "none".into(),
+            firmware: String::new(),
+            radar_ip: radar_ip.to_string(),
+            host_ip: host_ip.to_string(),
+            fields: BTreeMap::new(),
+            raw_register_responses: Vec::new(),
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -93,19 +159,33 @@ struct SettingChange {
     value: serde_json::Value,
 }
 
+#[derive(Clone, Serialize, Default)]
+struct RecordingBoundary {
+    started_at: String,
+    start_transition_id: u64,
+    stopped_at: Option<String>,
+    stop_transition_id: Option<u64>,
+}
+
 #[derive(Clone, Serialize)]
 struct ManualRecordingSettingsSnapshot {
+    schema_version: &'static str,
     mode: &'static str,
     recording_dir: String,
     current_settings: CurrentSettings,
+    settings_readback: SettingsReadback,
+    boundary: RecordingBoundary,
     history: Vec<SettingChange>,
 }
 
 #[derive(Clone, Serialize)]
 struct PatternRecordingSettingsSnapshot {
+    schema_version: &'static str,
     mode: &'static str,
     recording_dir: String,
     current_settings: CurrentSettings,
+    settings_readback: SettingsReadback,
+    boundary: RecordingBoundary,
     pattern: PatternInfo,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     history: Vec<SettingChange>,
@@ -120,13 +200,17 @@ enum RecordingSessionKind {
 impl Default for CurrentSettings {
     fn default() -> Self {
         Self {
+            tx_state: 1,
             range_index: 0, range_label: "1/8 NM".into(),
-            gain_auto: false, gain_value: 50,
-            pulse_width: 0, sea_clutter: 0, rain_clutter: 0,
+            gain_auto: false, gain_value: 50, gain_manual_value: 50, gain_auto_value: 0,
+            pulse_width: 0, pulse_range_index: 0,
+            sea_clutter: 0, sea_clutter_auto: false, sea_clutter_auto_value: 0, sea_clutter_mode: 0,
+            rain_clutter: 0, rain_clutter_auto: false, rain_clutter_auto_value: 0,
+            rain_clutter_ftc_mode: 0, rain_clutter_mode: 0,
             rezboost: 0, interference_rejection: false,
-            bird_mode: 0, doppler: 0, antenna_speed: 0,
+            bird_mode: 0, doppler: 0, antenna_speed: 0, antenna_hi_rpm: false,
             main_bang: 0, near_stc: 0, middle_stc: 0, far_stc: 0,
-            status: "commanded_cache_unverified",
+            status: "commanded_cache_unverified".into(),
         }
     }
 }
@@ -156,6 +240,10 @@ pub struct AppState {
     recording_root: RecordingRoot,
     host_ip: Ipv4Addr,
     settings: RwLock<CurrentSettings>,
+    settings_readback: RwLock<SettingsReadback>,
+    readback_generation: AtomicU64,
+    readback_last_refresh: Mutex<Instant>,
+    recording_boundary: RwLock<RecordingBoundary>,
     start_time: Instant,
 }
 
@@ -203,8 +291,21 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         recording_root,
         host_ip,
         settings: RwLock::new(CurrentSettings::default()),
+        settings_readback: RwLock::new(SettingsReadback::empty(radar_ip, host_ip)),
+        readback_generation: AtomicU64::new(0),
+        readback_last_refresh: Mutex::new(Instant::now()),
+        recording_boundary: RwLock::new(RecordingBoundary::default()),
         start_time: Instant::now(),
     });
+
+    if connected {
+        if let Err(error) = refresh_settings_from_radar(&state, "startup") {
+            eprintln!("Startup settings readback incomplete: {error}");
+        }
+    }
+
+    let readback_state = state.clone();
+    thread::spawn(move || settings_readback_worker(readback_state));
 
     // Start echo listener thread
     let echo_state = state.clone();
@@ -258,6 +359,51 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
     axum::serve(listener, app).await.unwrap();
 }
 
+const SETTINGS_READBACK_TTL: Duration = Duration::from_secs(5);
+const SETTINGS_READBACK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+
+fn readback_query_age_exceeded(readback: &SettingsReadback) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    readback.raw_register_responses.iter().any(|response| {
+        response
+            .read_at
+            .strip_prefix("unix_ms:")
+            .and_then(|value| value.parse::<u128>().ok())
+            .map(|captured| now.saturating_sub(captured) >= SETTINGS_READBACK_REFRESH_INTERVAL.as_millis())
+            .unwrap_or(true)
+    })
+}
+
+fn settings_readback_worker(state: Arc<AppState>) {
+    loop {
+        thread::sleep(Duration::from_secs(1));
+        if !state.connected.load(Ordering::Relaxed) {
+            continue;
+        }
+        let stale = state
+            .readback_last_refresh
+            .lock()
+            .map(|last| last.elapsed() >= SETTINGS_READBACK_REFRESH_INTERVAL)
+            .unwrap_or(true);
+        let query_stale = state
+            .settings_readback
+            .read()
+            .map(|readback| readback_query_age_exceeded(&readback))
+            .unwrap_or(true);
+        if !stale && !query_stale {
+            continue;
+        }
+        if let Err(error) = refresh_settings_from_radar(&state, "periodic") {
+            if state.recording.load(Ordering::Relaxed) {
+                disable_recording_on_error(&state, "periodic settings readback", &error);
+            }
+        }
+    }
+}
+
 // --- Echo listener thread ---
 
 fn echo_listener(state: Arc<AppState>) {
@@ -275,6 +421,7 @@ fn echo_listener(state: Arc<AppState>) {
     let mut spokes: Vec<Spoke> = Vec::new();
     let mut prev_spoke_data: Vec<u8> = Vec::new();
     let mut prev_az: Option<u16> = None;
+    let mut rotation_generation: Option<u64> = None;
     let mut last_keepalive = Instant::now();
 
     loop {
@@ -302,31 +449,295 @@ fn echo_listener(state: Arc<AppState>) {
                     if az < prev.saturating_sub(1000) {
                         // Rotation complete — render PPI + optionally save CSV
                         if !spokes.is_empty() {
-                            let pixels = render::render_ppi(&spokes);
-                            let png_bytes = render::encode_png_bytes(&pixels, PPI_SIZE, PPI_SIZE);
-                            if let Ok(mut png) = state.latest_png.write() {
-                                *png = png_bytes;
-                            }
-
-                            // Save CSV + PNG if recording
-                            if state.recording.load(Ordering::Relaxed) {
-                                if let Err(e) = save_recording_rotation(&state, &spokes, &pixels) {
-                                    disable_recording_on_error(&state, "rotation output", e);
+                            let current_generation = state.readback_generation.load(Ordering::Relaxed);
+                            let complete_generation = rotation_generation.unwrap_or(current_generation);
+                            if complete_generation == current_generation {
+                                let pixels = render::render_ppi(&spokes);
+                                let png_bytes = render::encode_png_bytes(&pixels, PPI_SIZE, PPI_SIZE);
+                                if let Ok(mut png) = state.latest_png.write() {
+                                    *png = png_bytes;
                                 }
-                            }
 
+                                // Save CSV + PNG only when the whole rotation
+                                // belongs to one confirmed settings transition.
+                                if state.recording.load(Ordering::Relaxed) {
+                                    if let Err(e) = save_recording_rotation(&state, &spokes, &pixels, complete_generation) {
+                                        disable_recording_on_error(&state, "rotation output", e);
+                                    }
+                                }
+                            } else if state.recording.load(Ordering::Relaxed) {
+                                eprintln!("Discarding rotation spanning settings transition {complete_generation}->{current_generation}");
+                            }
                         }
                         state.rotation_count.fetch_add(1, Ordering::Relaxed);
                         spokes.clear();
+                        rotation_generation = None;
                     }
                 }
                 prev_az = Some(az);
+
+                if spokes.is_empty() {
+                    rotation_generation = Some(state.readback_generation.load(Ordering::Relaxed));
+                }
 
                 decode_echo_packet(&buf[..len], &mut prev_spoke_data, &mut spokes);
             }
             Err(_) => {}
         }
     }
+}
+
+fn read_for<'a>(reads: &'a [RegisterReadback], register: &str) -> Option<&'a RegisterReadback> {
+    reads.iter().find(|read| read.register == register)
+}
+
+fn value_u16(read: Option<&RegisterReadback>, index: usize) -> Option<u16> {
+    read.and_then(|item| item.values.get(index))
+        .and_then(|value| value.trim().parse::<u16>().ok())
+}
+
+fn verified_field(
+    read: Option<&RegisterReadback>,
+    read_at: &str,
+    value: Option<serde_json::Value>,
+) -> VerifiedField {
+    let (register, raw, error, actual_requested_at, actual_read_at) = match read {
+        Some(item) => (
+            item.register.clone(),
+            item.raw.clone(),
+            item.error.clone(),
+            item.requested_at.clone(),
+            item.read_at.clone(),
+        ),
+        None => (
+            String::new(),
+            None,
+            Some("register was not requested".into()),
+            read_at.to_string(),
+            read_at.to_string(),
+        ),
+    };
+    let verified = raw.is_some() && error.is_none() && value.is_some();
+    VerifiedField {
+        verified,
+        value: if verified { value } else { None },
+        register,
+        raw,
+        requested_at: actual_requested_at,
+        read_at: actual_read_at,
+        error: if verified { None } else { error.or_else(|| Some("response did not contain a valid value".into())) },
+    }
+}
+
+fn build_settings_readback(
+    snapshot: &CurrentRadarReadback,
+    firmware: &str,
+    radar_ip: Ipv4Addr,
+    host_ip: Ipv4Addr,
+    source: &str,
+) -> (CurrentSettings, SettingsReadback) {
+    let captured_at = timestamp_precise();
+    let reads = &snapshot.reads;
+    let r62 = read_for(reads, "$N62");
+    let r63 = read_for(reads, "$N63");
+    let r64 = read_for(reads, "$N64");
+    let r65 = read_for(reads, "$N65");
+    let r68 = read_for(reads, "$N68");
+    let r69 = read_for(reads, "$N69");
+    let r83 = read_for(reads, "$N83");
+    let r85 = read_for(reads, "$N85");
+    let r86 = read_for(reads, "$N86");
+    let r87 = read_for(reads, "$N87");
+    let r89 = read_for(reads, "$N89");
+    let red = read_for(reads, "$NED");
+    let ree = read_for(reads, "$NEE");
+    let ref_ = read_for(reads, "$NEF");
+    let r67 = read_for(reads, "$N67");
+
+    let range = value_u16(r62, 0);
+    let gain_auto = value_u16(r63, 0).map(|value| value != 0);
+    let gain_manual_value = value_u16(r63, 1);
+    let gain_auto_value = value_u16(r63, 3);
+    let gain_value = match gain_auto {
+        Some(true) => gain_auto_value,
+        Some(false) => gain_manual_value,
+        None => None,
+    };
+    let sea = value_u16(r64, 1);
+    let sea_auto = value_u16(r64, 0).map(|value| value != 0);
+    let sea_auto_value = value_u16(r64, 2);
+    let sea_mode = value_u16(r64, 3);
+    let rain = value_u16(r65, 1);
+    let rain_auto = value_u16(r65, 0).map(|value| value != 0);
+    let rain_auto_value = value_u16(r65, 2);
+    let rain_ftc_mode = value_u16(r65, 3);
+    let rain_mode = value_u16(r65, 4);
+    let pulse_range_index = value_u16(r68, 2);
+    let pulse = match (value_u16(r68, 0), pulse_range_index, range) {
+        (Some(pulse), Some(observed_range), Some(expected_range)) if observed_range == expected_range => Some(pulse),
+        _ => None,
+    };
+    let tx_state = value_u16(r69, 0);
+    let main_bang = value_u16(r83, 0);
+    let near_stc = value_u16(r85, 0);
+    let middle_stc = value_u16(r86, 0);
+    let far_stc = value_u16(r87, 0);
+    let antenna_speed = value_u16(r89, 0);
+    let antenna_hi_rpm = value_u16(r89, 1).map(|value| value != 0);
+    let bird_mode = value_u16(red, 0);
+    let rezboost = value_u16(ree, 0);
+    let doppler = match (value_u16(ref_, 0), value_u16(ref_, 1)) {
+        (Some(0), _) => Some(0),
+        (Some(1), Some(0)) => Some(1),
+        (Some(1), Some(1)) => Some(2),
+        _ => None,
+    };
+    let interference_rejection = value_u16(r67, 2).map(|value| value != 0);
+
+    let mut fields = BTreeMap::new();
+    fields.insert("tx_state".into(), verified_field(r69, &captured_at, tx_state.map(|v| serde_json::json!(v))));
+    fields.insert("range_index".into(), verified_field(r62, &captured_at, range.map(|v| serde_json::json!(v))));
+    fields.insert("gain_auto".into(), verified_field(r63, &captured_at, gain_auto.map(|v| serde_json::json!(v))));
+    fields.insert("gain_value".into(), verified_field(r63, &captured_at, gain_value.map(|v| serde_json::json!(v))));
+    fields.insert("gain_manual_value".into(), verified_field(r63, &captured_at, gain_manual_value.map(|v| serde_json::json!(v))));
+    fields.insert("gain_auto_value".into(), verified_field(r63, &captured_at, gain_auto_value.map(|v| serde_json::json!(v))));
+    fields.insert("sea_clutter".into(), verified_field(r64, &captured_at, sea.map(|v| serde_json::json!(v))));
+    fields.insert("sea_clutter_auto".into(), verified_field(r64, &captured_at, sea_auto.map(|v| serde_json::json!(v))));
+    fields.insert("sea_clutter_auto_value".into(), verified_field(r64, &captured_at, sea_auto_value.map(|v| serde_json::json!(v))));
+    fields.insert("sea_clutter_mode".into(), verified_field(r64, &captured_at, sea_mode.map(|v| serde_json::json!(v))));
+    fields.insert("rain_clutter".into(), verified_field(r65, &captured_at, rain.map(|v| serde_json::json!(v))));
+    fields.insert("rain_clutter_auto".into(), verified_field(r65, &captured_at, rain_auto.map(|v| serde_json::json!(v))));
+    fields.insert("rain_clutter_auto_value".into(), verified_field(r65, &captured_at, rain_auto_value.map(|v| serde_json::json!(v))));
+    fields.insert("rain_clutter_ftc_mode".into(), verified_field(r65, &captured_at, rain_ftc_mode.map(|v| serde_json::json!(v))));
+    fields.insert("rain_clutter_mode".into(), verified_field(r65, &captured_at, rain_mode.map(|v| serde_json::json!(v))));
+    fields.insert("pulse_width".into(), verified_field(r68, &captured_at, pulse.map(|v| serde_json::json!(v))));
+    fields.insert("pulse_range_index".into(), verified_field(r68, &captured_at, pulse_range_index.map(|v| serde_json::json!(v))));
+    fields.insert("main_bang".into(), verified_field(r83, &captured_at, main_bang.map(|v| serde_json::json!(v))));
+    fields.insert("near_stc".into(), verified_field(r85, &captured_at, near_stc.map(|v| serde_json::json!(v))));
+    fields.insert("middle_stc".into(), verified_field(r86, &captured_at, middle_stc.map(|v| serde_json::json!(v))));
+    fields.insert("far_stc".into(), verified_field(r87, &captured_at, far_stc.map(|v| serde_json::json!(v))));
+    fields.insert("antenna_speed".into(), verified_field(r89, &captured_at, antenna_speed.map(|v| serde_json::json!(v))));
+    fields.insert("antenna_hi_rpm".into(), verified_field(r89, &captured_at, antenna_hi_rpm.map(|v| serde_json::json!(v))));
+    fields.insert("bird_mode".into(), verified_field(red, &captured_at, bird_mode.map(|v| serde_json::json!(v))));
+    fields.insert("rezboost".into(), verified_field(ree, &captured_at, rezboost.map(|v| serde_json::json!(v))));
+    fields.insert("doppler".into(), verified_field(ref_, &captured_at, doppler.map(|v| serde_json::json!(v))));
+    fields.insert("interference_rejection".into(), verified_field(r67, &captured_at, interference_rejection.map(|v| serde_json::json!(v))));
+
+    let raw_register_responses = reads.iter().map(|read| RawRegisterResponse {
+        requested: read.requested.clone(),
+        register: read.register.clone(),
+        raw: read.raw.clone(),
+        values: read.values.clone(),
+        error: read.error.clone(),
+        requested_at: read.requested_at.clone(),
+        read_at: read.read_at.clone(),
+    }).collect::<Vec<_>>();
+    let verified = fields.values().all(|field| field.verified);
+    let settings = CurrentSettings {
+        tx_state: tx_state.unwrap_or_default(),
+        range_index: range.unwrap_or_default(),
+        range_label: range.map(|value| protocol::wire_index_to_label(value).to_string()).unwrap_or_else(|| "unknown".into()),
+        gain_auto: gain_auto.unwrap_or_default(),
+        gain_value: gain_value.unwrap_or_default(),
+        gain_manual_value: gain_manual_value.unwrap_or_default(),
+        gain_auto_value: gain_auto_value.unwrap_or_default(),
+        pulse_width: pulse.unwrap_or_default(),
+        pulse_range_index: pulse_range_index.unwrap_or_default(),
+        sea_clutter: sea.unwrap_or_default(),
+        sea_clutter_auto: sea_auto.unwrap_or_default(),
+        sea_clutter_auto_value: sea_auto_value.unwrap_or_default(),
+        sea_clutter_mode: sea_mode.unwrap_or_default(),
+        rain_clutter: rain.unwrap_or_default(),
+        rain_clutter_auto: rain_auto.unwrap_or_default(),
+        rain_clutter_auto_value: rain_auto_value.unwrap_or_default(),
+        rain_clutter_ftc_mode: rain_ftc_mode.unwrap_or_default(),
+        rain_clutter_mode: rain_mode.unwrap_or_default(),
+        rezboost: rezboost.unwrap_or_default(),
+        interference_rejection: interference_rejection.unwrap_or_default(),
+        bird_mode: bird_mode.unwrap_or_default(),
+        doppler: doppler.unwrap_or_default(),
+        antenna_speed: antenna_speed.unwrap_or_default(),
+        antenna_hi_rpm: antenna_hi_rpm.unwrap_or_default(),
+        main_bang: main_bang.unwrap_or_default(),
+        near_stc: near_stc.unwrap_or_default(),
+        middle_stc: middle_stc.unwrap_or_default(),
+        far_stc: far_stc.unwrap_or_default(),
+        status: if verified { "verified_readback" } else { "readback_incomplete" }.into(),
+    };
+    let readback = SettingsReadback {
+        verified,
+        transition_id: 0,
+        captured_at,
+        valid_until: Some(timestamp_precise_after(SETTINGS_READBACK_TTL)),
+        source: source.into(),
+        firmware: firmware.into(),
+        radar_ip: radar_ip.to_string(),
+        host_ip: host_ip.to_string(),
+        fields,
+        raw_register_responses,
+    };
+    (settings, readback)
+}
+
+fn invalidate_settings_readback(state: &AppState, source: &str, error: &str) {
+    let transition_id = state.readback_generation.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Ok(mut readback) = state.settings_readback.write() {
+        readback.verified = false;
+        readback.transition_id = transition_id;
+        let now = timestamp_precise();
+        readback.valid_until = Some(now.clone());
+        readback.captured_at = now;
+        readback.source = source.into();
+        readback.fields.values_mut().for_each(|field| {
+            field.verified = false;
+            field.error = Some(error.into());
+        });
+    }
+    if let Ok(mut settings) = state.settings.write() {
+        settings.status = "readback_incomplete".into();
+    }
+    if let Ok(mut refreshed) = state.readback_last_refresh.lock() {
+        *refreshed = Instant::now();
+    }
+}
+
+fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), String> {
+    let (snapshot, firmware, radar_ip, host_ip) = {
+        let mut conn = state.conn.lock().map_err(|_| "connection lock poisoned".to_string())?;
+        let snapshot = conn.read_current_settings();
+        (snapshot, conn.firmware.clone().unwrap_or_default(), conn.radar_ip, conn.host_ip)
+    };
+    let (settings, readback) = build_settings_readback(&snapshot, &firmware, radar_ip, host_ip, source);
+    let mut readback = readback;
+    let settings_changed = state.settings.read()
+        .map(|previous| *previous != settings)
+        .unwrap_or(true);
+    let transition_id = if settings_changed || !readback.verified {
+        state.readback_generation.fetch_add(1, Ordering::Relaxed) + 1
+    } else {
+        state.readback_generation.load(Ordering::Relaxed)
+    };
+    readback.transition_id = transition_id;
+    let verified = readback.verified;
+    let failures = readback.fields.iter()
+        .filter(|(_, field)| !field.verified)
+        .map(|(name, field)| format!("{name}: {}", field.error.as_deref().unwrap_or("unverified")))
+        .collect::<Vec<_>>();
+    *state.settings.write().map_err(|_| "settings lock poisoned".to_string())? = settings;
+    *state.settings_readback.write().map_err(|_| "readback lock poisoned".to_string())? = readback;
+    if let Ok(mut refreshed) = state.readback_last_refresh.lock() {
+        *refreshed = Instant::now();
+    }
+    record_setting_change(
+        state,
+        "radar_readback",
+        serde_json::json!({
+            "transition_id": state.readback_generation.load(Ordering::Relaxed),
+            "verified": verified,
+            "source": source,
+        }),
+    );
+    if verified { Ok(()) } else { Err(failures.join("; ")) }
 }
 
 // --- Helper: send a command and return ack text ---
@@ -338,11 +749,44 @@ async fn send_cmd(
     success_msg: String,
 ) -> String {
     tokio::task::spawn_blocking(move || {
-        let mut conn = state.conn.lock().unwrap();
-        match conn.send_and_read_ack(&cmd, ack_prefix, Duration::from_secs(3)) {
-            Ok((true, line)) => format!("{success_msg} | {line}"),
-            Ok((false, _)) => format!("{success_msg} (no ack)"),
-            Err(e) => format!("Error: {e}"),
+        let result = {
+            let mut conn = state.conn.lock().unwrap();
+            conn.send_and_read_ack(&cmd, ack_prefix, Duration::from_secs(3))
+        };
+        match result {
+            Ok((true, line)) => match crate::connection::validate_setting_ack(&cmd, &line) {
+                Err(error) => {
+                    invalidate_settings_readback(&state, "command_ack_mismatch", &error.to_string());
+                    disable_recording_on_error(&state, "command acknowledgement mismatch", &error);
+                    format!("{success_msg} | invalid acknowledgement: {error}")
+                }
+                Ok(()) => match refresh_settings_from_radar(&state, "post_command") {
+                Ok(()) => {
+                    if state.recording.load(Ordering::Relaxed) {
+                        if let Err(error) = persist_recording_settings(&state) {
+                            disable_recording_on_error(&state, "post-command settings output", &error);
+                            return format!("{success_msg} | {line} | recording disabled: {error}");
+                        }
+                    }
+                    format!("{success_msg} | {line} | readback verified")
+                }
+                Err(error) => {
+                    invalidate_settings_readback(&state, "post_command_failed", &error);
+                    disable_recording_on_error(&state, "post-command readback", &error);
+                    format!("{success_msg} | {line} | readback failed: {error}")
+                }
+                },
+            },
+            Ok((false, _)) => {
+                invalidate_settings_readback(&state, "command_unacknowledged", "command was not acknowledged");
+                disable_recording_on_error(&state, "unacknowledged command", "command was not acknowledged");
+                format!("{success_msg} (no ack; state not persisted)")
+            }
+            Err(e) => {
+                invalidate_settings_readback(&state, "command_error", &e.to_string());
+                disable_recording_on_error(&state, "command error", &e);
+                format!("Error: {e}")
+            }
         }
     }).await.unwrap_or_else(|e| format!("Error: {e}"))
 }
@@ -364,6 +808,8 @@ struct GetCurrentParams {
     #[allow(dead_code)]
     radar_no: Option<u16>,
     format: Option<String>,
+    /// `fresh=1` forces the aggregate register read before returning ALL.
+    fresh: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -477,23 +923,37 @@ async fn handle_toggle_echo(
 
     let st = state.clone();
     tokio::task::spawn_blocking(move || {
-        let mut conn = st.conn.lock().unwrap();
         match params.mode.as_str() {
             "on" => {
                 // Ensure we're in the right state for tx_on
-                match conn.tx_on() {
+                let result = st.conn.lock().map_err(|_| "connection lock poisoned".to_string())
+                    .and_then(|mut conn| conn.tx_on().map_err(|e| e.to_string()));
+                match result {
                     Ok(()) => {
-                        st.tx_active.store(true, Ordering::Relaxed);
-                        "TX ON: Radar is transmitting".to_string()
+                        match refresh_settings_from_radar(&st, "tx_on") {
+                            Ok(()) => {
+                                st.tx_active.store(true, Ordering::Relaxed);
+                                "TX ON: Radar is transmitting; settings readback verified".to_string()
+                            }
+                            Err(error) => {
+                                st.tx_active.store(false, Ordering::Relaxed);
+                                format!("TX ON acknowledged, but settings readback failed: {error}")
+                            }
+                        }
                     }
                     Err(e) => format!("TX ON failed: {e}"),
                 }
             }
             "off" => {
-                match conn.tx_off() {
+                let result = st.conn.lock().map_err(|_| "connection lock poisoned".to_string())
+                    .and_then(|mut conn| conn.tx_off().map_err(|e| e.to_string()));
+                match result {
                     Ok(()) => {
                         st.tx_active.store(false, Ordering::Relaxed);
-                        "TX OFF: Radar stopped".to_string()
+                        match refresh_settings_from_radar(&st, "tx_off") {
+                            Ok(()) => "TX OFF: Radar stopped; settings readback verified".to_string(),
+                            Err(error) => format!("TX OFF acknowledged, but settings readback failed: {error}"),
+                        }
                     }
                     Err(e) => format!("TX OFF failed: {e}"),
                 }
@@ -506,19 +966,32 @@ async fn handle_toggle_echo(
 async fn handle_reconnect(State(state): State<Arc<AppState>>) -> String {
     let st = state.clone();
     tokio::task::spawn_blocking(move || {
-        let mut conn = st.conn.lock().unwrap();
-        let radar_ip = conn.radar_ip;
-        let host_ip = conn.host_ip;
-        *conn = RadarConnection::new(radar_ip, host_ip);
-        match conn.connect_full() {
+        let connect_result = {
+            let mut conn = st.conn.lock().unwrap();
+            let radar_ip = conn.radar_ip;
+            let host_ip = conn.host_ip;
+            *conn = RadarConnection::new(radar_ip, host_ip);
+            conn.connect_full()
+        };
+        match connect_result {
             Ok(()) => {
-                st.connected.store(true, Ordering::Relaxed);
-                st.tx_active.store(false, Ordering::Relaxed);
-                let fw = conn.firmware.as_deref().unwrap_or("unknown");
-                format!("Reconnected. Firmware: {fw}")
+                match refresh_settings_from_radar(&st, "reconnect") {
+                    Ok(()) => {
+                        st.connected.store(true, Ordering::Relaxed);
+                        st.tx_active.store(false, Ordering::Relaxed);
+                        let fw = st.conn.lock().ok().and_then(|conn| conn.firmware.clone()).unwrap_or_else(|| "unknown".into());
+                        format!("Reconnected. Firmware: {fw}. Settings readback verified.")
+                    }
+                    Err(error) => {
+                        st.connected.store(true, Ordering::Relaxed);
+                        st.tx_active.store(false, Ordering::Relaxed);
+                        format!("Reconnected, but settings readback failed: {error}")
+                    }
+                }
             }
             Err(e) => {
                 st.connected.store(false, Ordering::Relaxed);
+                invalidate_settings_readback(&st, "reconnect_failed", &e.to_string());
                 format!("Reconnect failed: {e}")
             }
         }
@@ -532,6 +1005,39 @@ async fn handle_get_current(
     let is_json = params.format.as_deref() == Some("json");
     let st = state.clone();
     let command = params.command.to_uppercase();
+
+    if command == "ALL" {
+        let refresh_error = if params.fresh.unwrap_or(0) != 0 {
+            let refresh_state = state.clone();
+            tokio::task::spawn_blocking(move || refresh_settings_from_radar(&refresh_state, "api_fresh"))
+                .await
+                .ok()
+                .and_then(Result::err)
+        } else {
+            None
+        };
+        let readback = state.settings_readback
+            .read()
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| SettingsReadback::empty(Ipv4Addr::UNSPECIFIED, state.host_ip));
+        let settings = state.settings
+            .read()
+            .map(|value| value.clone())
+            .unwrap_or_else(|_| CurrentSettings::default());
+        let settings_verified = readback.verified;
+        let payload = serde_json::json!({
+            "settings_readback": readback,
+            "settings": settings,
+            "settings_verified": settings_verified,
+            "fresh_requested": params.fresh.unwrap_or(0) != 0,
+            "refresh_error": refresh_error,
+        });
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/json")],
+            payload.to_string(),
+        ).into_response();
+    }
 
     let result = tokio::task::spawn_blocking(move || {
         let mut conn = st.conn.lock().unwrap();
@@ -987,6 +1493,7 @@ struct SystemInfo {
     recording_root: String,
     recording_root_configured: bool,
     settings_verified: bool,
+    settings_readback: SettingsReadback,
 }
 
 async fn handle_get_system_info(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -1011,6 +1518,9 @@ async fn handle_get_system_info(State(state): State<Arc<AppState>>) -> axum::res
     let settings = state.settings.read()
         .map(|s| s.clone())
         .unwrap_or_default();
+    let settings_readback = state.settings_readback.read()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| SettingsReadback::empty(state.conn.lock().map(|c| c.radar_ip).unwrap_or(Ipv4Addr::UNSPECIFIED), state.host_ip));
 
     let (memory_total_mb, memory_used_mb) = read_memory_abs();
     let (storage_total_gb, storage_used_gb) = read_storage_abs(&state.recording_root.path);
@@ -1034,7 +1544,8 @@ async fn handle_get_system_info(State(state): State<Arc<AppState>>) -> axum::res
         memory_used_mb,
         storage_total_gb,
         storage_used_gb,
-        settings_verified: false,
+        settings_verified: settings_readback.verified,
+        settings_readback,
     };
 
     let json = serde_json::to_string(&info).unwrap_or_default();
@@ -1059,6 +1570,13 @@ async fn handle_toggle_recording(
             if let Err(e) = validate_recording_root(&state.recording_root) {
                 return format!("Recording unavailable: {e}");
             }
+            if !state.connected.load(Ordering::Relaxed) {
+                return "Recording unavailable: radar is not connected".into();
+            }
+            if let Err(error) = refresh_settings_from_radar(&state, "recording_start") {
+                disable_recording_on_error(&state, "recording-start readback", &error);
+                return format!("Recording unavailable: settings readback failed: {error}");
+            }
             let active_pattern = state.active_pattern.read().ok().and_then(|p| p.clone());
             let dir = if let Some(pattern) = active_pattern {
                 match start_pattern_recording_session(&state, pattern, Some("pattern")) {
@@ -1079,6 +1597,11 @@ async fn handle_toggle_recording(
             format!("Recording started. Saving to {dir}/")
         }
         "off" | "stop" => {
+            if state.recording.load(Ordering::Relaxed) && state.connected.load(Ordering::Relaxed) {
+                let _ = refresh_settings_from_radar(&state, "recording_stop");
+                finish_recording_boundary(&state);
+                let _ = persist_recording_settings(&state);
+            }
             state.recording.store(false, Ordering::Relaxed);
             let dir = state.record_dir.read().map(|d| d.clone()).unwrap_or_default();
             format!("Recording stopped. Files in {dir}/")
@@ -1284,17 +1807,11 @@ fn apply_settings_update<F>(state: &AppState, changes: Vec<(&str, serde_json::Va
 where
     F: FnOnce(&mut CurrentSettings),
 {
-    if let Ok(mut settings) = state.settings.write() {
-        update(&mut settings);
-    }
-    for (setting, value) in changes {
-        record_setting_change(state, setting, value);
-    }
-    if state.recording.load(Ordering::Relaxed) {
-        if let Err(error) = persist_recording_settings(state) {
-            disable_recording_on_error(state, "setting-change output", &error);
-        }
-    }
+    // The state cache is updated only by a successful radar readback. Keep
+    // this helper as a source-compatible no-op for the existing handlers;
+    // applying a command before its acknowledgement would make metadata
+    // claim a value that the radar may have rejected.
+    let _ = (state, changes, update);
 }
 
 fn write_manual_settings_snapshot(state: &AppState, dir: &str) -> Result<(), io::Error> {
@@ -1303,6 +1820,16 @@ fn write_manual_settings_snapshot(state: &AppState, dir: &str) -> Result<(), io:
         .read()
         .map_err(|_| io::Error::other("settings lock poisoned"))?
         .clone();
+    let settings_readback = state
+        .settings_readback
+        .read()
+        .map_err(|_| io::Error::other("settings readback lock poisoned"))?
+        .clone();
+    let boundary = state
+        .recording_boundary
+        .read()
+        .map_err(|_| io::Error::other("recording boundary lock poisoned"))?
+        .clone();
     let history = state
         .setting_history
         .read()
@@ -1310,9 +1837,12 @@ fn write_manual_settings_snapshot(state: &AppState, dir: &str) -> Result<(), io:
         .clone();
 
     let snapshot = ManualRecordingSettingsSnapshot {
+        schema_version: "furuno-web-2",
         mode: "manual",
         recording_dir: dir.to_string(),
         current_settings,
+        settings_readback,
+        boundary,
         history,
     };
 
@@ -1331,15 +1861,28 @@ fn write_pattern_settings_snapshot(
         .read()
         .map_err(|_| io::Error::other("settings lock poisoned"))?
         .clone();
+    let settings_readback = state
+        .settings_readback
+        .read()
+        .map_err(|_| io::Error::other("settings readback lock poisoned"))?
+        .clone();
+    let boundary = state
+        .recording_boundary
+        .read()
+        .map_err(|_| io::Error::other("recording boundary lock poisoned"))?
+        .clone();
     let history = state
         .setting_history
         .read()
         .map_err(|_| io::Error::other("setting history lock poisoned"))?
         .clone();
     let snapshot = PatternRecordingSettingsSnapshot {
+        schema_version: "furuno-web-2",
         mode: "pattern",
         recording_dir: dir.to_string(),
         current_settings,
+        settings_readback,
+        boundary,
         pattern: pattern.clone(),
         history,
     };
@@ -1374,6 +1917,7 @@ fn save_recording_rotation(
     state: &AppState,
     spokes: &[Spoke],
     pixels: &[u8],
+    generation: u64,
 ) -> Result<(), io::Error> {
     validate_recording_root(&state.recording_root)?;
     let dir = state
@@ -1397,7 +1941,34 @@ fn save_recording_rotation(
         .read()
         .map_err(|_| io::Error::other("settings lock poisoned"))?
         .clone();
-    write_echo_csv(&csv_dir.join(format!("rotation_{ts}.csv")).display().to_string(), spokes, &settings)?;
+    let settings_readback = state
+        .settings_readback
+        .read()
+        .map_err(|_| io::Error::other("settings readback lock poisoned"))?
+        .clone();
+    let readback_fresh = state
+        .readback_last_refresh
+        .lock()
+        .map(|last| last.elapsed() <= SETTINGS_READBACK_TTL)
+        .unwrap_or(false);
+    if !readback_fresh || !settings_readback.verified || settings_readback.transition_id != generation {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("settings readback is stale, changed, or incomplete for rotation generation {generation}; rotation was not persisted"),
+        ));
+    }
+    let boundary = state
+        .recording_boundary
+        .read()
+        .map_err(|_| io::Error::other("recording boundary lock poisoned"))?
+        .clone();
+    write_echo_csv(
+        &csv_dir.join(format!("rotation_{ts}.csv")).display().to_string(),
+        spokes,
+        &settings,
+        &settings_readback,
+        &boundary,
+    )?;
     let png_bytes = render::encode_png_bytes(pixels, PPI_SIZE, PPI_SIZE);
     std::fs::write(png_dir.join(format!("rotation_{ts}.png")), png_bytes)
 }
@@ -1506,6 +2077,41 @@ fn sanitize_pattern_label(label: &str) -> String {
     }
 }
 
+fn begin_recording_boundary(state: &AppState) -> Result<(), io::Error> {
+    let readback = state
+        .settings_readback
+        .read()
+        .map_err(|_| io::Error::other("settings readback lock poisoned"))?;
+    if !readback.verified {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "recording requires a verified radar settings readback",
+        ));
+    }
+    let mut boundary = state
+        .recording_boundary
+        .write()
+        .map_err(|_| io::Error::other("recording boundary lock poisoned"))?;
+    *boundary = RecordingBoundary {
+        started_at: timestamp_precise(),
+        start_transition_id: readback.transition_id,
+        stopped_at: None,
+        stop_transition_id: None,
+    };
+    Ok(())
+}
+
+fn finish_recording_boundary(state: &AppState) {
+    if let Ok(mut boundary) = state.recording_boundary.write() {
+        boundary.stopped_at = Some(timestamp_precise());
+        boundary.stop_transition_id = state
+            .settings_readback
+            .read()
+            .ok()
+            .map(|readback| readback.transition_id);
+    }
+}
+
 fn start_manual_recording_session(state: &AppState) -> Result<String, std::io::Error> {
     let dir = match create_recording_dir(&state.recording_root, None) {
         Ok(dir) => dir,
@@ -1523,6 +2129,7 @@ fn start_manual_recording_session(state: &AppState) -> Result<String, std::io::E
     if let Ok(mut kind) = state.recording_session_kind.write() {
         *kind = RecordingSessionKind::Manual;
     }
+    begin_recording_boundary(state)?;
     if let Err(error) = persist_recording_settings(state) {
         disable_recording_on_error(state, "manual settings output", &error);
         return Err(error);
@@ -1551,51 +2158,12 @@ fn start_pattern_recording_session(
     if let Ok(mut kind) = state.recording_session_kind.write() {
         *kind = RecordingSessionKind::Pattern(pattern);
     }
+    begin_recording_boundary(state)?;
     if let Err(error) = persist_recording_settings(state) {
         disable_recording_on_error(state, "pattern settings output", &error);
         return Err(error);
     }
     Ok(dir)
-}
-
-fn apply_pattern_step_to_settings(state: &AppState, step: &protocol::ControlStep) {
-    if let Ok(mut settings) = state.settings.write() {
-        if let Some(value) = step.range {
-            settings.range_index = value;
-            settings.range_label = protocol::wire_index_to_label(value).to_string();
-        }
-        if let Some(value) = step.gain {
-            settings.gain_auto = false;
-            settings.gain_value = value;
-        }
-        if let Some(value) = step.pulse_length {
-            settings.pulse_width = value;
-        }
-        if let Some(value) = step.rez_boost {
-            settings.rezboost = value;
-        }
-        if let Some(value) = step.rotation_speed {
-            settings.antenna_speed = value;
-        }
-        if let Some(value) = step.sea_clutter {
-            settings.sea_clutter = value;
-        }
-        if let Some(value) = step.rain_clutter {
-            settings.rain_clutter = value;
-        }
-        if let Some(value) = step.main_bang {
-            settings.main_bang = value;
-        }
-        if let Some(value) = step.interference_rejection {
-            settings.interference_rejection = value;
-        }
-        if let Some(value) = step.bird_mode {
-            settings.bird_mode = value;
-        }
-        if let Some(value) = step.doppler {
-            settings.doppler = value;
-        }
-    }
 }
 
 fn execute_pattern(
@@ -1654,15 +2222,46 @@ fn execute_pattern(
             // Send commands for changed parameters
             let cmds = step.commands_vs(prev_step);
             if !cmds.is_empty() {
+                let mut command_error = None;
                 if let Ok(mut conn) = state.conn.lock() {
                     for cmd in &cmds {
-                        let _ = conn.send_and_read_ack(cmd, "$N", Duration::from_secs(3));
+                        match conn.send_and_read_ack(cmd, "$N", Duration::from_secs(3)) {
+                            Ok((true, line)) => {
+                                if let Err(error) = crate::connection::validate_setting_ack(cmd, &line) {
+                                    command_error = Some(error.to_string());
+                                    break;
+                                }
+                            }
+                            Ok((false, _)) => {
+                                command_error = Some("pattern command was not acknowledged".to_string());
+                                break;
+                            }
+                            Err(error) => {
+                                command_error = Some(error.to_string());
+                                break;
+                            }
+                        }
                     }
+                } else {
+                    command_error = Some("connection lock poisoned".into());
+                }
+                if let Some(error) = command_error {
+                    invalidate_settings_readback(&state, "pattern_command_failed", &error);
+                    disable_recording_on_error(&state, "pattern command", &error);
+                    if let Ok(mut status) = state.pattern_status.write() { *status = format!("Pattern stopped: {error}"); }
+                    state.pattern_running.store(false, Ordering::Relaxed);
+                    return;
                 }
                 // Brief settle time after config change
                 thread::sleep(Duration::from_millis(300));
             }
-            apply_pattern_step_to_settings(&state, step);
+            if let Err(error) = refresh_settings_from_radar(&state, "pattern_step") {
+                invalidate_settings_readback(&state, "pattern_readback_failed", &error);
+                disable_recording_on_error(&state, "pattern readback", &error);
+                if let Ok(mut status) = state.pattern_status.write() { *status = format!("Pattern stopped: {error}"); }
+                state.pattern_running.store(false, Ordering::Relaxed);
+                return;
+            }
             if state.recording.load(Ordering::Relaxed) {
                 if let Err(error) = persist_recording_settings(&state) {
                     disable_recording_on_error(&state, "pattern settings output", &error);
@@ -1845,14 +2444,43 @@ async fn handle_run_pattern_queue(
                     }
                     let cmds = step.commands_vs(prev_step);
                     if !cmds.is_empty() {
+                        let mut command_error = None;
                         if let Ok(mut conn) = st.conn.lock() {
                             for cmd in &cmds {
-                                let _ = conn.send_and_read_ack(cmd, "$N", Duration::from_secs(3));
+                                match conn.send_and_read_ack(cmd, "$N", Duration::from_secs(3)) {
+                                    Ok((true, line)) => {
+                                        if let Err(error) = crate::connection::validate_setting_ack(cmd, &line) {
+                                            command_error = Some(error.to_string());
+                                            break;
+                                        }
+                                    }
+                                    Ok((false, _)) => {
+                                        command_error = Some("queued pattern command was not acknowledged".to_string());
+                                        break;
+                                    }
+                                    Err(error) => {
+                                        command_error = Some(error.to_string());
+                                        break;
+                                    }
+                                }
                             }
+                        } else {
+                            command_error = Some("connection lock poisoned".into());
+                        }
+                        if let Some(error) = command_error {
+                            invalidate_settings_readback(&st, "queued_pattern_command_failed", &error);
+                            disable_recording_on_error(&st, "queued pattern command", &error);
+                            if let Ok(mut status) = st.pattern_status.write() { *status = format!("Queue stopped: {error}"); }
+                            break 'outer;
                         }
                         thread::sleep(Duration::from_millis(300));
                     }
-                    apply_pattern_step_to_settings(&st, step);
+                    if let Err(error) = refresh_settings_from_radar(&st, "queued_pattern_step") {
+                        invalidate_settings_readback(&st, "queued_pattern_readback_failed", &error);
+                        disable_recording_on_error(&st, "queued pattern readback", &error);
+                        if let Ok(mut status) = st.pattern_status.write() { *status = format!("Queue stopped: {error}"); }
+                        break 'outer;
+                    }
                     if st.recording.load(Ordering::Relaxed) {
                         if let Err(error) = persist_recording_settings(&st) {
                             disable_recording_on_error(&st, "queued pattern settings output", &error);
@@ -2180,32 +2808,86 @@ fn timestamp_compact() -> String {
     format!("{y:04}{:02}{d:02}_{hours:02}{minutes:02}{seconds:02}", m + 1)
 }
 
-fn write_echo_csv(path: &str, spokes: &[Spoke], settings: &CurrentSettings) -> Result<(), io::Error> {
+fn timestamp_precise() -> String {
+    let now = std::time::SystemTime::now();
+    let millis = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("unix_ms:{millis}")
+}
+
+fn timestamp_precise_after(offset: Duration) -> String {
+    let millis = std::time::SystemTime::now()
+        .checked_add(offset)
+        .unwrap_or_else(std::time::SystemTime::now)
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("unix_ms:{millis}")
+}
+
+fn write_echo_csv(
+    path: &str,
+    spokes: &[Spoke],
+    settings: &CurrentSettings,
+    readback: &SettingsReadback,
+    boundary: &RecordingBoundary,
+) -> Result<(), io::Error> {
     use std::io::Write;
     let mut f = std::io::BufWriter::new(
         std::fs::File::create(path)?,
     );
 
-    // Write metadata header as comment lines
-    writeln!(f, "# settings_verified,false")?;
+    // Write metadata header as comment lines. The gain row is the raw value
+    // for the active radar mode: automatic mode uses N63 field 3 and manual
+    // mode uses N63 field 1. It is not a percentage conversion.
+    writeln!(f, "# schema_version,furuno-web-2")?;
+    writeln!(f, "# row_gain_semantics,mode_specific_raw_control_value")?;
+    writeln!(f, "# settings_verified,{}", readback.verified)?;
+    writeln!(f, "# settings_readback_captured_at,{}", readback.captured_at)?;
+    writeln!(f, "# settings_readback_transition_id,{}", readback.transition_id)?;
+    writeln!(f, "# settings_readback_valid_until,{}", readback.valid_until.as_deref().unwrap_or(""))?;
+    writeln!(f, "# settings_readback_source,{}", readback.source)?;
+    writeln!(f, "# radar_ip,{}", readback.radar_ip)?;
+    writeln!(f, "# host_ip,{}", readback.host_ip)?;
+    writeln!(f, "# firmware,{}", readback.firmware)?;
+    writeln!(f, "# recording_started_at,{}", boundary.started_at)?;
+    writeln!(f, "# recording_start_transition_id,{}", boundary.start_transition_id)?;
+    writeln!(f, "# recording_stopped_at,{}", boundary.stopped_at.as_deref().unwrap_or(""))?;
+    let readback_json = serde_json::to_string(readback)
+        .map_err(|error| io::Error::other(format!("serialize readback metadata: {error}")))?;
+    writeln!(f, "# settings_readback_json,{}", readback_json)?;
+    writeln!(f, "# tx_state,{}", settings.tx_state)?;
     writeln!(f, "# range_index,{}", settings.range_index)?;
     writeln!(f, "# gain_auto,{}", settings.gain_auto)?;
     writeln!(f, "# gain_value,{}", settings.gain_value)?;
+    writeln!(f, "# gain_manual_value,{}", settings.gain_manual_value)?;
+    writeln!(f, "# gain_auto_value,{}", settings.gain_auto_value)?;
     writeln!(f, "# pulse_width,{}", settings.pulse_width)?;
+    writeln!(f, "# pulse_range_index,{}", settings.pulse_range_index)?;
     writeln!(f, "# sea_clutter,{}", settings.sea_clutter)?;
+    writeln!(f, "# sea_clutter_auto,{}", settings.sea_clutter_auto)?;
+    writeln!(f, "# sea_clutter_auto_value,{}", settings.sea_clutter_auto_value)?;
+    writeln!(f, "# sea_clutter_mode,{}", settings.sea_clutter_mode)?;
     writeln!(f, "# rain_clutter,{}", settings.rain_clutter)?;
+    writeln!(f, "# rain_clutter_auto,{}", settings.rain_clutter_auto)?;
+    writeln!(f, "# rain_clutter_auto_value,{}", settings.rain_clutter_auto_value)?;
+    writeln!(f, "# rain_clutter_ftc_mode,{}", settings.rain_clutter_ftc_mode)?;
+    writeln!(f, "# rain_clutter_mode,{}", settings.rain_clutter_mode)?;
     writeln!(f, "# rezboost,{}", settings.rezboost)?;
     writeln!(f, "# interference_rejection,{}", settings.interference_rejection)?;
     writeln!(f, "# bird_mode,{}", settings.bird_mode)?;
     writeln!(f, "# doppler,{}", settings.doppler)?;
     writeln!(f, "# antenna_speed,{}", settings.antenna_speed)?;
+    writeln!(f, "# antenna_hi_rpm,{}", settings.antenna_hi_rpm)?;
     writeln!(f, "# main_bang,{}", settings.main_bang)?;
     writeln!(f, "# near_stc,{}", settings.near_stc)?;
     writeln!(f, "# middle_stc,{}", settings.middle_stc)?;
     writeln!(f, "# far_stc,{}", settings.far_stc)?;
     writeln!(f, "Status\tScale\tRange\tGain\tAngle\tEchoValues")?;
 
-    let gain = ((settings.gain_value as u32 * 100) / 255) as u16;
+    let gain = settings.gain_value;
     let scale = settings.range_index;
     let range = settings.range_index;
 
@@ -2278,5 +2960,119 @@ mod tests {
         let error = create_recording_dir(&root, None).expect_err("file root must fail");
         assert_eq!(error.kind(), io::ErrorKind::NotADirectory);
         std::fs::remove_file(path).expect("remove test path");
+    }
+
+    fn synthetic_read(register: &str, values: &[&str]) -> RegisterReadback {
+        let id = register.trim_start_matches("$N");
+        let raw = format!("$N{},{}", id, values.join(","));
+        RegisterReadback {
+            requested: format!("$R{}\r\n", id),
+            register: register.into(),
+            raw: Some(raw),
+            values: values.iter().map(|value| (*value).into()).collect(),
+            error: None,
+            requested_at: "unix_ms:test".into(),
+            read_at: "unix_ms:test".into(),
+        }
+    }
+
+    #[test]
+    fn readback_maps_device_fields_and_retains_raw_registers() {
+        let snapshot = CurrentRadarReadback {
+            reads: vec![
+                synthetic_read("$N62", &["4", "0", "0"]),
+                synthetic_read("$N63", &["1", "12", "0", "80", "0"]),
+                synthetic_read("$N64", &["1", "23", "45", "2", "0", "0"]),
+                synthetic_read("$N65", &["0", "34", "56", "1", "2", "0"]),
+                synthetic_read("$N68", &["5", "0", "4", "0", "0"]),
+                synthetic_read("$N69", &["1", "0", "0", "0", "0", "0"]),
+                synthetic_read("$N83", &["17", "0"]),
+                synthetic_read("$N85", &["3"]),
+                synthetic_read("$N86", &["2"]),
+                synthetic_read("$N87", &["1"]),
+                synthetic_read("$N89", &["1", "1"]),
+                synthetic_read("$NED", &["2", "0"]),
+                synthetic_read("$NEE", &["3", "0"]),
+                synthetic_read("$NEF", &["1", "1", "0", "1"]),
+                synthetic_read("$N67", &["0", "2", "2", "0"]),
+            ],
+        };
+        let (settings, readback) = build_settings_readback(
+            &snapshot,
+            "firmware",
+            Ipv4Addr::new(172, 31, 3, 226),
+            Ipv4Addr::new(172, 31, 1, 100),
+            "test",
+        );
+        assert!(readback.verified);
+        assert_eq!(settings.range_index, 4);
+        assert_eq!(settings.pulse_width, 5);
+        assert!(settings.gain_auto);
+        assert_eq!(settings.gain_manual_value, 12);
+        assert_eq!(settings.gain_auto_value, 80);
+        assert_eq!(settings.sea_clutter, 23);
+        assert!(settings.sea_clutter_auto);
+        assert_eq!(settings.sea_clutter_auto_value, 45);
+        assert_eq!(settings.sea_clutter_mode, 2);
+        assert_eq!(settings.rain_clutter, 34);
+        assert!(!settings.rain_clutter_auto);
+        assert_eq!(settings.rain_clutter_auto_value, 56);
+        assert_eq!(settings.rain_clutter_ftc_mode, 1);
+        assert_eq!(settings.rain_clutter_mode, 2);
+        assert!(settings.antenna_hi_rpm);
+        assert_eq!(settings.doppler, 2);
+        assert!(settings.interference_rejection);
+        assert!(readback.valid_until.as_deref().is_some_and(|value| value.starts_with("unix_ms:")));
+        assert_eq!(readback.raw_register_responses.len(), 15);
+        assert_eq!(readback.raw_register_responses[1].raw.as_deref(), Some("$N63,1,12,0,80,0"));
+    }
+
+    #[test]
+    fn incomplete_readback_cannot_be_verified() {
+        let snapshot = CurrentRadarReadback {
+            reads: vec![synthetic_read("$N62", &["0", "0", "0"])],
+        };
+        let (settings, readback) = build_settings_readback(
+            &snapshot,
+            "firmware",
+            Ipv4Addr::LOCALHOST,
+            Ipv4Addr::LOCALHOST,
+            "test_failure",
+        );
+        assert!(!readback.verified);
+        assert_eq!(settings.status, "readback_incomplete");
+        assert!(readback.fields.values().any(|field| !field.verified));
+    }
+
+    #[test]
+    fn pulse_readback_must_echo_the_requested_range() {
+        let mut reads = vec![
+            synthetic_read("$N62", &["4", "0", "0"]),
+            synthetic_read("$N63", &["0", "12", "0", "80", "0"]),
+            synthetic_read("$N64", &["0", "23", "45", "2", "0", "0"]),
+            synthetic_read("$N65", &["0", "34", "56", "1", "2", "0"]),
+            synthetic_read("$N68", &["5", "0", "3", "0", "0"]),
+            synthetic_read("$N69", &["1", "0", "0", "0", "0", "0"]),
+            synthetic_read("$N83", &["17", "0"]),
+            synthetic_read("$N85", &["3"]),
+            synthetic_read("$N86", &["2"]),
+            synthetic_read("$N87", &["1"]),
+            synthetic_read("$N89", &["1", "1"]),
+            synthetic_read("$NED", &["2", "0"]),
+            synthetic_read("$NEE", &["3", "0"]),
+            synthetic_read("$NEF", &["1", "1", "0", "1"]),
+            synthetic_read("$N67", &["0", "2", "2", "0"]),
+        ];
+        let snapshot = CurrentRadarReadback { reads: std::mem::take(&mut reads) };
+        let (settings, readback) = build_settings_readback(
+            &snapshot,
+            "firmware",
+            Ipv4Addr::LOCALHOST,
+            Ipv4Addr::LOCALHOST,
+            "pulse_mismatch",
+        );
+        assert_eq!(settings.pulse_range_index, 3);
+        assert!(!readback.verified);
+        assert!(!readback.fields["pulse_width"].verified);
     }
 }

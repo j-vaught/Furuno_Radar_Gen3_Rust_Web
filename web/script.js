@@ -27,12 +27,35 @@ const setCallout = (id, html, variant = 'info') => {
   }
 };
 
+function serverResponseVariant(text) {
+  const message = String(text || '').toLowerCase();
+  if (/\b(error|failed|failure|no ack|unacknowledged|mismatch|unknown|unavailable)\b/.test(message)) return 'error';
+  if (/\b(readback verified|confirmed|acknowledged|set to|updated)\b/.test(message)) return 'success';
+  return 'info';
+}
+
+function showServerResponse(id, text) {
+  setCallout(id, text, serverResponseVariant(text));
+}
+
 const clamp01 = value => Math.max(0, Math.min(1, value));
 
 let calibrationActive = false;
 const patternQueue = [];
 let lastLoadedPattern = null;
 let apiContract = null;
+
+// Readback is kept separate from the command cache. A value is allowed into
+// this object only after a read endpoint returns a parseable radar response.
+// This prevents startup defaults and unsent form values from being presented
+// as measured device state.
+const readbackState = {
+  values: {},
+  lastAt: null,
+  validUntil: null,
+  lastError: null,
+  invalid: new Set()
+};
 
 const fallbackReadCommandMap = Object.freeze({
   TX: 'TX',
@@ -668,10 +691,7 @@ function toggleEcho(mode){
     .then(r=>r.text()).then(t=>setCallout('txResult', t, 'info'));
 }
 function refreshTx(){
-  const cmd = getReadCommand('TX');
-  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(t=>setCallout('txResult', t, 'info'))
-    .catch(err=>setCallout('txResult', `Failed: ${err.message}`, 'error'));
+  return readback('TX', 'txResult');
 }
 function beginCalibration() {
   fetch('/begin_calibration')
@@ -938,65 +958,53 @@ function clearPatternQueue() {
 function applyRangePulse(){ setRange(()=>setPulse()); }
 function setRange(cb){
   fetch(`/set_range?radarNo=${v('radarNo')}&rangeIndex=${v('rangeIndex')}&rangeUnit=0`)
-    .then(r=>r.text()).then(t=>{setCallout('rangeResult', t, 'info'); if(cb)cb();});
+    .then(r=>r.text()).then(t=>{showServerResponse('rangeResult', t); if(cb && serverResponseVariant(t) !== 'error')cb();});
 }
 function setPulse(){
   fetch(`/set_pulse_width?radarNo=${v('radarNo')}&pulse=${v('pwPulse')}`
        + `&rangeIndex=${v('rangeIndex')}&rangeUnit=0`)
-    .then(r=>r.text()).then(t=>setCallout('rangeResult', t, 'info'));
+    .then(r=>r.text()).then(t=>showServerResponse('rangeResult', t));
 }
 function refreshRange(){
-  const cmd = getReadCommand('RANGE');
-  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(t=>setCallout('rangeResult', t, 'info'))
-    .catch(err=>setCallout('rangeResult', `Failed: ${err.message}`, 'error'));
+  return readback('RANGE', 'rangeResult');
 }
 
 function refreshPulse(){
-  const cmd = getReadCommand('PULSE');
-  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(t=>setCallout('rangeResult', t, 'info'))
-    .catch(err=>setCallout('rangeResult', `Failed: ${err.message}`, 'error'));
+  return readback('PULSE', 'rangeResult');
 }
 
 /* ---------- GAIN & CLUTTER ---------- */
 function setGainManual(){
   fetch(`/set_gain?radarNo=${v('radarNo')}&status=0&manualValue=${v('gainManual')}&autoValue=0`)
-    .then(r=>r.text()).then(t=>setCallout('gainResult', t, 'info'));
+    .then(r=>r.text()).then(t=>showServerResponse('gainResult', t));
 }
 function setGainAuto(){
   fetch(`/set_gain?radarNo=${v('radarNo')}&status=1&manualValue=0&autoValue=${v('gainAuto')}`)
-    .then(r=>r.text()).then(t=>setCallout('gainResult', t, 'info'));
+    .then(r=>r.text()).then(t=>showServerResponse('gainResult', t));
 }
 function setACSEA(){
   const seaMode = v('seaMode'); // manual | auto
   const status = seaMode === 'auto' ? 1 : 0;
   fetch(`/set_acsea?radarNo=${v('radarNo')}&status=${status}&manual=${v('seaMan')}&auto=${v('seaAuto')}&mode=0`)
-    .then(r=>r.text()).then(t=>setCallout('clutterResult', t, 'info'));
+    .then(r=>r.text()).then(t=>showServerResponse('clutterResult', t));
 }
 function setACRAIN(){
   const rainUiMode = v('rainMode'); // manual | auto
   const status = rainUiMode === 'auto' ? 1 : 0;
   fetch(`/set_acrain?radarNo=${v('radarNo')}&status=${status}&manual=${v('rainMan')}&auto=${v('rainAuto')}&ftcMode=0&rainMode=0`)
-    .then(r=>r.text()).then(t=>setCallout('clutterResult', t, 'info'));
+    .then(r=>r.text()).then(t=>showServerResponse('clutterResult', t));
 }
 function refreshGain(){
-  const cmd = getReadCommand('GAIN');
-  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(t=>setCallout('gainResult', t, 'info'))
-    .catch(err=>setCallout('gainResult', `Failed: ${err.message}`, 'error'));
+  return readback('GAIN', 'gainResult');
 }
 
 function refreshClutter(){
-  const cmd = getReadCommand('CLUTTER');
-  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(t => setCallout('clutterResult', t, 'info'))
-    .catch(err=>setCallout('clutterResult', `Failed: ${err.message}`, 'error'));
+  return readback('CLUTTER', 'clutterResult');
 }
 function setRezBoost() {
   fetch(`/set_bearing_resolution?radarNo=${v('radarNo')}&mode=${v('rezboostMode')}`)
     .then(r => r.text())
-    .then(t => setCallout('rezboostResult', t, 'info'));
+    .then(t => showServerResponse('rezboostResult', t));
 }
 function refreshRezBoost() {
   setCallout('rezboostResult', 'RezBoost refresh is unavailable until a read endpoint is provided.', 'info');
@@ -1006,35 +1014,31 @@ function refreshRezBoost() {
 /* ---------- SIGNAL PROCESSING ---------- */
 function setMainBang(){
   fetch(`/set_main_bang?value=${v('mainBangVal')}`)
-    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+    .then(r=>r.text()).then(t=>showServerResponse('signalResult', t));
 }
 function refreshMainBang(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=MAINBANG`)
-    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+  return readback('MAINBANG', 'signalResult');
 }
 function setIR(){
   fetch(`/set_interference_rejection?enabled=${v('irMode')}`)
-    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+    .then(r=>r.text()).then(t=>showServerResponse('signalResult', t));
 }
 function refreshIR(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=IR`)
-    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+  return readback('IR', 'signalResult');
 }
 function setBirdMode(){
   fetch(`/set_bird_mode?level=${v('birdMode')}`)
-    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+    .then(r=>r.text()).then(t=>showServerResponse('signalResult', t));
 }
 function refreshBirdMode(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=BIRDMODE`)
-    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+  return readback('BIRDMODE', 'signalResult');
 }
 function setDoppler(){
   fetch(`/set_doppler?mode=${v('dopplerMode')}`)
-    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+    .then(r=>r.text()).then(t=>showServerResponse('signalResult', t));
 }
 function refreshDoppler(){
-  fetch(`/get_current?radarNo=${v('radarNo')}&command=DOPPLER`)
-    .then(r=>r.text()).then(t=>setCallout('signalResult', t, 'info'));
+  return readback('DOPPLER', 'signalResult');
 }
 
 /* ---------- RECORDING ---------- */
@@ -1076,12 +1080,12 @@ function applySweepInterp(){
 }
 function setAntennaRev(){
   fetch(`/set_antenna_revolution?radarNo=${v('radarNo')}&rollSpeed=${v('rollSpd')}&hiRpm=${v('hiRpm')}`)
-    .then(r=>r.text()).then(t=>setCallout('antennaResult', t, 'info'))
+    .then(r=>r.text()).then(t=>showServerResponse('antennaResult', t))
     .catch(err => setCallout('antennaResult', `Failed: ${err.message}`, 'error'));
 }
 function setHighRpm(){
   fetch(`/set_antenna_revolution?radarNo=${v('radarNo')}&rollSpeed=${v('rollSpd')}&hiRpm=${v('hiRpm')}`)
-    .then(r=>r.text()).then(t=>setCallout('antennaResult', t, 'info'))
+    .then(r=>r.text()).then(t=>showServerResponse('antennaResult', t))
     .catch(err => setCallout('antennaResult', `Failed: ${err.message}`, 'error'));
 }
 function refreshAntenna(){
@@ -1112,6 +1116,291 @@ async function apiText(url) {
   return await r.text();
 }
 
+function parseResponseBody(text) {
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return { raw: text };
+  }
+}
+
+function unwrapReadback(payload) {
+  if (!payload || typeof payload !== 'object') return payload;
+  if (payload.data && typeof payload.data === 'object') return payload.data;
+  if (payload.readback && typeof payload.readback === 'object') return payload.readback;
+  if (payload.settings && typeof payload.settings === 'object') return payload.settings;
+  return payload;
+}
+
+function registerFields(payload) {
+  const raw = payload && typeof payload.raw === 'string' ? payload.raw : '';
+  const match = raw.match(/\$N[0-9A-F]{2},([^\r\n]*)/i);
+  return match ? match[1].split(',').map(value => value.trim()) : [];
+}
+
+function namedRegisterFields(payload, register) {
+  const raw = payload && typeof payload.raw === 'string' ? payload.raw : '';
+  const match = raw.match(new RegExp(`\\$N${register},([^\\r\\n|]*)`, 'i'));
+  return match ? match[1].split(',').map(value => value.trim()) : [];
+}
+
+function firstNumber(object, keys, fields = []) {
+  for (const key of keys) {
+    const value = object && object[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    if (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value))) return Number(value);
+  }
+  for (const value of fields) {
+    if (value !== '' && Number.isFinite(Number(value))) return Number(value);
+  }
+  return null;
+}
+
+function normaliseReadback(name, payload) {
+  const object = unwrapReadback(payload) || {};
+  const fields = registerFields(payload);
+  const values = {};
+  if (object.error || object.ok === false) return null;
+
+  if (name === 'RANGE') {
+    const value = firstNumber(object, ['range_index', 'rangeIndex', 'range', 'value'], fields);
+    if (value !== null) values.range_index = value;
+  } else if (name === 'PULSE') {
+    const value = firstNumber(object, ['pulse_width', 'pulseWidth', 'pulse', 'value'], fields);
+    if (value !== null) values.pulse_width = value;
+    const pulseRange = firstNumber(object, ['pulse_range_index', 'pulseRangeIndex'], fields.slice(2, 3));
+    if (pulseRange !== null) values.pulse_range_index = pulseRange;
+  } else if (name === 'GAIN') {
+    const status = firstNumber(object, ['gain_auto', 'gainAuto', 'auto', 'status']) ?? firstNumber({}, [], fields.slice(0, 1));
+    const manualValue = firstNumber(object, ['gain_manual_value', 'gainManualValue', 'manual_value', 'manualValue'])
+      ?? firstNumber({}, [], [fields[1]]);
+    const autoValue = firstNumber(object, ['gain_auto_value', 'gainAutoValue', 'auto_value', 'autoValue'])
+      ?? firstNumber({}, [], [fields[3]]);
+    const value = firstNumber(object, ['gain_value', 'gainValue', 'value'])
+      ?? (status === null ? null : (status ? autoValue : manualValue));
+    if (status !== null) values.gain_auto = Boolean(status);
+    if (value !== null) values.gain_value = value;
+    if (manualValue !== null) values.gain_manual_value = manualValue;
+    if (autoValue !== null) values.gain_auto_value = autoValue;
+  } else if (name === 'STC') {
+    const near = firstNumber(object, ['near', 'near_stc', 'nearStc']);
+    const middle = firstNumber(object, ['middle', 'mid', 'middle_stc', 'midStc']);
+    const far = firstNumber(object, ['far', 'far_stc', 'farStc']);
+    if (near !== null) values.near_stc = near;
+    if (middle !== null) values.middle_stc = middle;
+    if (far !== null) values.far_stc = far;
+  } else if (name === 'CLUTTER') {
+    const seaFields = namedRegisterFields(payload, '64');
+    const rainFields = namedRegisterFields(payload, '65');
+    const sea = firstNumber(object, ['sea', 'sea_clutter', 'seaClutter'])
+      ?? firstNumber({}, [], [seaFields[1], seaFields[0]]);
+    const rain = firstNumber(object, ['rain', 'rain_clutter', 'rainClutter'])
+      ?? firstNumber({}, [], [rainFields[1], rainFields[0]]);
+    const seaAuto = firstNumber(object, ['sea_clutter_auto', 'seaClutterAuto', 'sea_auto'], seaFields.slice(0, 1));
+    const seaAutoValue = firstNumber(object, ['sea_clutter_auto_value', 'seaClutterAutoValue', 'sea_auto_value'], seaFields.slice(2, 3));
+    const seaMode = firstNumber(object, ['sea_clutter_mode', 'seaClutterMode', 'sea_mode'], seaFields.slice(3, 4));
+    const rainAuto = firstNumber(object, ['rain_clutter_auto', 'rainClutterAuto', 'rain_auto'], rainFields.slice(0, 1));
+    const rainAutoValue = firstNumber(object, ['rain_clutter_auto_value', 'rainClutterAutoValue', 'rain_auto_value'], rainFields.slice(2, 3));
+    const rainFtcMode = firstNumber(object, ['rain_clutter_ftc_mode', 'rainClutterFtcMode', 'rain_ftc_mode'], rainFields.slice(3, 4));
+    const rainMode = firstNumber(object, ['rain_clutter_mode', 'rainClutterMode', 'rain_mode'], rainFields.slice(4, 5));
+    if (sea !== null) values.sea_clutter = sea;
+    if (rain !== null) values.rain_clutter = rain;
+    if (seaAuto !== null) values.sea_clutter_auto = Boolean(seaAuto);
+    if (seaAutoValue !== null) values.sea_clutter_auto_value = seaAutoValue;
+    if (seaMode !== null) values.sea_clutter_mode = seaMode;
+    if (rainAuto !== null) values.rain_clutter_auto = Boolean(rainAuto);
+    if (rainAutoValue !== null) values.rain_clutter_auto_value = rainAutoValue;
+    if (rainFtcMode !== null) values.rain_clutter_ftc_mode = rainFtcMode;
+    if (rainMode !== null) values.rain_clutter_mode = rainMode;
+  } else if (name === 'ANTREV') {
+    const speed = firstNumber(object, ['antenna_speed', 'antennaSpeed', 'rotation_speed', 'rotationSpeed', 'speed'], fields);
+    if (speed !== null) values.antenna_speed = speed;
+    const hiRpm = firstNumber(object, ['antenna_hi_rpm', 'antennaHiRpm', 'hi_rpm', 'hiRpm'], fields.slice(1, 2));
+    if (hiRpm !== null) values.antenna_hi_rpm = Boolean(hiRpm);
+  } else if (name === 'MAINBANG') {
+    const value = firstNumber(object, ['main_bang', 'mainBang', 'value'], fields);
+    if (value !== null) values.main_bang = value;
+  } else if (name === 'IR') {
+    const value = firstNumber(object, ['interference_rejection', 'interferenceRejection', 'enabled', 'value'], fields);
+    if (value !== null) values.interference_rejection = Boolean(value);
+  } else if (name === 'BIRDMODE') {
+    const value = firstNumber(object, ['bird_mode', 'birdMode', 'level', 'value'], fields);
+    if (value !== null) values.bird_mode = value;
+  } else if (name === 'DOPPLER') {
+    const value = firstNumber(object, ['doppler', 'mode', 'value'], fields);
+    if (value !== null) values.doppler = value;
+  } else if (name === 'TX') {
+    if (typeof object.tx_active === 'boolean') values.tx_active = object.tx_active;
+    else if (/transmitting|\btx\s*on|,2[,\s]/i.test(payload.raw || '')) values.tx_active = true;
+    else if (/standby|\btx\s*off|,1[,\s]/i.test(payload.raw || '')) values.tx_active = false;
+  }
+  return Object.keys(values).length ? values : null;
+}
+
+function applyReadbackToControls(values) {
+  const set = (id, value) => { const el = byId(id); if (el && value !== undefined && value !== null) el.value = value; };
+  if (values.range_index !== undefined) set('rangeIndex', values.range_index);
+  if (values.pulse_width !== undefined) set('pwPulse', values.pulse_width);
+  if (values.gain_auto !== undefined) set('gainMode', values.gain_auto ? 'auto' : 'manual');
+  if (values.gain_manual_value !== undefined) set('gainManual', values.gain_manual_value);
+  if (values.gain_auto_value !== undefined) set('gainAuto', values.gain_auto_value);
+  if (values.gain_value !== undefined && values.gain_manual_value === undefined && values.gain_auto_value === undefined) {
+    set(values.gain_auto ? 'gainAuto' : 'gainManual', values.gain_value);
+  }
+  if (values.near_stc !== undefined) set('nearStc', values.near_stc);
+  if (values.middle_stc !== undefined) set('midStc', values.middle_stc);
+  if (values.far_stc !== undefined) set('farStc', values.far_stc);
+  if (values.main_bang !== undefined) set('mainBangVal', values.main_bang);
+  if (values.interference_rejection !== undefined) set('irMode', values.interference_rejection ? 1 : 0);
+  if (values.bird_mode !== undefined) set('birdMode', values.bird_mode);
+  if (values.doppler !== undefined) set('dopplerMode', values.doppler);
+  if (values.antenna_speed !== undefined) set('rollSpd', values.antenna_speed);
+  if (values.antenna_hi_rpm !== undefined) set('hiRpm', values.antenna_hi_rpm ? 1 : 0);
+  if (values.sea_clutter_auto !== undefined) set('seaMode', values.sea_clutter_auto ? 'auto' : 'manual');
+  if (values.sea_clutter !== undefined) set('seaMan', values.sea_clutter);
+  if (values.sea_clutter_auto_value !== undefined) set('seaAuto', values.sea_clutter_auto_value);
+  if (values.rain_clutter_auto !== undefined) set('rainMode', values.rain_clutter_auto ? 'auto' : 'manual');
+  if (values.rain_clutter !== undefined) set('rainMan', values.rain_clutter);
+  if (values.rain_clutter_auto_value !== undefined) set('rainAuto', values.rain_clutter_auto_value);
+}
+
+const READBACK_FIELDS = Object.freeze({
+  TX: ['tx_state'], RANGE: ['range_index'], PULSE: ['pulse_width', 'pulse_range_index'],
+  GAIN: ['gain_auto', 'gain_value', 'gain_manual_value', 'gain_auto_value'],
+  CLUTTER: ['sea_clutter', 'sea_clutter_auto', 'sea_clutter_auto_value', 'sea_clutter_mode',
+    'rain_clutter', 'rain_clutter_auto', 'rain_clutter_auto_value', 'rain_clutter_ftc_mode', 'rain_clutter_mode'],
+  ANTREV: ['antenna_speed', 'antenna_hi_rpm'], STC: ['near_stc', 'middle_stc', 'far_stc'],
+  MAINBANG: ['main_bang'], IR: ['interference_rejection'], BIRDMODE: ['bird_mode'], DOPPLER: ['doppler']
+});
+
+function clearReadback(name) {
+  (READBACK_FIELDS[name] || []).forEach(field => {
+    delete readbackState.values[field];
+    readbackState.invalid.add(field);
+  });
+}
+
+function parseReadbackTime(value) {
+  if (typeof value !== 'string') return null;
+  const unix = value.match(/^unix_ms:(\d+)$/);
+  if (unix) return Number(unix[1]);
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function flattenSettingsReadback(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object') return {};
+  const values = {};
+  const fields = snapshot.fields && typeof snapshot.fields === 'object' ? snapshot.fields : {};
+  const captured = parseReadbackTime(snapshot.captured_at);
+  const validUntil = parseReadbackTime(snapshot.valid_until);
+  Object.entries(fields).forEach(([name, field]) => {
+    const readAt = parseReadbackTime(field?.read_at);
+    const stale = validUntil !== null
+      ? validUntil <= Date.now()
+      : (captured !== null && Date.now() - captured > 5000);
+    if (field && field.verified === true && !stale && field.value !== null && field.value !== undefined) {
+      values[name] = field.value;
+    }
+    if (field && (field.verified !== true || stale)) readbackState.invalid.add(name);
+    if (readAt !== null && (!readbackState.lastAt || readAt > readbackState.lastAt.getTime())) readbackState.lastAt = new Date(readAt);
+  });
+  if (captured !== null && (!readbackState.lastAt || captured > readbackState.lastAt.getTime())) readbackState.lastAt = new Date(captured);
+  readbackState.validUntil = parseReadbackTime(snapshot.valid_until);
+  readbackState.invalid.forEach(field => delete readbackState.values[field]);
+  return values;
+}
+
+function renderReadbackStatus(message, variant = 'info') {
+  setCallout('settingsReadbackStatus', message, variant);
+  const status = byId('siSettingsVerified');
+  if (status) {
+    status.textContent = message;
+    status.className = `status-val ${variant === 'success' ? 'status-val--ok' : 'status-val--warn'}`;
+  }
+  const note = byId('siSettingsNote');
+  if (note) note.textContent = message;
+  const timestamp = byId('siSettingsReadAt');
+  if (timestamp && readbackState.lastAt) timestamp.textContent = readbackState.lastAt.toLocaleTimeString();
+}
+
+async function readback(name, resultId) {
+  const command = getReadCommand(name);
+  try {
+    const text = await apiText(`/get_current?radarNo=${encodeURIComponent(v('radarNo'))}&command=${encodeURIComponent(command)}&format=json`);
+    const values = normaliseReadback(name, parseResponseBody(text));
+    if (!values) throw new Error('The radar response did not contain a confirmed value.');
+    Object.assign(readbackState.values, values);
+    Object.keys(values).forEach(field => readbackState.invalid.delete(field));
+    readbackState.lastAt = new Date();
+    readbackState.lastError = null;
+    applyReadbackToControls(values);
+    renderReadbackStatus(`Confirmed radar readback updated ${readbackState.lastAt.toLocaleTimeString()}.`, 'success');
+    if (resultId) setCallout(resultId, `Confirmed radar readback: ${text}`, 'success');
+    return values;
+  } catch (error) {
+    clearReadback(name);
+    readbackState.lastError = error;
+    renderReadbackStatus(`Readback failed for ${name}: ${error.message}`, 'error');
+    if (resultId) setCallout(resultId, `Readback failed: ${error.message}`, 'error');
+    throw error;
+  }
+}
+
+async function readFreshSnapshot() {
+  const text = await apiText(`/get_current?radarNo=${encodeURIComponent(v('radarNo'))}&command=ALL&format=json&fresh=1`);
+  const payload = parseResponseBody(text);
+  const snapshot = payload.settings_readback || payload.readback || payload.data || payload;
+  const values = flattenSettingsReadback(snapshot);
+  if (!Object.keys(values).length) throw new Error('The fresh response contained no verified settings.');
+  Object.assign(readbackState.values, values);
+  Object.keys(values).forEach(field => readbackState.invalid.delete(field));
+  applyReadbackToControls(values);
+  readbackState.lastError = null;
+  renderReadbackStatus(snapshot.verified === true
+    ? `Confirmed radar readback captured ${readbackState.lastAt?.toLocaleTimeString() || 'now'}.`
+    : 'Partial radar readback captured. Unverified fields remain unavailable.', snapshot.verified === true ? 'success' : 'error');
+  return { snapshot, values };
+}
+
+async function refreshAllReadbacks() {
+  const names = [
+    ['RANGE', 'rangeResult'], ['PULSE', 'rangeResult'], ['GAIN', 'gainResult'],
+    ['CLUTTER', 'clutterResult'], ['ANTREV', 'antennaResult'], ['STC', 'gainResult'],
+    ['MAINBANG', 'signalResult'], ['IR', 'signalResult'], ['BIRDMODE', 'signalResult'],
+    ['DOPPLER', 'signalResult']
+  ];
+  try {
+    const fresh = await readFreshSnapshot();
+    const expected = Object.keys(READBACK_FIELDS).reduce((count, name) => count + READBACK_FIELDS[name].length, 0);
+    const valid = Object.keys(fresh.values).length;
+    if (fresh.snapshot.verified === true) {
+      renderReadbackStatus(`Confirmed fresh readback for ${valid} fields.`, 'success');
+    } else {
+      renderReadbackStatus(`Fresh readback returned ${valid} of ${expected} fields.`, 'error');
+    }
+    return fresh;
+  } catch (allError) {
+    // Older servers do not expose the aggregate read endpoint. Fall back to
+    // individual reads, while preserving the same stale-value guarantees.
+    Object.keys(readbackState.values).forEach(field => {
+      readbackState.invalid.add(field);
+      delete readbackState.values[field];
+    });
+    renderReadbackStatus(`Fresh aggregate read unavailable: ${allError.message}. Trying individual reads.`, 'error');
+  }
+  let successCount = 0;
+  for (const [name, resultId] of names) {
+    try { await readback(name, resultId); successCount += 1; } catch (_) { /* status callout already explains the failure */ }
+  }
+  if (successCount === names.length) {
+    renderReadbackStatus(`Confirmed readback for ${successCount} radar settings.`, 'success');
+  } else {
+    renderReadbackStatus(`Confirmed ${successCount} of ${names.length} radar settings. Unconfirmed values remain unavailable.`, 'error');
+  }
+}
+
 /** Push UI fields → device */
 async function setSTC() {
   const radarNo = +$('#radarNo').value;
@@ -1120,26 +1409,29 @@ async function setSTC() {
   const farVal  = +$('#farStc').value;
   if (Number.isNaN(radarNo)) return;
 
-  await Promise.all([
+  try {
+    const responses = await Promise.all([
     fetch(`/set_near_stc?radarNo=${radarNo}&value=${nearVal}`),
     fetch(`/set_middle_stc?radarNo=${radarNo}&value=${midVal}`),
     fetch(`/set_far_stc?radarNo=${radarNo}&value=${farVal}`)
-  ]);
-
-  refreshSTC();              // auto-pull after we push
+    ]);
+    const texts = await Promise.all(responses.map(async response => {
+      if (!response.ok) throw new Error(`STC setter returned HTTP ${response.status}`);
+      return response.text();
+    }));
+    const failure = texts.find(text => serverResponseVariant(text) === 'error');
+    if (failure) throw new Error(failure);
+    showServerResponse('gainResult', texts.join(' | '));
+    await refreshSTC();
+  } catch (error) {
+    clearReadback('STC');
+    setCallout('gainResult', `STC update failed: ${error.message}`, 'error');
+  }
 }
 
 /** Pull device → UI fields */
 async function refreshSTC() {
-  const radarNo = +$('#radarNo').value;
-  if (Number.isNaN(radarNo)) return;
-  const cmd = getReadCommand('STC');
-  const payload = await apiGet(`/get_current?command=${cmd}&radarNo=${radarNo}&format=json`);
-  const data = payload && payload.data ? payload.data : payload;
-  $('#nearStc').value = data.near ?? 0;
-  $('#midStc').value  = data.middle ?? 0;
-  $('#farStc').value  = data.far ?? 0;
-  setCallout('gainResult', `STC updated @ ${new Date().toLocaleTimeString()}`, 'info');
+  return readback('STC', 'gainResult');
 }
 
 /* tiny $ helper */
@@ -1165,7 +1457,7 @@ function formatUptime(secs) {
 const PULSE_LABELS = ['S1','S2','M1','M2','M3','L'];
 const REZBOOST_LABELS = ['Off','Low','Medium','High'];
 const BIRD_LABELS = ['Off','Low','Medium','High'];
-const DOPPLER_LABELS = ['Off','On (internal)','On (external)'];
+const DOPPLER_LABELS = ['Off','Mode 1','Mode 2'];
 const ANTENNA_LABELS = ['Low','High','Auto'];
 
 function updateSystemInfo() {
@@ -1203,22 +1495,52 @@ function updateSystemInfo() {
         : recordPath;
       set('siRecordDir', recordPathLabel);
       set('siPatternRunning', d.pattern_running ? 'Running' : 'Idle');
-      setClass('siSettingsVerified', d.settings_verified === true ? 'Verified' : 'Unverified — use control Refresh for readback', d.settings_verified === true ? 'status-val--ok' : 'status-val--warn');
-
-      if (d.settings) {
-        const s = d.settings;
-        set('siRange', s.range_index);
-        set('siPulse', PULSE_LABELS[s.pulse_width] || s.pulse_width);
-        set('siGain', s.gain_auto ? `Auto (${s.gain_value})` : `Manual (${s.gain_value})`);
-        set('siRezboost', REZBOOST_LABELS[s.rezboost] || s.rezboost);
-        set('siAntenna', ANTENNA_LABELS[s.antenna_speed] || s.antenna_speed);
-        set('siDoppler', DOPPLER_LABELS[s.doppler] || s.doppler);
-        set('siIR', s.interference_rejection ? 'On' : 'Off');
-        set('siBird', BIRD_LABELS[s.bird_mode] || s.bird_mode);
-        set('siMainBang', s.main_bang);
-        set('siSTC', `${s.near_stc} / ${s.middle_stc} / ${s.far_stc}`);
-        set('siSea', s.sea_clutter);
-        set('siRain', s.rain_clutter);
+      // The server may expose a confirmed snapshot as `settings_readback` or
+      // `actual_settings`. The legacy `settings` field is a command cache and
+      // is intentionally ignored while `settings_verified` is false.
+      const serverReadback = flattenSettingsReadback(d.settings_readback);
+      const confirmed = Object.keys(serverReadback).length
+        ? serverReadback
+        : (d.settings_verified === true ? (d.actual_settings || d.settings) : null);
+      const s = { ...serverReadback, ...readbackState.values, ...(confirmed || {}) };
+      const hasConfirmed = Object.keys(s).length > 0;
+      const validUntil = parseReadbackTime(d.settings_readback?.valid_until);
+      const capturedAt = parseReadbackTime(d.settings_readback?.captured_at);
+      const readbackFresh = validUntil !== null
+        ? validUntil > Date.now()
+        : (capturedAt === null || Date.now() - capturedAt <= 5000);
+      const fullyVerified = readbackFresh && (d.settings_verified === true || d.settings_readback?.verified === true);
+      const statusText = !readbackFresh && d.settings_readback?.captured_at
+        ? 'Stale readback — refresh required'
+        : fullyVerified
+        ? 'Verified'
+        : (hasConfirmed ? 'Partial readback — some fields unavailable' : 'Unverified — use Read all confirmed settings');
+      setClass('siSettingsVerified', statusText, fullyVerified ? 'status-val--ok' : 'status-val--warn');
+      const note = byId('siSettingsNote');
+      if (note && !hasConfirmed) note.textContent = 'No confirmed radar readback has been collected. Cached command values are hidden.';
+      if (hasConfirmed) {
+        set('siRange', s.range_index ?? '--');
+        set('siPulse', s.pulse_width == null ? '--' : (PULSE_LABELS[s.pulse_width] || s.pulse_width));
+        set('siPulseRange', s.pulse_range_index ?? '--');
+        set('siGain', s.gain_auto == null ? '--' : (s.gain_auto ? 'Auto' : 'Manual'));
+        set('siGainValues', s.gain_manual_value == null && s.gain_auto_value == null ? '--' : `${s.gain_manual_value ?? '--'} / ${s.gain_auto_value ?? '--'}`);
+        set('siRezboost', s.rezboost == null ? '--' : (REZBOOST_LABELS[s.rezboost] || s.rezboost));
+        set('siAntenna', s.antenna_speed == null ? '--' : (ANTENNA_LABELS[s.antenna_speed] || s.antenna_speed));
+        set('siAntennaHiRpm', s.antenna_hi_rpm == null ? '--' : (s.antenna_hi_rpm ? 'On' : 'Off'));
+        set('siDoppler', s.doppler == null ? '--' : (DOPPLER_LABELS[s.doppler] || s.doppler));
+        set('siIR', s.interference_rejection == null ? '--' : (s.interference_rejection ? 'On' : 'Off'));
+        set('siBird', s.bird_mode == null ? '--' : (BIRD_LABELS[s.bird_mode] || s.bird_mode));
+        set('siMainBang', s.main_bang ?? '--');
+        set('siSTC', s.near_stc == null || s.middle_stc == null || s.far_stc == null ? '--' : `${s.near_stc} / ${s.middle_stc} / ${s.far_stc}`);
+        set('siSea', s.sea_clutter ?? '--');
+        set('siSeaMode', s.sea_clutter_auto == null ? '--' : `${s.sea_clutter_auto ? 'Auto' : 'Manual'} / ${s.sea_clutter_auto_value ?? '--'} (mode ${s.sea_clutter_mode ?? '--'})`);
+        set('siRain', s.rain_clutter ?? '--');
+        set('siRainMode', s.rain_clutter_auto == null ? '--' : `${s.rain_clutter_auto ? 'Auto' : 'Manual'} / ${s.rain_clutter_auto_value ?? '--'} (FTC ${s.rain_clutter_ftc_mode ?? '--'}, mode ${s.rain_clutter_mode ?? '--'})`);
+      } else {
+        ['siRange', 'siPulse', 'siPulseRange', 'siGain', 'siGainValues', 'siRezboost', 'siAntenna', 'siAntennaHiRpm', 'siDoppler', 'siIR', 'siBird', 'siMainBang', 'siSTC', 'siSea', 'siSeaMode', 'siRain', 'siRainMode'].forEach(id => set(id, '--'));
+      }
+      if (d.settings_read_at || d.settings_readback_at || d.settings_readback?.captured_at) {
+        set('siSettingsReadAt', d.settings_read_at || d.settings_readback_at || d.settings_readback.captured_at);
       }
 
       const formatAbsolute = (value, unit, digits = 0) => {

@@ -61,6 +61,25 @@ pub enum RadarResponse {
     Unknown(String),
 }
 
+/// One acknowledged register read used to populate recording metadata.
+/// `raw` is retained verbatim so later analysis can re-interpret fields when
+/// the device protocol semantics are refined.
+#[derive(Clone, Debug)]
+pub struct RegisterReadback {
+    pub requested: String,
+    pub register: String,
+    pub raw: Option<String>,
+    pub values: Vec<String>,
+    pub error: Option<String>,
+    pub requested_at: String,
+    pub read_at: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CurrentRadarReadback {
+    pub reads: Vec<RegisterReadback>,
+}
+
 // --- RadarConnection ---
 
 pub struct RadarConnection {
@@ -258,6 +277,35 @@ impl RadarConnection {
         Ok(())
     }
 
+    /// Read the settings that are persisted alongside an experiment.
+    ///
+    /// Each request is independent so one unsupported or timed-out register
+    /// does not erase the successful reads. Callers must inspect every
+    /// `error` and never treat a missing read as a verified value.
+    pub fn read_current_settings(&mut self) -> CurrentRadarReadback {
+        let mut result = CurrentRadarReadback::default();
+        append_register_readback(&mut result, self, "$R62,0,0,0,0\r\n".into(), "$N62,");
+        let range = result.reads.last()
+            .and_then(|read| read.values.first())
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(0);
+        append_register_readback(&mut result, self, "$R63,0,0,0,0,0\r\n".into(), "$N63,");
+        append_register_readback(&mut result, self, "$R64,0,0,0,0,0,0\r\n".into(), "$N64,");
+        append_register_readback(&mut result, self, "$R65,0,0,0,0,0,0\r\n".into(), "$N65,");
+        append_register_readback(&mut result, self, format!("$R68,0,0,{range},0,0\r\n"), "$N68,");
+        append_register_readback(&mut result, self, "$R69,0,0,0,0,0,0\r\n".into(), "$N69,");
+        append_register_readback(&mut result, self, "$R83,0,0\r\n".into(), "$N83,");
+        append_register_readback(&mut result, self, "$R85,0\r\n".into(), "$N85,");
+        append_register_readback(&mut result, self, "$R86,0\r\n".into(), "$N86,");
+        append_register_readback(&mut result, self, "$R87,0\r\n".into(), "$N87,");
+        append_register_readback(&mut result, self, "$R89,0,0\r\n".into(), "$N89,");
+        append_register_readback(&mut result, self, "$RED,0,0\r\n".into(), "$NED,");
+        append_register_readback(&mut result, self, "$REE,0,0\r\n".into(), "$NEE,");
+        append_register_readback(&mut result, self, "$REF,0,0,0\r\n".into(), "$NEF,");
+        append_register_readback(&mut result, self, "$R67,0,2,,0\r\n".into(), "$N67,");
+        result
+    }
+
     pub fn send_command(&mut self, cmd: &str) -> Result<(), RadarError> {
         let ctrl = self.ctrl.as_mut()
             .ok_or(RadarError::ConnectionFailed("no control stream".into()))?;
@@ -408,6 +456,60 @@ impl RadarConnection {
     }
 }
 
+fn append_register_readback(
+    result: &mut CurrentRadarReadback,
+    conn: &mut RadarConnection,
+    requested: String,
+    prefix: &'static str,
+) {
+    let requested_at = unix_timestamp_millis();
+    match conn.send_and_read_ack(&requested, prefix, Duration::from_secs(3)) {
+        Ok((true, raw)) => {
+            let (register, values) = protocol::parse_response(&raw)
+                .map(|(id, vals)| (
+                    format!("$N{id}"),
+                    vals.into_iter().map(str::to_string).collect(),
+                ))
+                .unwrap_or_else(|| (prefix.trim_end_matches(',').to_string(), Vec::new()));
+            result.reads.push(RegisterReadback {
+                requested,
+                register,
+                raw: Some(raw),
+                values,
+                error: None,
+                requested_at,
+                read_at: unix_timestamp_millis(),
+            });
+        }
+        Ok((false, detail)) => result.reads.push(RegisterReadback {
+            requested,
+            register: prefix.trim_end_matches(',').to_string(),
+            raw: None,
+            values: Vec::new(),
+            error: Some(if detail.is_empty() { "timeout waiting for register response".into() } else { detail }),
+            requested_at,
+            read_at: unix_timestamp_millis(),
+        }),
+        Err(error) => result.reads.push(RegisterReadback {
+            requested,
+            register: prefix.trim_end_matches(',').to_string(),
+            raw: None,
+            values: Vec::new(),
+            error: Some(error.to_string()),
+            requested_at,
+            read_at: unix_timestamp_millis(),
+        }),
+    }
+}
+
+fn unix_timestamp_millis() -> String {
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("unix_ms:{millis}")
+}
+
 // --- Response parsing ---
 
 fn parse_response_line(line: &str) -> RadarResponse {
@@ -437,6 +539,75 @@ fn validate_tx_ack(line: &str, desired: u16) -> Result<(), RadarError> {
         return Err(RadarError::ProtocolError(format!(
             "TX state {desired} was not confirmed by radar response {line:?}"
         )));
+    }
+    Ok(())
+}
+
+/// Validate that a setting acknowledgement corresponds to the command that
+/// was sent. A register prefix alone is insufficient because a delayed ACK
+/// from an earlier command can otherwise be mistaken for the current state.
+pub fn validate_setting_ack(command: &str, response: &str) -> Result<(), RadarError> {
+    let parse = |line: &str| -> Option<(String, Vec<i32>)> {
+        let fields = line.trim().split(',').collect::<Vec<_>>();
+        let id = fields.first()?.strip_prefix('$')?.to_string();
+        let values = fields[1..]
+            .iter()
+            .map(|value| value.trim().parse::<i32>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        Some((id, values))
+    };
+    let (command_id, command_values) = parse(command)
+        .ok_or_else(|| RadarError::ProtocolError(format!("invalid setting command {command:?}")))?;
+    let (response_id, response_values) = parse(response)
+        .ok_or_else(|| RadarError::ProtocolError(format!("invalid setting response {response:?}")))?;
+    if !response_id.starts_with('N') || response_id[1..] != command_id[1..] {
+        return Err(RadarError::ProtocolError(format!(
+            "setting response register {response_id:?} does not match command {command_id:?}"
+        )));
+    }
+    let pairs: Vec<(usize, usize)> = match command_id.as_str() {
+        // N62 returns three values even though S62 carries trailing protocol
+        // placeholders. Only the selected range is the setting being acked.
+        "S62" => vec![(0, 0)],
+        // N63 retains both manual and automatic values. Confirm the mode and
+        // only the value active in that mode; the inactive value is still
+        // meaningful metadata and may intentionally be preserved by the radar.
+        "S63" => {
+            let active_value = if command_values.first() == Some(&0) { 1 } else { 3 };
+            vec![(0, 0), (active_value, active_value)]
+        }
+        // A/C SEA and A/C RAIN each retain inactive values. Confirm the mode,
+        // active value, and the explicitly mutable processing-mode fields.
+        "S64" => {
+            let active_value = if command_values.first() == Some(&0) { 1 } else { 2 };
+            vec![(0, 0), (active_value, active_value), (3, 3)]
+        }
+        "S65" => {
+            let active_value = if command_values.first() == Some(&0) { 1 } else { 2 };
+            vec![(0, 0), (active_value, active_value), (3, 3), (4, 4)]
+        }
+        // N67 field 2 is the selected interference-rejection value; fields 0,
+        // 1, and 3 are protocol selectors/retained state.
+        "S67" => vec![(2, 2)],
+        // Pulse responses echo the range in response field 2.
+        "S68" => vec![(0, 0), (1, 2)],
+        "S69" => vec![(0, 0)],
+        "SEE" => vec![(0, 0)],
+        "SEF" => vec![(0, 0), (1, 1)],
+        _ => (0..command_values.len()).map(|index| (index, index)).collect(),
+    };
+    for (command_index, response_index) in pairs {
+        let expected = command_values.get(command_index).ok_or_else(|| {
+            RadarError::ProtocolError(format!("command {command:?} is missing field {command_index}"))
+        })?;
+        let observed = response_values.get(response_index).ok_or_else(|| {
+            RadarError::ProtocolError(format!("response {response:?} is missing field {response_index}"))
+        })?;
+        if expected != observed {
+            return Err(RadarError::ProtocolError(format!(
+                "setting acknowledgement mismatch at command field {command_index}: expected {expected}, observed {observed} in {response:?}"
+            )));
+        }
     }
     Ok(())
 }
@@ -535,5 +706,20 @@ mod socket_tests {
         assert!(validate_tx_ack("$N69,1,0,0,0,0,0", 2).is_err());
         assert!(validate_tx_ack("$N69,", 1).is_err());
         assert!(validate_tx_ack("$N63,1,0,0,80,0", 1).is_err());
+    }
+
+    #[test]
+    fn setting_ack_requires_matching_register_values() {
+        assert!(validate_setting_ack("$S62,4,0,0\r\n", "$N62,4,0,0").is_ok());
+        assert!(validate_setting_ack("$S62,4,0,0\r\n", "$N62,3,0,0").is_err());
+        assert!(validate_setting_ack("$S63,1,12,0,80,0\r\n", "$N63,1,12,0,80,0").is_ok());
+        assert!(validate_setting_ack("$S63,0,12,0,80,0\r\n", "$N63,0,12,0,99,0").is_ok());
+        assert!(validate_setting_ack("$S63,0,12,0,80,0\r\n", "$N63,0,13,0,80,0").is_err());
+        assert!(validate_setting_ack("$S64,1,23,45,2,0,0\r\n", "$N64,1,99,45,2,0,0").is_ok());
+        assert!(validate_setting_ack("$S65,0,34,56,1,2,0\r\n", "$N65,0,35,56,1,2,0").is_err());
+        assert!(validate_setting_ack("$S67,0,0,2,0\r\n", "$N67,0,2,2,0").is_ok());
+        assert!(validate_setting_ack("$S68,5,4,0,0,0\r\n", "$N68,5,0,4,0,0").is_ok());
+        assert!(validate_setting_ack("$S68,5,4,0,0,0\r\n", "$N68,5,0,3,0,0").is_err());
+        assert!(validate_setting_ack("$S89,1,1\r\n", "$N89,1,1").is_ok());
     }
 }
