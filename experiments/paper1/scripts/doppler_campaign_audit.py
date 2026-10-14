@@ -31,9 +31,21 @@ ReplayState = _doppler_audit.ReplayState
 replay_checksum = _doppler_audit.replay_checksum
 replay_raw = _doppler_audit.replay_raw
 
-SCHEMA_VERSION = "paper1-doppler-campaign-audit-1"
-REQUIRED_MODES = (0, 1, 2)
+SCHEMA_VERSION = "paper1-doppler-campaign-audit-2"
+REQUIRED_EF_MODES = (0, 1, 2)
+# EF0 is the baseline for two separate matched contexts.  EF1 and EF2 are not
+# required to share one fixed-settings digest with each other.
+REQUIRED_PAIRS = ((0, 1), (0, 2))
+# Retain the old name for callers that imported it from this script.
+REQUIRED_MODES = REQUIRED_EF_MODES
 REQUIRED_DURATION_S = 30.0
+
+EF_MODE_LABELS = {0: "EF0", 1: "EF1", 2: "EF2"}
+EF_MODE_PRESETS = {
+    0: "restore prior processing flags",
+    1: "automatic gain and sea processing; rain manual 0",
+    2: "automatic gain, sea, and rain processing",
+}
 
 
 def sha256_file(path: Path) -> str:
@@ -102,13 +114,25 @@ def locate_session(path: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
 
 
 def settings_digest(settings: dict[str, Any]) -> str:
-    fixed = {key: value for key, value in settings.items() if key != "doppler"}
+    fixed = {
+        key: value
+        for key, value in settings.items()
+        if key not in {"doppler", "ef_processing_mode", "processing_mode"}
+    }
     encoded = json.dumps(fixed, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def counter_json(values: Counter[int]) -> dict[str, int]:
     return {str(key): count for key, count in sorted(values.items())}
+
+
+def ef_processing_mode(settings: dict[str, Any]) -> int | None:
+    for key in ("ef_processing_mode", "processing_mode", "doppler"):
+        value = settings.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
 
 
 def phase_metrics(
@@ -161,9 +185,10 @@ def phase_metrics(
         and isinstance(matches, dict)
         and all(value is True for value in matches.values())
     )
-    actual_mode = actual.get("doppler")
-    requested_mode = requested.get("doppler")
-    mode = actual_mode if isinstance(actual_mode, int) else requested_mode
+    actual_mode = ef_processing_mode(actual)
+    requested_mode = ef_processing_mode(requested)
+    mode = actual_mode if actual_mode is not None else requested_mode
+    mode_label = EF_MODE_LABELS.get(mode)
     return {
         "session_id": session_id,
         "phase_id": phase.get("phase_id", phase.get("id", "unknown")),
@@ -173,6 +198,11 @@ def phase_metrics(
         "requested_doppler": requested_mode,
         "actual_doppler": actual_mode,
         "comparison_mode": mode,
+        "requested_ef_processing_mode": requested_mode,
+        "actual_ef_processing_mode": actual_mode,
+        "ef_processing_mode": mode,
+        "ef_processing_mode_label": mode_label,
+        "ef_processing_preset": EF_MODE_PRESETS.get(mode),
         "requested_settings_json": json.dumps(requested, sort_keys=True, separators=(",", ":")),
         "actual_settings_json": json.dumps(actual, sort_keys=True, separators=(",", ":")),
         "fixed_settings_digest": settings_digest(actual or requested),
@@ -218,16 +248,28 @@ def compare_modes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         groups.setdefault(str(row["fixed_settings_digest"]), {}).setdefault(mode, []).append(row)
     comparisons: list[dict[str, Any]] = []
     for digest, modes in groups.items():
-        if not all(mode in modes for mode in REQUIRED_MODES):
-            continue
-        for left, right in ((0, 1), (0, 2), (1, 2)):
+        for left, right in REQUIRED_PAIRS:
+            if left not in modes or right not in modes:
+                continue
             left_rows = modes[left]
             right_rows = modes[right]
+            pair_ready = bool(
+                all(row["duration_adequate"] for row in left_rows)
+                and all(row["duration_adequate"] for row in right_rows)
+                and all(row["settings_readback_verified"] for row in left_rows)
+                and all(row["settings_readback_verified"] for row in right_rows)
+            )
             comparisons.append(
                 {
                     "fixed_settings_digest": digest,
                     "mode_left": left,
                     "mode_right": right,
+                    "ef_processing_mode_left": left,
+                    "ef_processing_mode_right": right,
+                    "ef_processing_mode_label_left": EF_MODE_LABELS[left],
+                    "ef_processing_mode_label_right": EF_MODE_LABELS[right],
+                    "ef_processing_preset_left": EF_MODE_PRESETS[left],
+                    "ef_processing_preset_right": EF_MODE_PRESETS[right],
                     "left_phase_count": len(left_rows),
                     "right_phase_count": len(right_rows),
                     "left_duration_adequate": all(row["duration_adequate"] for row in left_rows),
@@ -264,7 +306,8 @@ def compare_modes(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "right_replay_checksums": [
                         row["replay_checksum_fnv1a64"] for row in right_rows
                     ],
-                    "comparison_status": "descriptive_only",
+                    "pair_ready": pair_ready,
+                    "comparison_status": "ready_descriptive" if pair_ready else "incomplete",
                     "velocity_conclusion": "not_established",
                 }
             )
@@ -340,17 +383,25 @@ def write_campaign(paths: list[Path], out_dir: Path) -> dict[str, Any]:
         "observed_doppler_modes": observed_modes,
         "required_doppler_modes": list(REQUIRED_MODES),
         "missing_doppler_modes": [mode for mode in REQUIRED_MODES if mode not in observed_modes],
+        "observed_ef_processing_modes": observed_modes,
+        "required_ef_processing_modes": list(REQUIRED_EF_MODES),
+        "missing_ef_processing_modes": [
+            mode for mode in REQUIRED_EF_MODES if mode not in observed_modes
+        ],
+        "required_processing_pairs": [list(pair) for pair in REQUIRED_PAIRS],
         "mode_comparison_count": len(comparisons),
-        "comparison_ready": bool(comparisons),
+        "comparison_ready": any(row["pair_ready"] for row in comparisons),
         "required_duration_s": REQUIRED_DURATION_S,
         "doppler_inference": {
             "status": "not_established",
             "direct_velocity_field_found": False,
             "potential_mode_control_flag": True,
             "reason": (
-                "The campaign comparison summarizes amplitude-coded spokes and control-mode "
-                "differences. It does not infer velocity without a paired moving-target design "
-                "and a calibrated pulse-to-pulse phase, I/Q, range-rate, or velocity field."
+                "EF0, EF1, and EF2 are application processing presets represented by the "
+                "captured settings. Their labels do not establish manufacturer Doppler "
+                "semantics. The audit does not infer velocity without a paired moving-target "
+                "design and a calibrated pulse-to-pulse phase, I/Q, range-rate, or velocity "
+                "field."
             ),
         },
         "provenance": {

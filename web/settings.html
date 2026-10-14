@@ -319,11 +319,11 @@
           </div>
         </div>
         <div class="stack">
-          <label for="dopplerMode">Doppler <span class="info-tip" data-tip="Protocol mode selector. Mode 0 is off; modes 1 and 2 are recorded as raw radar modes until their vendor semantics are verified.">i</span></label>
+          <label for="dopplerMode">Radar processing mode (EF) <span class="info-tip" data-tip="Observed EF register mode. Values 0, 1, and 2 are recorded as numeric radar processing modes; manufacturer semantics are not assigned here.">i</span></label>
           <select id="dopplerMode">
-            <option value="0">Off</option>
-            <option value="1">Mode 1</option>
-            <option value="2">Mode 2</option>
+            <option value="0">0</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
           </select>
           <div class="inline-actions">
             <button class="secondary" onclick="setDoppler()" style="flex: 1;">Apply</button>

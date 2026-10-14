@@ -452,9 +452,11 @@ def capture_design() -> list[dict[str, Any]]:
     common = {
         "duration_s": 30,
         "range_index": 0,
-        "gain_auto": False,
-        "gain_value": 128,
-        "sea_clutter": 0,
+        "gain_auto": True,
+        "gain_value": 80,
+        "sea_clutter_auto": True,
+        "sea_clutter": 10,
+        "rain_clutter_auto": False,
         "rain_clutter": 0,
         "interference_rejection": False,
         "bird_mode": 0,
@@ -463,26 +465,41 @@ def capture_design() -> list[dict[str, Any]]:
         "scene": "stationary indoor scene",
     }
     rows = []
-    for mode, label in ((0, "off"), (1, "target_analyzer"), (2, "rain")):
+    for mode, label in ((0, "EF0"), (1, "EF1"), (2, "EF2")):
         row = dict(common)
         row.update(
             {
-                "condition_id": f"D{mode}",
+                "condition_id": f"EF{mode}",
+                "ef_processing_mode": mode,
+                "ef_processing_mode_label": label,
+                "ef_processing_preset": {
+                    0: "restore prior processing flags",
+                    1: "automatic gain and sea processing; rain manual 0",
+                    2: "automatic gain, sea, and rain processing",
+                }[mode],
+                # Legacy aliases remain for existing manifests and consumers.
                 "doppler_mode": mode,
                 "doppler_mode_label": label,
                 "moving_target_actor": False,
-                "purpose": "same-scene 30-second wire comparison",
+                "purpose": "same-scene 30-second processing-preset comparison",
             }
         )
+        if mode == 0:
+            row["rain_clutter_auto"] = "prior"
+        elif mode == 2:
+            row["rain_clutter_auto"] = True
         rows.append(row)
     moving = dict(common)
     moving.update(
         {
-            "condition_id": "DM1",
+            "condition_id": "EF1-moving",
+            "ef_processing_mode": 1,
+            "ef_processing_mode_label": "EF1",
+            "ef_processing_preset": "automatic gain and sea processing; rain manual 0",
             "doppler_mode": 1,
-            "doppler_mode_label": "target_analyzer",
+            "doppler_mode_label": "EF1",
             "moving_target_actor": True,
-            "purpose": "separate moving-target demonstration; required before any velocity claim",
+            "purpose": "separate moving-target processing-preset demonstration",
         }
     )
     rows.append(moving)
@@ -624,11 +641,12 @@ def build_summary(
                 "The replayed packets expose amplitude-coded spokes and timing/angle metadata, "
                 "but this audit found no calibrated pulse-to-pulse phase, I/Q, range-rate, or "
                 "velocity field. A moving-target paired capture is required before treating "
-                "Doppler mode differences as velocity evidence."
+                "processing-preset differences as velocity evidence."
             ),
             "doppler_mode_interpretation": (
-                "wire-level modes 0, 1, and 2 are experimental conditions; installed-unit "
-                "semantics remain an observation to verify from readback and paired captures"
+                "EF0, EF1, and EF2 are application processing presets represented by the "
+                "captured settings; this audit does not establish manufacturer Doppler "
+                "semantics"
             ),
             "discarded_low_bits": (
                 "retained and quantified; their presence or absence is not interpreted as "

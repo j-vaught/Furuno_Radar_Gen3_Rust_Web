@@ -615,6 +615,58 @@ class ToolkitTests(unittest.TestCase):
             },
         )
 
+    def test_doppler_family_keeps_paired_rain_contexts(self) -> None:
+        selected = select_control_family(
+            {
+                "phases": [{"id": "reference", "settings": {}}],
+                "control_matrix": [
+                    {
+                        "setting": "doppler",
+                        "context_id": "rain_manual_modes_0_1",
+                        "values": [0, 1],
+                        "reference_settings": {
+                            "rain_clutter_auto": False,
+                            "rain_clutter": 0,
+                            "rain_clutter_auto_value": 0,
+                        },
+                    },
+                    {
+                        "setting": "doppler",
+                        "context_id": "rain_auto_modes_0_2",
+                        "values": [0, 2],
+                        "reference_settings": {
+                            "rain_clutter_auto": True,
+                            "rain_clutter": 0,
+                            "rain_clutter_auto_value": 0,
+                        },
+                    },
+                ],
+            },
+            "doppler",
+        )
+        expanded = expand_control_matrix(selected)
+        contexts = {
+            phase["id"]: phase["settings"]["rain_clutter_auto"]
+            for phase in expanded["phases"]
+            if phase["id"].startswith("reference_")
+        }
+        self.assertEqual(
+            contexts,
+            {
+                "reference_rain_manual_modes_0_1": False,
+                "reference_rain_auto_modes_0_2": True,
+            },
+        )
+        self.assertEqual(
+            [phase["id"] for phase in expanded["phases"] if phase["id"].startswith("doppler_")],
+            [
+                "doppler_0_rain_manual_modes_0_1",
+                "doppler_1_rain_manual_modes_0_1",
+                "doppler_0_rain_auto_modes_0_2",
+                "doppler_2_rain_auto_modes_0_2",
+            ],
+        )
+
     def test_response_conditions_include_reference_settings(self) -> None:
         experiment = {
             "phases": [

@@ -4,7 +4,7 @@ Furuno DRS4D-NXT marine radar interface built in Rust. Provides full radar contr
 
 ## Overview
 
-This project is a complete reimplementation of the proprietary Furuno `libNAVNETDLL.so` library in Rust. It handles the full radar lifecycle: authentication, control commands, echo data decoding (4 encoding types), Doppler processing, and PPI rendering.
+This project is a complete reimplementation of the proprietary Furuno `libNAVNETDLL.so` library in Rust. It handles the full radar lifecycle: authentication, control commands, echo data decoding (4 encoding types), observed radar processing modes, and PPI rendering.
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ Build the native release executable and place it at `runtime/macos/furuno-server
 
 The launcher stores recordings at `/Volumes/MacApplications/Radar_papers/data/live/macos-recordings` and refuses to start when the volume is unmounted. `FURUNO_STORAGE_VOLUME` and `FURUNO_RECORDING_ROOT` select another mounted volume and a recording directory on that volume. The server checks that the directory remains writable before saving each rotation.
 
-The settings page keeps command inputs separate from radar state. Use `Read all confirmed settings` or an individual Refresh action to request a fresh radar snapshot. The status page displays a setting only after a response for that field has been parsed and validated; failed, stale, and mode-incomplete fields display as unavailable. The server refreshes the snapshot periodically, gives each readback a capture time, validity deadline, transition identifier, and raw register responses, and records the same structured snapshot in each session. Gain manual and automatic values, sea and rain modes, pulse range, antenna high-RPM state, raw interference-rejection level, noise-reduction state, and the raw S84 antenna-height setting remain separate fields. Gain controls use the observed standby command range 0--100; the values are raw control values and are not percentages or ADC bit-depth claims. The S84 value is a radar protocol field and does not describe the physical mounting installation or assert units. Unsupported sweep count and interpolation controls are disabled. Doppler modes 1 and 2 are shown as raw protocol modes until their vendor semantics are verified. Clutter input ranges are left device-specific and must be established by the hardware response. Unavailable macOS resource metrics display `--`.
+The settings page keeps command inputs separate from radar state. Use `Read all confirmed settings` or an individual Refresh action to request a fresh radar snapshot. The status page displays a setting only after a response for that field has been parsed and validated; failed, stale, and mode-incomplete fields display as unavailable. The server refreshes the snapshot periodically, gives each readback a capture time, validity deadline, transition identifier, and raw register responses, and records the same structured snapshot in each session. Gain manual and automatic values, sea and rain modes, pulse range, antenna high-RPM state, raw interference-rejection level, noise-reduction state, and the raw S84 antenna-height setting remain separate fields. Gain controls use the observed standby command range 0--100; the values are raw control values and are not percentages or ADC bit-depth claims. The S84 value is a radar protocol field and does not describe the physical mounting installation or assert units. The EF field is presented as the numeric Radar Processing Mode (EF). Standby captures showed EF values 0, 1, and 2 coupled with automatic gain and sea/rain presets, but this repository does not assign manufacturer semantics to those values. No velocity, IQ, or phase evidence is inferred from EF. The legacy `doppler` field and `/set_doppler` route remain compatibility names only. Clutter input ranges are left device-specific and must be established by the hardware response. Unavailable macOS resource metrics display `--`.
 
 The CLI, network, socket, and recording-root tests are software-only. The tests in `tests.rs` and the `full`, `validate`, and `test-commands` modes operate real hardware and can enable transmission.
 
@@ -71,7 +71,7 @@ furuno-server [--radar-ip IP] [--host-ip IP] [--interface NAME] [--configure-net
 The browser UI provides:
 
 - Real-time PPI radar display (640x640)
-- Radar settings controls (range, gain, pulse width, clutter, STC, Doppler, etc.)
+- Radar settings controls (range, gain, pulse width, clutter, STC, and observed EF processing mode)
 - Echo data recording to CSV with full settings metadata
 - Pattern-based parameter sweep execution
 - System status and firmware info
@@ -129,7 +129,7 @@ If the host is not on the radar's subnet, the application stops and prints the e
 
 ## Documentation
 
-See `docs/technical_manual.pdf` for the full technical reference covering the wire protocol, echo encoding, Doppler processing, system architecture, and API reference.
+See `docs/technical_manual.pdf` for the full technical reference covering the wire protocol, echo encoding, observed EF processing modes, system architecture, and API reference. EF is retained as a numeric wire field; no velocity, IQ, phase, or manufacturer semantic claim is made from it.
 
 ## Author
 

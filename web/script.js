@@ -836,7 +836,7 @@ Advanced format: range,gain,pulse,rezboost,speed,interp,sea,rain,mainbang,ir,bir
 range(0-21) gain(0-255) pulse(0=S1…5=L) rezboost(0=Off…3=High)
 speed(0=Lo,1=Hi,2=Auto) interp(0=2048,1=4096,2=8192,3=1024,4=720,5=Off)
 sea/rain/mainbang use radar numeric values
-ir(0=off,1=on) bird(0=off..3=high) doppler(0=off,1=internal,2=external)
+ir(0=off,1=on) bird(0=off..3=high) doppler(legacy EF field, numeric 0/1/2)
 In advanced patterns, any field except repeat can be set to NaN to preserve the current radar setting
 repeat(sweeps at this setting)
 
@@ -1491,7 +1491,7 @@ function formatUptime(secs) {
 const PULSE_LABELS = ['S1','S2','M1','M2','M3','L'];
 const REZBOOST_LABELS = ['Off','Low','Medium','High'];
 const BIRD_LABELS = ['Off','Low','Medium','High'];
-const DOPPLER_LABELS = ['Off','Mode 1','Mode 2'];
+const EF_MODE_LABELS = ['0','1','2'];
 const ANTENNA_LABELS = ['Low','High','Auto'];
 
 function updateSystemInfo() {
@@ -1562,7 +1562,7 @@ function updateSystemInfo() {
         set('siAntenna', s.antenna_speed == null ? '--' : (ANTENNA_LABELS[s.antenna_speed] || s.antenna_speed));
         set('siAntennaHiRpm', s.antenna_hi_rpm == null ? '--' : (s.antenna_hi_rpm ? 'On' : 'Off'));
         set('siAntennaHeight', s.antenna_height_raw == null ? '--' : `${s.antenna_height_raw} (raw protocol setting)`);
-        set('siDoppler', s.doppler == null ? '--' : (DOPPLER_LABELS[s.doppler] || s.doppler));
+        set('siDoppler', s.doppler == null ? '--' : (EF_MODE_LABELS[s.doppler] || s.doppler));
         set('siIR', s.interference_rejection == null ? '--' : (s.interference_rejection ? 'On' : 'Off'));
         set('siIRLevel', s.interference_rejection_level ?? '--');
         set('siNoiseReduction', s.noise_reduction_level == null ? '--' : `${s.noise_reduction ? 'On' : 'Off'} (level ${s.noise_reduction_level})`);

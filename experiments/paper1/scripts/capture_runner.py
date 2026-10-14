@@ -1976,11 +1976,26 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
     if not phases:
         raise ValueError("control matrix requires a reference phase")
     reference = dict(phases[0])
-    reference_settings = dict(reference.get("settings", {}))
-    expanded: list[dict[str, Any]] = [reference]
+    base_reference_settings = dict(reference.get("settings", {}))
+    expanded: list[dict[str, Any]] = []
     for entry in matrix:
         setting = entry["setting"]
         values = entry.get("values", [])
+        context_id = entry.get("context_id")
+        reference_settings = {
+            **base_reference_settings,
+            **entry.get("reference_settings", {}),
+        }
+        reference_phase = dict(reference)
+        reference_phase["settings"] = dict(reference_settings)
+        if context_id:
+            reference_phase["id"] = f"reference_{context_id}"
+            reference_phase["control"] = {
+                "setting": setting,
+                "reference_context": context_id,
+                "reference_settings": dict(entry.get("reference_settings", {})),
+            }
+        expanded.append(reference_phase)
         companion = entry.get("companion_setting")
         companion_values = entry.get("companion_values", [None])
         for value in values:
@@ -1990,9 +2005,13 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
                 else [(None, value)]
             )
             for companion_value, requested in pairs:
+                phase_id = f"{setting}_{requested}"
+                if companion:
+                    phase_id += f"_{companion}_{companion_value}"
+                if context_id:
+                    phase_id += f"_{context_id}"
                 phase = {
-                    "id": f"{setting}_{requested}"
-                    + (f"_{companion}_{companion_value}" if companion else ""),
+                    "id": phase_id,
                     "settings": dict(reference_settings),
                     "settle_s": entry.get("settle_s", 5),
                     "record_s": entry.get("record_s", 30),
@@ -2003,6 +2022,8 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
                         "companion_setting": companion,
                         "companion_requested": companion_value,
                         "fixed_settings": entry.get("fixed_settings", {}),
+                        "reference_context": context_id,
+                        "reference_settings": dict(entry.get("reference_settings", {})),
                     },
                 }
                 phase["settings"].update(entry.get("fixed_settings", {}))
@@ -2010,14 +2031,15 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
                 if companion:
                     phase["settings"][companion] = companion_value
                 expanded.append(phase)
-                expanded.append(dict(reference))
+            after_reference = dict(reference_phase)
+            expanded.append(after_reference)
     result = dict(experiment)
     result["phases"] = expanded
     return result
 
 
 def select_control_family(experiment: dict[str, Any], family: str) -> dict[str, Any]:
-    """Select one matrix setting while retaining the shared reference phase."""
+    """Select one matrix setting while retaining its reference contexts."""
     matrix = experiment.get("control_matrix")
     if not isinstance(matrix, list):
         raise ValueError("--control-family requires an experiment control matrix")
@@ -2033,7 +2055,9 @@ def select_control_family(experiment: dict[str, Any], family: str) -> dict[str, 
     if family == "doppler" and result["phases"]:
         # Doppler changes can force gain and sea-clutter mode registers. Keep
         # those fields identical for the reference and all Doppler variants so
-        # a response comparison does not confound mode side effects.
+        # a response comparison does not confound mode side effects. Rain
+        # clutter is firmware-mode dependent, so paired matrix entries provide
+        # their own reference_settings for rain-manual and rain-auto contexts.
         result["phases"][0] = dict(result["phases"][0])
         common_settings = {
             "gain_auto": True,
@@ -2043,14 +2067,19 @@ def select_control_family(experiment: dict[str, Any], family: str) -> dict[str, 
             "sea_clutter_auto": True,
             "sea_clutter": 0,
             "sea_clutter_auto_value": 10,
-            "rain_clutter_auto": True,
-            "rain_clutter": 0,
-            "rain_clutter_auto_value": 0,
         }
         result["phases"][0]["settings"] = {
             **result["phases"][0].get("settings", {}),
             **common_settings,
         }
+        if not all(entry.get("reference_settings") for entry in selected):
+            result["phases"][0]["settings"].update(
+                {
+                    "rain_clutter_auto": True,
+                    "rain_clutter": 0,
+                    "rain_clutter_auto_value": 0,
+                }
+            )
     result["selected_control_family"] = family
     return result
 

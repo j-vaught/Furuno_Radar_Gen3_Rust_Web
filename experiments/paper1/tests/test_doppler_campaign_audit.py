@@ -21,7 +21,7 @@ def packet(angle: int, heading: int, values: bytes) -> bytes:
     return bytes(header + body)
 
 
-def write_session(root: Path, mode: int, start: int) -> Path:
+def write_session(root: Path, mode: int, start: int, rain_auto: bool = False) -> Path:
     session = root / f"session-{mode}"
     session.mkdir()
     manifest = {
@@ -30,14 +30,26 @@ def write_session(root: Path, mode: int, start: int) -> Path:
             {
                 "phase_id": f"D{mode}",
                 "record_s": 30,
-                "requested_settings": {"doppler": mode, "range_index": 0},
+                "requested_settings": {
+                    "doppler": mode,
+                    "range_index": 0,
+                    "rain_clutter_auto": rain_auto,
+                },
                 "device_readback": {
                     "confirmed": True,
                     "fresh": True,
                     "verified": True,
-                    "settings": {"doppler": mode, "range_index": 0},
+                    "settings": {
+                        "doppler": mode,
+                        "range_index": 0,
+                        "rain_clutter_auto": rain_auto,
+                    },
                 },
-                "readback_matches": {"doppler": True, "range_index": True},
+                "readback_matches": {
+                    "doppler": True,
+                    "range_index": True,
+                    "rain_clutter_auto": True,
+                },
             }
         ],
     }
@@ -73,7 +85,7 @@ class DopplerCampaignAuditTests(unittest.TestCase):
             self.assertEqual(summary["errors"], [])
             self.assertEqual(summary["observed_doppler_modes"], [0, 1, 2])
             self.assertTrue(summary["comparison_ready"])
-            self.assertEqual(summary["mode_comparison_count"], 3)
+            self.assertEqual(summary["mode_comparison_count"], 2)
             metrics = (out / "doppler_phase_metrics.csv").read_text(encoding="utf-8")
             self.assertEqual(metrics.count("\n"), 4)
             self.assertIn("True", metrics)
@@ -105,6 +117,26 @@ class DopplerCampaignAuditTests(unittest.TestCase):
             self.assertEqual(row["raw_interval_cropped"], "False")
             self.assertEqual(row["decoded_spoke_count"], "0")
             self.assertFalse(summary["comparison_ready"])
+
+    def test_processing_pairs_allow_distinct_ef1_and_ef2_contexts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "sessions"
+            root.mkdir()
+            sessions = [
+                write_session(root, 0, 1_000_000_000_000),
+                write_session(root, 1, 1_000_000_000_100),
+                write_session(root, 2, 1_000_000_000_200, rain_auto=True),
+            ]
+            out = Path(tmp) / "audit"
+            summary = write_campaign(sessions, out)
+
+            self.assertEqual(summary["mode_comparison_count"], 1)
+            self.assertTrue(summary["comparison_ready"])
+            self.assertEqual(summary["required_processing_pairs"], [[0, 1], [0, 2]])
+            self.assertEqual(summary["missing_ef_processing_modes"], [])
+            with (out / "doppler_mode_comparisons.csv").open(newline="", encoding="utf-8") as fp:
+                comparison = next(csv.DictReader(fp))
+            self.assertEqual((comparison["mode_left"], comparison["mode_right"]), ("0", "1"))
 
 
 if __name__ == "__main__":

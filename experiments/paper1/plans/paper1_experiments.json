@@ -760,11 +760,29 @@
         },
         {
           "setting": "doppler",
+          "context_id": "rain_manual_modes_0_1",
           "values": [
             0,
-            1,
+            1
+          ],
+          "reference_settings": {
+            "rain_clutter_auto": false,
+            "rain_clutter": 0,
+            "rain_clutter_auto_value": 0
+          }
+        },
+        {
+          "setting": "doppler",
+          "context_id": "rain_auto_modes_0_2",
+          "values": [
+            0,
             2
-          ]
+          ],
+          "reference_settings": {
+            "rain_clutter_auto": true,
+            "rain_clutter": 0,
+            "rain_clutter_auto_value": 0
+          }
         },
         {
           "setting": "main_bang",
@@ -790,6 +808,7 @@
       ],
       "reference_interleave": "run response_reference before and after each control condition; reset to the confirmed baseline after every condition",
       "weather_control_semantics": "Indoor runs hold physical weather constant. Weather, sea, rain, and Doppler controls are logged as internal processing modes and are not evidence of outdoor weather variation.",
+      "doppler_contexts": "The controller uses provisional wire-mode labels. Modes 0 and 1 are paired under rain manual context, while modes 0 and 2 are paired under rain auto context because the installed firmware couples Doppler mode to rain-auto state. These labels describe observed controller behavior and do not establish manufacturer semantics.",
       "source_evidence": {
         "setter_routes": {
           "range_index": "/set_range?rangeIndex=",
@@ -813,7 +832,7 @@
           "rain_clutter_auto": "A/C RAIN status",
           "rain_clutter_ftc_mode": "FTC mode",
           "rain_clutter_mode": "rain mode",
-          "doppler": "wire mode; installed semantics verified empirically"
+          "doppler": "provisional wire mode label; observed firmware coupling requires paired rain contexts; manufacturer semantics are unverified"
         }
       },
       "baseline_settings": {

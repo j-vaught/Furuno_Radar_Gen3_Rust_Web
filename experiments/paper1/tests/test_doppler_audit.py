@@ -7,6 +7,7 @@ from pathlib import Path
 from scripts.doppler_audit import (
     SpokeRecord,
     _decode_sweep,
+    capture_design,
     compare_csv,
     remap_csv_paths,
     replay_raw,
@@ -28,6 +29,16 @@ def packet(encoding: int, sweep_len: int, sweeps: list[tuple[int, int, bytes]]) 
 
 
 class DopplerAuditTests(unittest.TestCase):
+    def test_capture_design_uses_ef_processing_labels(self) -> None:
+        rows = capture_design()
+        self.assertEqual(
+            [row["ef_processing_mode_label"] for row in rows[:3]], ["EF0", "EF1", "EF2"]
+        )
+        self.assertEqual(rows[1]["rain_clutter_auto"], False)
+        self.assertEqual(rows[2]["rain_clutter_auto"], True)
+        self.assertEqual(rows[0]["rain_clutter_auto"], "prior")
+        self.assertEqual(rows[1]["doppler_mode"], 1)
+
     def test_remaps_capture_host_csv_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
