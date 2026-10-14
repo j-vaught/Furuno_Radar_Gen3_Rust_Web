@@ -118,6 +118,21 @@ PHASE_SETTING_FIELDS = frozenset(
         "main_bang",
     }
 )
+UNCHANGED_SCALAR_FIELDS = frozenset(
+    {
+        "range_index",
+        "pulse_width",
+        "near_stc",
+        "middle_stc",
+        "far_stc",
+        "interference_rejection",
+        "noise_reduction",
+        "antenna_height_raw",
+        "bird_mode",
+        "main_bang",
+        "rezboost",
+    }
+)
 
 
 def utc_now() -> str:
@@ -1203,6 +1218,8 @@ def apply_phase(base: str, phase: dict[str, Any], fp: Any, timeout: float) -> li
             event = {
                 "setting": "doppler",
                 "requested": requested_doppler,
+                "actual": current.get("doppler"),
+                "actual_source": "pre_apply_fresh_readback",
                 "skipped": True,
                 "reason": "fresh readback already matched requested mode",
                 "command_time_utc": utc_now(),
@@ -1251,6 +1268,9 @@ def apply_phase(base: str, phase: dict[str, Any], fp: Any, timeout: float) -> li
     grouped: dict[str, dict[str, Any]] = {}
     ordered: list[tuple[str, Any]] = []
     seen_groups: set[str] = set()
+    range_changed = (
+        "range_index" in settings and current.get("range_index") != settings["range_index"]
+    )
     for setting, value in settings.items():
         group = next((name for name, members in groups.items() if setting in members), None)
         if group is not None:
@@ -1339,6 +1359,8 @@ def apply_phase(base: str, phase: dict[str, Any], fp: Any, timeout: float) -> li
                 event = {
                     "setting": setting,
                     "requested": requested,
+                    "actual": actual,
+                    "actual_source": "pre_apply_fresh_readback",
                     "request_path": path,
                     "request_params": params,
                     "skipped": True,
@@ -1349,6 +1371,34 @@ def apply_phase(base: str, phase: dict[str, Any], fp: Any, timeout: float) -> li
                 changes.append(event)
                 continue
         else:
+            scalar_actual = current.get(setting)
+            matches_current = (
+                bool(scalar_actual) == bool(value)
+                if setting in {"interference_rejection", "noise_reduction"}
+                else scalar_actual == value
+            )
+            pulse_context_matches = current.get("pulse_range_index") == settings.get(
+                "range_index", current.get("range_index")
+            )
+            can_skip = setting in UNCHANGED_SCALAR_FIELDS and matches_current
+            if setting == "pulse_width":
+                # Pulse codes are persisted per range. A range transition
+                # therefore requires the pulse command even when its numeric
+                # code is unchanged.
+                can_skip = can_skip and not range_changed and pulse_context_matches
+            if can_skip:
+                event = {
+                    "setting": setting,
+                    "requested": value,
+                    "actual": scalar_actual,
+                    "actual_source": "pre_apply_fresh_readback",
+                    "skipped": True,
+                    "reason": "fresh readback already matched requested state",
+                    "command_time_utc": utc_now(),
+                }
+                log_event(fp, "setting_skipped", **event)
+                changes.append(event)
+                continue
             request = setting_requests(setting, value, {**current, **settings})
             if request is None:
                 continue

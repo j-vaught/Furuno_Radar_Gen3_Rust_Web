@@ -531,6 +531,70 @@ class ToolkitTests(unittest.TestCase):
         self.assertEqual(requests, [])
         self.assertTrue(all(event["skipped"] for event in events))
 
+    def test_apply_phase_skips_matching_scalars_and_keeps_pulse_range_context(self) -> None:
+        state = {field: 0 for field in REQUIRED_READBACK_FIELDS}
+        state.update(
+            {
+                "tx_state": 1,
+                "range_index": 0,
+                "pulse_width": 0,
+                "pulse_range_index": 0,
+                "near_stc": 0,
+                "interference_rejection": False,
+                "noise_reduction": False,
+            }
+        )
+        requests: list[tuple[str, dict[str, Any]]] = []
+
+        def fake_readback(_base, _fp, _timeout, fresh_required=False):
+            self.assertTrue(fresh_required)
+            return {"confirmed": True, "fresh": True, "settings": dict(state)}
+
+        def fake_http(_base, path, params, _timeout):
+            requests.append((path, dict(params)))
+            return 200, "ACK"
+
+        phase = {
+            "id": "matching-scalars",
+            "settings": {
+                "range_index": 0,
+                "pulse_width": 0,
+                "near_stc": 0,
+                "interference_rejection": False,
+                "noise_reduction": False,
+            },
+        }
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("scripts.capture_runner.readback", fake_readback),
+            patch("scripts.capture_runner.http_request", fake_http),
+        ):
+            with (Path(tmp) / "events.jsonl").open("w", encoding="utf-8") as fp:
+                events = apply_phase("mock://controller", phase, fp, 1.0)
+        self.assertEqual(requests, [])
+        self.assertEqual(
+            {event["setting"] for event in events},
+            {"range_index", "pulse_width", "near_stc", "interference_rejection", "noise_reduction"},
+        )
+        self.assertTrue(all(event["skipped"] for event in events))
+        self.assertTrue(
+            all(event["actual_source"] == "pre_apply_fresh_readback" for event in events)
+        )
+
+        requests.clear()
+        phase["settings"]["range_index"] = 6
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("scripts.capture_runner.readback", fake_readback),
+            patch("scripts.capture_runner.http_request", fake_http),
+        ):
+            with (Path(tmp) / "events.jsonl").open("w", encoding="utf-8") as fp:
+                apply_phase("mock://controller", phase, fp, 1.0)
+        self.assertEqual(
+            [path for path, _params in requests],
+            ["/set_range", "/set_pulse_width"],
+        )
+
     def test_doppler_is_applied_before_mode_sensitive_registers(self) -> None:
         state = {field: 0 for field in REQUIRED_READBACK_FIELDS}
         state.update(
