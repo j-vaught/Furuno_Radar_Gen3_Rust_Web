@@ -136,6 +136,19 @@ python3 experiments/paper1/scripts/capture_runner.py \
   --transmit --physical-ready
 ```
 
+Run `E8_readback_cadence_validation` after the periodic one-second refresh build is deployed. It repeats the strict manual-gain-64 baseline, records two range-index-21 windows, and returns to the baseline for four 30 s windows with 5 s post-TX settling. Acceptance requires complete raw coverage, contiguous CSV reconciliation, five-second readback validity, refresh latency telemetry, immutable settings during capture, and verified restoration after every phase.
+
+```sh
+python3 experiments/paper1/scripts/capture_runner.py \
+  --plan experiments/paper1/plans/paper1_experiments.json \
+  --experiment E8_readback_cadence_validation \
+  --metadata /Volumes/MacApplications/Radar_papers/data/paper1-metadata.json \
+  --output-root /Volumes/MacApplications/Radar_papers/data/paper1-experiments \
+  --session-id 2026-10-14-e8-readback-cadence \
+  --http-timeout 60 \
+  --transmit --physical-ready
+```
+
 For a long E6 campaign, batch one control family at a time with `--control-family`, for example `--control-family gain_value`. The runner retains the complete reference settings and inserts a reference phase before and after every condition in that family. Each completed phase is checkpointed through an atomic manifest replacement with its actual readback and recording file paths, so a server-side analysis can begin while later batches remain pending.
 
 The campaign driver performs that batching sequence and stops on the first failed child or failed final restoration. It writes `campaign_manifest.json` after each family and stores each child log beside its session directory.
