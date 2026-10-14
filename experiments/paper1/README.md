@@ -66,6 +66,17 @@ python3 experiments/paper1/scripts/capture_runner.py \
   --session-id 2026-10-14-e5-ir-noise-height-01
 ```
 
+Run `E5_gain_bounded_supplement` before E6. It verifies the installed-unit manual gain values 0, 25, 50, 64, 75, and 100 plus automatic gain values 0, 25, 50, 75, and 100. The E6 reference uses manual gain 64 because the earlier reference value 128 did not persist on the installed radar.
+
+```sh
+python3 experiments/paper1/scripts/capture_runner.py \
+  --plan experiments/paper1/plans/paper1_experiments.json \
+  --experiment E5_gain_bounded_supplement \
+  --metadata experiments/paper1/metadata_template.json \
+  --output-root /Volumes/MacApplications/Radar_papers/data/paper1-experiments \
+  --session-id 2026-10-14-e5-gain-bounded-01
+```
+
 If a characterization process stops before restoration, use a new session identifier and the captured baseline file. The recovery command requires a fresh verified readback before each individual write, uses only verified current fields to decide whether a write is safe, records skipped fields from partial responses, and refuses to reuse an existing session directory. It accepts only a standby baseline and never enables transmission. The command still requires the plan and metadata arguments because they supply the provenance and storage record.
 
 ```sh

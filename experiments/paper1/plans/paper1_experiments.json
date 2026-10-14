@@ -10,9 +10,9 @@
     "controls": [
       {"id": "range_index", "setting": "range_index", "values": [21, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 19, 15]},
       {"id": "pulse_width_by_range", "setting": "pulse_width", "values": [0, 1, 2, 3, 4, 5], "context": "repeat for every range_index, retaining pulse_range_index and restoring the baseline pulse for each range"},
-      {"id": "gain_manual", "setting": "gain_value", "precondition": {"gain_auto": false}, "values": [0, 1, 64, 128, 192, 254, 255]},
+      {"id": "gain_manual", "setting": "gain_value", "precondition": {"gain_auto": false}, "values": [0, 25, 50, 64, 75, 100]},
       {"id": "gain_auto_mode", "setting": "gain_auto", "values": [false, true]},
-      {"id": "gain_auto_value", "setting": "gain_auto_value", "precondition": {"gain_auto": true}, "values": [0, 1, 50, 128, 254, 255]},
+      {"id": "gain_auto_value", "setting": "gain_auto_value", "precondition": {"gain_auto": true}, "values": [0, 25, 50, 75, 100]},
       {"id": "sea_manual", "setting": "sea_clutter", "precondition": {"sea_clutter_auto": false}, "values": [0, 1, 50, 64, 100, 128, 192, 254, 255], "source_expected_limits": {"min": 0, "max": 100}},
       {"id": "sea_auto_mode", "setting": "sea_clutter_auto", "values": [false, true]},
       {"id": "sea_auto_value", "setting": "sea_clutter_auto_value", "precondition": {"sea_clutter_auto": true}, "values": [0, 1, 50, 100, 128, 254, 255], "source_expected_limits": {"min": 0, "max": 100}},
@@ -107,9 +107,9 @@
       "control_matrix": [
         {"setting": "range_index", "values": [21, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 19, 15]},
         {"setting": "pulse_width", "values": [0, 1, 2, 3, 4, 5], "fixed_settings": {"range_index": 0}},
-        {"setting": "gain_value", "values": [0, 64, 128, 192, 255]},
+        {"setting": "gain_value", "values": [0, 25, 50, 64, 75, 100]},
         {"setting": "gain_auto", "values": [false, true]},
-        {"setting": "gain_auto_value", "values": [0, 50, 100], "fixed_settings": {"gain_auto": true}},
+        {"setting": "gain_auto_value", "values": [0, 25, 50, 75, 100], "fixed_settings": {"gain_auto": true}},
         {"setting": "sea_clutter", "values": [0, 50, 100]},
         {"setting": "sea_clutter_auto", "values": [false, true]},
         {"setting": "sea_clutter_auto_value", "values": [0, 50, 100], "fixed_settings": {"sea_clutter_auto": true}},
@@ -134,9 +134,9 @@
       "reference_interleave": "run response_reference before and after each control condition; reset to the confirmed baseline after every condition",
       "weather_control_semantics": "Indoor runs hold physical weather constant. Weather, sea, rain, and Doppler controls are logged as internal processing modes and are not evidence of outdoor weather variation.",
       "source_evidence": {"setter_routes": {"range_index": "/set_range?rangeIndex=", "pulse_width": "/set_pulse_width?pulse=&rangeIndex=", "gain": "/set_gain?status=&manualValue=&autoValue=", "sea_clutter": "/set_acsea?status=&manual=&auto=&mode=", "rain_clutter": "/set_acrain?status=&manual=&auto=&ftcMode=&rainMode=", "rezboost": "/set_bearing_resolution?mode=", "antenna": "/set_antenna_revolution?rollSpeed=&hiRpm=", "stc": "/set_near_stc|/set_middle_stc|/set_far_stc?value=", "interference_rejection": "/set_interference_rejection?enabled=", "noise_reduction": "/set_noise_reduction?enabled=", "antenna_height_raw": "/set_antenna_height?value=", "bird_mode": "/set_bird_mode?level=", "doppler": "/set_doppler?mode=", "main_bang": "/set_main_bang?value="}, "readback_fields": "get_current ALL fresh settings_readback.fields", "ui_aliases": {"sea_clutter_auto": "A/C SEA status", "rain_clutter_auto": "A/C RAIN status", "rain_clutter_ftc_mode": "FTC mode", "rain_clutter_mode": "rain mode", "doppler": "wire mode; installed semantics verified empirically"}},
-      "baseline_settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 128, "rezboost": 0, "antenna_speed": 0, "antenna_hi_rpm": false, "sea_clutter": 0, "sea_clutter_auto": false, "sea_clutter_mode": 0, "rain_clutter": 0, "rain_clutter_auto": false, "rain_clutter_ftc_mode": 0, "rain_clutter_mode": 0, "near_stc": 3, "middle_stc": 0, "far_stc": 1, "interference_rejection": false, "noise_reduction": false, "antenna_height_raw": 0, "bird_mode": 0, "doppler": 0, "main_bang": 0},
+      "baseline_settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 64, "rezboost": 0, "antenna_speed": 0, "antenna_hi_rpm": false, "sea_clutter": 0, "sea_clutter_auto": false, "sea_clutter_mode": 0, "rain_clutter": 0, "rain_clutter_auto": false, "rain_clutter_ftc_mode": 0, "rain_clutter_mode": 0, "near_stc": 3, "middle_stc": 0, "far_stc": 1, "interference_rejection": false, "noise_reduction": false, "antenna_height_raw": 0, "bird_mode": 0, "doppler": 0, "main_bang": 0},
       "phases": [
-        {"id": "response_reference", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 128, "rezboost": 0, "antenna_speed": 0, "antenna_hi_rpm": false, "sea_clutter": 0, "sea_clutter_auto": false, "sea_clutter_mode": 0, "rain_clutter": 0, "rain_clutter_auto": false, "rain_clutter_ftc_mode": 0, "rain_clutter_mode": 0, "near_stc": 3, "middle_stc": 0, "far_stc": 1, "interference_rejection": false, "noise_reduction": false, "antenna_height_raw": 0, "bird_mode": 0, "doppler": 0, "main_bang": 0}, "settle_s": 5, "record_s": 30, "scans": 6},
+        {"id": "response_reference", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 64, "rezboost": 0, "antenna_speed": 0, "antenna_hi_rpm": false, "sea_clutter": 0, "sea_clutter_auto": false, "sea_clutter_mode": 0, "rain_clutter": 0, "rain_clutter_auto": false, "rain_clutter_ftc_mode": 0, "rain_clutter_mode": 0, "near_stc": 3, "middle_stc": 0, "far_stc": 1, "interference_rejection": false, "noise_reduction": false, "antenna_height_raw": 0, "bird_mode": 0, "doppler": 0, "main_bang": 0}, "settle_s": 5, "record_s": 30, "scans": 6},
         {"id": "range_index_2", "settings": {"range_index": 2}, "settle_s": 5, "record_s": 30, "scans": 6},
         {"id": "pulse_width_1", "settings": {"range_index": 0, "pulse_width": 1}, "settle_s": 5, "record_s": 30, "scans": 6},
         {"id": "gain_manual_64", "settings": {"gain_auto": false, "gain_value": 64}, "settle_s": 5, "record_s": 30, "scans": 6},
@@ -172,6 +172,23 @@
       "acceptance": ["TX remains standby", "every corrected field has a fresh verified readback", "interference rejection boolean and numeric level agree", "noise reduction boolean and numeric level agree", "antenna height raw value is restored", "original E5 report remains retained"]
     },
     {
+      "id": "E5_gain_bounded_supplement",
+      "question": "Which bounded manual and automatic gain values are accepted and persisted by this installed unit?",
+      "transmit": false,
+      "characterize_controls": true,
+      "control_characterization_override": {
+        "description": "Corrective standby supplement for gain values. It preserves the original E5 report and supplies the bounded values required by the E6 response plan.",
+        "controls": [
+          {"id": "gain_manual_bounded", "setting": "gain_value", "precondition": {"gain_auto": false}, "values": [0, 25, 50, 64, 75, 100]},
+          {"id": "gain_auto_bounded", "setting": "gain_auto_value", "precondition": {"gain_auto": true}, "values": [0, 25, 50, 75, 100]}
+        ]
+      },
+      "supersedes": {"setting": "gain_value and gain_auto_value", "reason": "original E5 did not cover the bounded response-plan values", "scope": ["gain_value", "gain_auto_value"]},
+      "merge_policy": "latest supplement outcome per setting and requested value supersedes the original outcome; all original events remain referenced",
+      "phases": [],
+      "acceptance": ["TX remains standby", "every bounded gain value has a fresh verified readback", "manual and automatic gain modes are restored exactly", "original E5 report remains retained"]
+    },
+    {
       "id": "E0_reproducibility_readback",
       "question": "Does each requested command produce an acknowledged and subsequently readable radar state that is persisted with the recording?",
       "transmit": false,
@@ -187,8 +204,8 @@
       "transmit": true,
       "reference_interleave": "repeat a reference phase before and after each condition block",
       "phases": [
-        {"id": "reference_A", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 128, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "noise_reduction": false, "antenna_height_raw": 0, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 2},
-        {"id": "reference_B", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 128, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "noise_reduction": false, "antenna_height_raw": 0, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 2}
+        {"id": "reference_A", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 64, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "noise_reduction": false, "antenna_height_raw": 0, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 2},
+        {"id": "reference_B", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 64, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "noise_reduction": false, "antenna_height_raw": 0, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 2}
       ],
       "acceptance": ["at least 3 complete rotations per phase", "readback equality before first and last rotation", "raw payload and CSV hashes recorded"]
     },
@@ -198,10 +215,10 @@
       "transmit": true,
       "reference_interleave": "insert the fixed reference phase between every transition block",
       "phases": [
-        {"id": "reference", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 128, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 1},
+        {"id": "reference", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 64, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 1},
         {"id": "gain_low", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 64, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 0, "record_s": 30, "scans": 6, "repeat": 1},
         {"id": "gain_high", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 192, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 0, "record_s": 30, "scans": 6, "repeat": 1},
-        {"id": "range_half_nm", "settings": {"range_index": 2, "pulse_width": 0, "gain_auto": false, "gain_value": 128, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 0, "record_s": 30, "scans": 6, "repeat": 1}
+        {"id": "range_half_nm", "settings": {"range_index": 2, "pulse_width": 0, "gain_auto": false, "gain_value": 64, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 0, "record_s": 30, "scans": 6, "repeat": 1}
       ],
       "acceptance": ["each setting transition has command time, ACK time, readback time, and first stable scan index", "reference phases remain comparable"]
     },
@@ -210,7 +227,7 @@
       "question": "Does the receiver preserve and replay each raw UDP payload and each decoded rotation without silent loss or schema drift?",
       "transmit": true,
       "phases": [
-        {"id": "persistence_smoke", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 128, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 1}
+        {"id": "persistence_smoke", "settings": {"range_index": 0, "pulse_width": 0, "gain_auto": false, "gain_value": 64, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 1}
       ],
       "acceptance": ["raw JSONL is parseable and base64 decodes", "all payloads have receive timestamps and peer address", "replay packet counts and decoded spoke counts are reported", "CSV and raw summaries identify their hashes"]
     },
@@ -220,7 +237,7 @@
       "transmit": true,
       "requires_operator_fields": ["target_id", "target_range_m", "target_bearing_deg", "target_position_reference", "measurement_method", "survey_uncertainty_m", "target_photo_paths"],
       "phases": [
-        {"id": "known_targets", "settings": {"range_index": 2, "pulse_width": 0, "gain_auto": false, "gain_value": 128, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 3}
+        {"id": "known_targets", "settings": {"range_index": 2, "pulse_width": 0, "gain_auto": false, "gain_value": 64, "rezboost": 0, "antenna_speed": 0, "sea_clutter": 0, "rain_clutter": 0, "interference_rejection": false, "bird_mode": 0, "doppler": 0}, "settle_s": 5, "record_s": 30, "scans": 6, "repeat": 3}
       ],
       "acceptance": ["no geometry metric is emitted until target ground truth is complete", "range and bearing residuals retain measurement and survey uncertainty", "target identity and phase are present in figure-data rows"]
     },
