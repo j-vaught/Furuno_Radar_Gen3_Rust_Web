@@ -40,8 +40,7 @@ const fallbackReadCommandMap = Object.freeze({
   PULSE: 'PULSE',
   GAIN: 'GAIN',
   STC: 'STC',
-  ACSEA: 'ACSEA',
-  ACRAIN: 'ACRAIN',
+  CLUTTER: 'CLUTTER',
   ANTREV: 'ANTREV',
   SWEEP: 'SWEEP',
   ALL: 'ALL'
@@ -656,7 +655,9 @@ function setCardCalibrationUI(disabled) {
       card.querySelectorAll('input, button, select, textarea').forEach(el => el.disabled = true);
     } else {
       card.classList.remove('disabled');
-      card.querySelectorAll('input, button, select, textarea').forEach(el => el.disabled = false);
+      card.querySelectorAll('input, button, select, textarea').forEach(el => {
+        el.disabled = el.dataset.unavailable === 'true';
+      });
     }
   });
 }
@@ -668,8 +669,8 @@ function toggleEcho(mode){
 }
 function refreshTx(){
   const cmd = getReadCommand('TX');
-  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(d=>setCallout('txResult', jsonPre(d), 'info'))
+  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(t=>setCallout('txResult', t, 'info'))
     .catch(err=>setCallout('txResult', `Failed: ${err.message}`, 'error'));
 }
 function beginCalibration() {
@@ -946,15 +947,15 @@ function setPulse(){
 }
 function refreshRange(){
   const cmd = getReadCommand('RANGE');
-  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(d=>setCallout('rangeResult', jsonPre(d), 'info'))
+  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(t=>setCallout('rangeResult', t, 'info'))
     .catch(err=>setCallout('rangeResult', `Failed: ${err.message}`, 'error'));
 }
 
 function refreshPulse(){
   const cmd = getReadCommand('PULSE');
-  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(d=>setCallout('rangeResult', jsonPre(d), 'info'))
+  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(t=>setCallout('rangeResult', t, 'info'))
     .catch(err=>setCallout('rangeResult', `Failed: ${err.message}`, 'error'));
 }
 
@@ -981,19 +982,15 @@ function setACRAIN(){
 }
 function refreshGain(){
   const cmd = getReadCommand('GAIN');
-  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(d=>setCallout('gainResult', jsonPre(d), 'info'))
+  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(t=>setCallout('gainResult', t, 'info'))
     .catch(err=>setCallout('gainResult', `Failed: ${err.message}`, 'error'));
 }
 
 function refreshClutter(){
-  const seaCmd = getReadCommand('ACSEA');
-  const rainCmd = getReadCommand('ACRAIN');
-  Promise.all([
-    apiGet(`/get_current?radarNo=${v('radarNo')}&command=${seaCmd}`),
-    apiGet(`/get_current?radarNo=${v('radarNo')}&command=${rainCmd}`)
-  ])
-    .then(([sea, rain]) => setCallout('clutterResult', jsonPre({ sea, rain }), 'info'))
+  const cmd = getReadCommand('CLUTTER');
+  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(t => setCallout('clutterResult', t, 'info'))
     .catch(err=>setCallout('clutterResult', `Failed: ${err.message}`, 'error'));
 }
 function setRezBoost() {
@@ -1002,9 +999,7 @@ function setRezBoost() {
     .then(t => setCallout('rezboostResult', t, 'info'));
 }
 function refreshRezBoost() {
-  fetch(`/set_bearing_resolution?radarNo=${v('radarNo')}`)
-    .then(r => r.text())
-    .then(t => setCallout('rezboostResult', t, 'info'));
+  setCallout('rezboostResult', 'RezBoost refresh is unavailable until a read endpoint is provided.', 'info');
 }
 
 
@@ -1077,10 +1072,7 @@ function refreshConnectionStatus(){
 
 /* ---------- DISPLAY ---------- */
 function applySweepInterp(){
-  fetch(`/set_sweep_total?mode=${v('sweepMode')}`)
-  .then(()=>fetch(`/set_interpolation?enable=${v('interpEnable')}`))
-  .then(r=>r.text()).then(t=>setCallout('displaySweepResult', t, 'info'))
-  .catch(err => setCallout('displaySweepResult', `Failed: ${err.message}`, 'error'));
+  setCallout('displaySweepResult', 'Sweep count and interpolation controls are unavailable.', 'info');
 }
 function setAntennaRev(){
   fetch(`/set_antenna_revolution?radarNo=${v('radarNo')}&rollSpeed=${v('rollSpd')}&hiRpm=${v('hiRpm')}`)
@@ -1094,23 +1086,30 @@ function setHighRpm(){
 }
 function refreshAntenna(){
   const cmd = getReadCommand('ANTREV');
-  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(d=>setCallout('antennaResult', jsonPre(d), 'info'))
+  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(t=>setCallout('antennaResult', t, 'info'))
     .catch(err => setCallout('antennaResult', `Failed: ${err.message}`, 'error'));
 }
 function refreshDisplay(){
   const cmd = getReadCommand('SWEEP');
-  apiGet(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
-    .then(d=>setCallout('displaySweepResult', jsonPre(d), 'info'))
+  apiText(`/get_current?radarNo=${v('radarNo')}&command=${cmd}`)
+    .then(t=>setCallout('displaySweepResult', t, 'info'))
     .catch(err => setCallout('displaySweepResult', `Failed: ${err.message}`, 'error'));
 }
 
 
-/** generic GET helper that expects JSON */
+/** Generic GET helper for JSON endpoints. */
 async function apiGet(url) {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`GET ${url} → ${r.status}`);
   return await r.json();
+}
+
+/** Generic GET helper for the server's text status endpoints. */
+async function apiText(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`GET ${url} → ${r.status}`);
+  return await r.text();
 }
 
 /** Push UI fields → device */
@@ -1135,8 +1134,8 @@ async function refreshSTC() {
   const radarNo = +$('#radarNo').value;
   if (Number.isNaN(radarNo)) return;
   const cmd = getReadCommand('STC');
-  const payload = await apiGet(`/get_current?command=${cmd}&radarNo=${radarNo}`);
-  const data = payload && payload.data ? payload.data : {};
+  const payload = await apiGet(`/get_current?command=${cmd}&radarNo=${radarNo}&format=json`);
+  const data = payload && payload.data ? payload.data : payload;
   $('#nearStc').value = data.near ?? 0;
   $('#midStc').value  = data.middle ?? 0;
   $('#farStc').value  = data.far ?? 0;
@@ -1197,8 +1196,14 @@ function updateSystemInfo() {
       } else {
         setClass('siRecording', 'Inactive', '');
       }
-      set('siRecordDir', d.record_dir || '--');
+      const recordingRoot = d.recording_root || '--';
+      const recordPath = d.record_dir || recordingRoot;
+      const recordPathLabel = !d.record_dir && d.recording_root_configured === false
+        ? `${recordPath} (default)`
+        : recordPath;
+      set('siRecordDir', recordPathLabel);
       set('siPatternRunning', d.pattern_running ? 'Running' : 'Idle');
+      setClass('siSettingsVerified', d.settings_verified === true ? 'Verified' : 'Unverified — use control Refresh for readback', d.settings_verified === true ? 'status-val--ok' : 'status-val--warn');
 
       if (d.settings) {
         const s = d.settings;
@@ -1216,8 +1221,12 @@ function updateSystemInfo() {
         set('siRain', s.rain_clutter);
       }
 
-      set('siMemoryAbs', `${d.memory_used_mb || 0} MB / ${d.memory_total_mb || 0} MB`);
-      set('siStorageAbs', `${(d.storage_used_gb || 0).toFixed(1)} GB / ${(d.storage_total_gb || 0).toFixed(1)} GB`);
+      const formatAbsolute = (value, unit, digits = 0) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return '--';
+        return `${value.toFixed(digits)} ${unit}`;
+      };
+      set('siMemoryAbs', `${formatAbsolute(d.memory_used_mb, 'MB')} / ${formatAbsolute(d.memory_total_mb, 'MB')}`);
+      set('siStorageAbs', `${formatAbsolute(d.storage_used_gb, 'GB', 1)} / ${formatAbsolute(d.storage_total_gb, 'GB', 1)}`);
     })
     .catch(() => {});
 }
@@ -1295,40 +1304,70 @@ async function updateSystemMetrics() {
     if (!resp.ok) throw new Error("HTTP " + resp.status);
     const data = await resp.json();
 
-    const cores = Array.isArray(data.cpu_cores) ? data.cpu_cores : [];
+    const cores = Array.isArray(data.cpu_cores)
+      ? data.cpu_cores.filter(value => typeof value === 'number' && Number.isFinite(value))
+      : [];
     if (cores.length) {
       renderCpuCores(cores);
     } else {
       renderCpuCores([]);
     }
-    const cpu = cores.length ? clamp01(cores.reduce((sum, v) => sum + clamp01(v), 0) / cores.length) : clamp01(data.cpu_load || 0);
-    setStatusBar('statusCpu', cpu);
+    const cpu = cores.length
+      ? cores.reduce((sum, value) => sum + clamp01(value), 0) / cores.length
+      : data.cpu_load;
     const cpuLabel = byId('statusCpuLabel');
-    if (cpuLabel) cpuLabel.textContent = `${Math.round(cpu * 100)}%`;
-
-    const mem = clamp01(data.memory_used || 0);
-    setStatusBar('statusMemory', mem);
-    const memLabel = byId('statusMemoryLabel');
-    if (memLabel) memLabel.textContent = `${Math.round(mem * 100)}%`;
-
-    const storage = clamp01(data.storage_used || 0);
-    setStatusBar('statusStorage', storage);
-    const storageLabel = byId('statusStorageLabel');
-    if (storageLabel) {
-      const path = data.storage_path ? ` (${data.storage_path})` : '';
-      storageLabel.textContent = `${Math.round(storage * 100)}%${path}`;
+    if (typeof cpu === 'number' && Number.isFinite(cpu)) {
+      setStatusBar('statusCpu', cpu);
+      if (cpuLabel) cpuLabel.textContent = `${Math.round(clamp01(cpu) * 100)}%`;
+    } else {
+      setStatusBar('statusCpu', 0);
+      if (cpuLabel) cpuLabel.textContent = '--%';
     }
 
-    const rx = Math.max(0, data.network_rx_mbps || 0);
-    const tx = Math.max(0, data.network_tx_mbps || 0);
+    const mem = data.memory_used;
+    const memLabel = byId('statusMemoryLabel');
+    if (typeof mem === 'number' && Number.isFinite(mem)) {
+      setStatusBar('statusMemory', mem);
+      if (memLabel) memLabel.textContent = `${Math.round(clamp01(mem) * 100)}%`;
+    } else {
+      setStatusBar('statusMemory', 0);
+      if (memLabel) memLabel.textContent = '--%';
+    }
+
+    const storage = data.storage_used;
+    const storageLabel = byId('statusStorageLabel');
+    if (typeof storage === 'number' && Number.isFinite(storage)) {
+      setStatusBar('statusStorage', storage);
+      if (storageLabel) {
+        const path = data.storage_path ? ` (${data.storage_path})` : '';
+        storageLabel.textContent = `${Math.round(clamp01(storage) * 100)}%${path}`;
+      }
+    } else {
+      setStatusBar('statusStorage', 0);
+      if (storageLabel) storageLabel.textContent = '--%';
+    }
+
+    const rx = typeof data.network_rx_mbps === 'number' && Number.isFinite(data.network_rx_mbps)
+      ? Math.max(0, data.network_rx_mbps)
+      : null;
+    const tx = typeof data.network_tx_mbps === 'number' && Number.isFinite(data.network_tx_mbps)
+      ? Math.max(0, data.network_tx_mbps)
+      : null;
     const networkLabel = byId('statusNetworkLabel');
-    if (networkLabel) networkLabel.textContent = `${rx.toFixed(2)} / ${tx.toFixed(2)} MB/s`;
-    const networkMax = 200.0; // assume 200 MB/s peak for scaling
-    const networkFraction = clamp01((rx + tx) / networkMax);
-    setStatusBar('statusNetwork', networkFraction);
+    if (networkLabel) {
+      const rxText = rx === null ? '--' : rx.toFixed(2);
+      const txText = tx === null ? '--' : tx.toFixed(2);
+      networkLabel.textContent = `${rxText} / ${txText} MB/s`;
+    }
+    if (rx !== null && tx !== null) {
+      const networkMax = 200.0; // assume 200 MB/s peak for scaling
+      setStatusBar('statusNetwork', (rx + tx) / networkMax);
+    } else {
+      setStatusBar('statusNetwork', 0);
+    }
 
     const tempLabel = byId('statusTempLabel');
-    if (typeof data.temperature_c === 'number') {
+    if (typeof data.temperature_c === 'number' && Number.isFinite(data.temperature_c)) {
       const celsius = data.temperature_c.toFixed(1);
       const fahrenheit = (data.temperature_c * 9/5 + 32).toFixed(1);
       if (tempLabel) tempLabel.textContent = `${celsius}°C / ${fahrenheit}°F`;

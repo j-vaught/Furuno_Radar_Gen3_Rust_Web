@@ -29,16 +29,28 @@ cargo run --release -- web
 
 The web interface is available at `http://localhost:8080`.
 
-The radar is auto-discovered on startup. If auto-discovery fails, specify the IP manually:
+The radar is auto-discovered on startup. If auto-discovery fails, specify both endpoint addresses manually:
 
 ```bash
-cargo run --release -- --radar-ip 172.31.3.226 web
+cargo run --release -- --radar-ip 172.31.3.226 --host-ip 172.31.1.100 web
 ```
+
+Use `--interface NAME` to restrict discovery and subnet checks to one IPv4 interface. The application never changes network settings unless `--configure-network` is supplied together with an explicit interface. On macOS, for example, the opt-in command is `cargo run --release -- --radar-ip 172.31.3.226 --interface en5 --configure-network handshake`. Without that flag, configure the address manually and pass it with `--host-ip`.
+
+### macOS launch profile
+
+Build the native release executable and place it at `runtime/macos/furuno-server`, or set `FURUNO_BINARY` to its absolute path. Run `./run-macos.sh` with MacApplications mounted. This profile uses interface `en5`, radar address `172.31.3.226`, and host address `172.31.1.100`. Configure the Ethernet service with subnet mask `255.255.0.0` before launch. `FURUNO_INTERFACE`, `FURUNO_RADAR_IP`, and `FURUNO_HOST_IP` override those defaults.
+
+The launcher stores recordings at `/Volumes/MacApplications/Radar_papers/data/live/macos-recordings` and refuses to start when the volume is unmounted. `FURUNO_STORAGE_VOLUME` and `FURUNO_RECORDING_ROOT` select another mounted volume and a recording directory on that volume. The server checks that the directory remains writable before saving each rotation.
+
+The status page and recording metadata mark commanded settings as unverified. Use each control's Refresh action to retrieve radar readback. The current metadata cache is not hydrated from those responses. Unsupported sweep/interpolation controls are disabled, and unavailable macOS resource metrics display `--`.
+
+The CLI, network, socket, and recording-root tests are software-only. The tests in `tests.rs` and the `full`, `validate`, and `test-commands` modes operate real hardware and can enable transmission.
 
 ## CLI Modes
 
 ```
-furuno-server [--radar-ip IP] [--host-ip IP] <mode> [args...]
+furuno-server [--radar-ip IP] [--host-ip IP] [--interface NAME] [--configure-network] <mode> [args...]
 ```
 
 | Mode | Description |
@@ -72,7 +84,7 @@ When recording is enabled, each antenna rotation produces:
 - `recordings/<timestamp>/png/rotation_<ts>.png` -- PPI image
 - `recordings/<timestamp>/settings.json` -- Session settings snapshot
 
-CSV files include a metadata header (lines starting with `#`) containing all radar settings at the time of capture, followed by spoke data with per-bin echo amplitudes.
+CSV files include a metadata header (lines starting with `#`) containing the commanded settings cache and `settings_verified,false`, followed by spoke data with per-bin echo amplitudes. Preserve radar register readbacks separately when recording experiments.
 
 ## Project Structure
 
@@ -113,7 +125,7 @@ The radar communicates on the `172.31.0.0/16` subnet. Key ports:
 | 10024 | UDP multicast (239.255.0.2) | Echo sweep data |
 | 10100 | TCP | Persistent control channel |
 
-If the host is not on the radar's subnet, the application automatically adds a secondary IP alias to the Ethernet interface.
+If the host is not on the radar's subnet, the application stops and prints the exact manual alias command. Alias creation requires both `--interface NAME` and `--configure-network`; the macOS path uses non-interactive `sudo -n` and fails without a cached authorization.
 
 ## Documentation
 

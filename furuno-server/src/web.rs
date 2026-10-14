@@ -1,8 +1,10 @@
 use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::net::Ipv4Addr;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::thread;
+use std::{env, io};
 
 use axum::{
     Router,
@@ -14,7 +16,7 @@ use axum::{
 use tower_http::services::ServeDir;
 use serde::{Deserialize, Serialize};
 
-use crate::connection::{RadarConnection, create_echo_socket};
+use crate::connection::{RadarConnection, try_create_echo_socket};
 use crate::protocol::{self, Spoke, decode_echo_packet};
 use crate::render::{self, PPI_SIZE};
 
@@ -39,6 +41,8 @@ pub struct CurrentSettings {
     pub near_stc: u16,
     pub middle_stc: u16,
     pub far_stc: u16,
+    /// These values are the last commanded values or startup defaults.
+    pub status: &'static str,
 }
 
 #[derive(Clone, Serialize)]
@@ -122,8 +126,16 @@ impl Default for CurrentSettings {
             rezboost: 0, interference_rejection: false,
             bird_mode: 0, doppler: 0, antenna_speed: 0,
             main_bang: 0, near_stc: 0, middle_stc: 0, far_stc: 0,
+            status: "commanded_cache_unverified",
         }
     }
+}
+
+#[derive(Clone)]
+struct RecordingRoot {
+    path: PathBuf,
+    configured: bool,
+    empty_configured: bool,
 }
 
 pub struct AppState {
@@ -141,6 +153,7 @@ pub struct AppState {
     active_pattern_step: RwLock<Option<protocol::ControlStep>>,
     setting_history: RwLock<Vec<SettingChange>>,
     recording_session_kind: RwLock<RecordingSessionKind>,
+    recording_root: RecordingRoot,
     host_ip: Ipv4Addr,
     settings: RwLock<CurrentSettings>,
     start_time: Instant,
@@ -165,6 +178,13 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         }
     };
 
+    let recording_root = resolve_recording_root();
+    println!(
+        "Recording root{}: {}",
+        if recording_root.configured { " (FURUNO_RECORDING_ROOT)" } else { "" },
+        recording_root.path.display()
+    );
+
     let state = Arc::new(AppState {
         conn: Mutex::new(conn),
         latest_png: RwLock::new(Vec::new()),
@@ -180,6 +200,7 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         active_pattern_step: RwLock::new(None),
         setting_history: RwLock::new(Vec::new()),
         recording_session_kind: RwLock::new(RecordingSessionKind::Manual),
+        recording_root,
         host_ip,
         settings: RwLock::new(CurrentSettings::default()),
         start_time: Instant::now(),
@@ -208,8 +229,8 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         .route("/set_near_stc", get(handle_set_near_stc))
         .route("/set_middle_stc", get(handle_set_middle_stc))
         .route("/set_far_stc", get(handle_set_far_stc))
-        .route("/set_sweep_total", get(handle_stub))
-        .route("/set_interpolation", get(handle_stub))
+        .route("/set_sweep_total", get(handle_unavailable))
+        .route("/set_interpolation", get(handle_unavailable))
         // Settings (new)
         .route("/set_main_bang", get(handle_set_main_bang))
         .route("/set_interference_rejection", get(handle_set_ir))
@@ -240,7 +261,16 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
 // --- Echo listener thread ---
 
 fn echo_listener(state: Arc<AppState>) {
-    let echo_socket = create_echo_socket(state.host_ip);
+    let echo_socket = match try_create_echo_socket(state.host_ip) {
+        Ok(socket) => socket,
+        Err(error) => {
+            eprintln!("Echo socket setup failed: {error}");
+            state.connected.store(false, Ordering::Relaxed);
+            state.tx_active.store(false, Ordering::Relaxed);
+            state.recording.store(false, Ordering::Relaxed);
+            return;
+        }
+    };
     let mut buf = [0u8; 2048];
     let mut spokes: Vec<Spoke> = Vec::new();
     let mut prev_spoke_data: Vec<u8> = Vec::new();
@@ -280,17 +310,8 @@ fn echo_listener(state: Arc<AppState>) {
 
                             // Save CSV + PNG if recording
                             if state.recording.load(Ordering::Relaxed) {
-                                if let Ok(dir) = state.record_dir.read() {
-                                    if !dir.is_empty() {
-                                        let ts = timestamp_compact();
-                                        let csv_dir = format!("{dir}/csv");
-                                        let png_dir = format!("{dir}/png");
-                                        let _ = std::fs::create_dir_all(&csv_dir);
-                                        let _ = std::fs::create_dir_all(&png_dir);
-                                        let settings = state.settings.read().unwrap().clone();
-                                        write_echo_csv(&format!("{csv_dir}/rotation_{ts}.csv"), &spokes, &settings);
-                                        render::write_png(&format!("{png_dir}/rotation_{ts}.png"), &pixels, PPI_SIZE, PPI_SIZE);
-                                    }
+                                if let Err(e) = save_recording_rotation(&state, &spokes, &pixels) {
+                                    disable_recording_on_error(&state, "rotation output", e);
                                 }
                             }
 
@@ -909,28 +930,32 @@ async fn handle_newest_png(
 
 #[derive(Serialize)]
 struct SystemMetrics {
-    cpu_cores: Vec<f64>,
-    cpu_load: f64,
-    memory_used: f64,
-    storage_used: f64,
+    cpu_cores: Option<Vec<f64>>,
+    cpu_load: Option<f64>,
+    memory_used: Option<f64>,
+    storage_used: Option<f64>,
     storage_path: String,
-    network_rx_mbps: f64,
-    network_tx_mbps: f64,
-    temperature_c: f64,
+    network_rx_mbps: Option<f64>,
+    network_tx_mbps: Option<f64>,
+    temperature_c: Option<f64>,
 }
 
-async fn handle_system_metrics() -> axum::response::Response {
-    let metrics = tokio::task::spawn_blocking(read_system_metrics)
+async fn handle_system_metrics(
+    State(state): State<Arc<AppState>>,
+) -> axum::response::Response {
+    let storage_path = state.recording_root.path.clone();
+    let storage_path_display = storage_path.display().to_string();
+    let metrics = tokio::task::spawn_blocking(move || read_system_metrics(&storage_path))
         .await
         .unwrap_or_else(|_| SystemMetrics {
-            cpu_cores: vec![],
-            cpu_load: 0.0,
-            memory_used: 0.0,
-            storage_used: 0.0,
-            storage_path: "/".into(),
-            network_rx_mbps: 0.0,
-            network_tx_mbps: 0.0,
-            temperature_c: 0.0,
+            cpu_cores: None,
+            cpu_load: None,
+            memory_used: None,
+            storage_used: None,
+            storage_path: storage_path_display,
+            network_rx_mbps: None,
+            network_tx_mbps: None,
+            temperature_c: None,
         });
 
     let json = serde_json::to_string(&metrics).unwrap_or_default();
@@ -955,10 +980,13 @@ struct SystemInfo {
     uptime_seconds: u64,
     pattern_running: bool,
     settings: CurrentSettings,
-    memory_total_mb: u64,
-    memory_used_mb: u64,
-    storage_total_gb: f64,
-    storage_used_gb: f64,
+    memory_total_mb: Option<u64>,
+    memory_used_mb: Option<u64>,
+    storage_total_gb: Option<f64>,
+    storage_used_gb: Option<f64>,
+    recording_root: String,
+    recording_root_configured: bool,
+    settings_verified: bool,
 }
 
 async fn handle_get_system_info(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -985,7 +1013,7 @@ async fn handle_get_system_info(State(state): State<Arc<AppState>>) -> axum::res
         .unwrap_or_default();
 
     let (memory_total_mb, memory_used_mb) = read_memory_abs();
-    let (storage_total_gb, storage_used_gb) = read_storage_abs();
+    let (storage_total_gb, storage_used_gb) = read_storage_abs(&state.recording_root.path);
 
     let info = SystemInfo {
         newest_png: if tx { "Live radar feed" } else { "TX off" }.into(),
@@ -996,6 +1024,8 @@ async fn handle_get_system_info(State(state): State<Arc<AppState>>) -> axum::res
         host_ip: state.host_ip.to_string(),
         recording,
         record_dir,
+        recording_root: state.recording_root.path.display().to_string(),
+        recording_root_configured: state.recording_root.configured,
         rotation_count,
         uptime_seconds,
         pattern_running,
@@ -1004,6 +1034,7 @@ async fn handle_get_system_info(State(state): State<Arc<AppState>>) -> axum::res
         memory_used_mb,
         storage_total_gb,
         storage_used_gb,
+        settings_verified: false,
     };
 
     let json = serde_json::to_string(&info).unwrap_or_default();
@@ -1025,19 +1056,26 @@ async fn handle_toggle_recording(
 ) -> String {
     match params.mode.as_str() {
         "on" | "start" => {
-            state.recording.store(true, Ordering::Relaxed);
+            if let Err(e) = validate_recording_root(&state.recording_root) {
+                return format!("Recording unavailable: {e}");
+            }
             let active_pattern = state.active_pattern.read().ok().and_then(|p| p.clone());
             let dir = if let Some(pattern) = active_pattern {
                 match start_pattern_recording_session(&state, pattern, Some("pattern")) {
                     Ok(dir) => dir,
-                    Err(e) => return format!("Failed to create directory: {e}"),
+                    Err(e) => return format!("Failed to start recording: {e}"),
                 }
             } else {
                 match start_manual_recording_session(&state) {
                     Ok(dir) => dir,
-                    Err(e) => return format!("Failed to create directory: {e}"),
+                    Err(e) => return format!("Failed to start recording: {e}"),
                 }
             };
+            state.recording.store(true, Ordering::Relaxed);
+            if let Err(e) = persist_recording_settings(&state) {
+                disable_recording_on_error(&state, "initial settings output", &e);
+                return format!("Recording disabled: {e}");
+            }
             format!("Recording started. Saving to {dir}/")
         }
         "off" | "stop" => {
@@ -1049,8 +1087,11 @@ async fn handle_toggle_recording(
     }
 }
 
-async fn handle_stub() -> String {
-    "OK".into()
+async fn handle_unavailable(uri: axum::http::Uri) -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        format!("Unavailable: {} is not implemented", uri.path()),
+    )
 }
 
 // --- Pattern execution ---
@@ -1250,19 +1291,23 @@ where
         record_setting_change(state, setting, value);
     }
     if state.recording.load(Ordering::Relaxed) {
-        persist_recording_settings(state);
+        if let Err(error) = persist_recording_settings(state) {
+            disable_recording_on_error(state, "setting-change output", &error);
+        }
     }
 }
 
-fn write_manual_settings_snapshot(state: &AppState, dir: &str) {
-    let current_settings = match state.settings.read() {
-        Ok(settings) => settings.clone(),
-        Err(_) => return,
-    };
-    let history = match state.setting_history.read() {
-        Ok(history) => history.clone(),
-        Err(_) => return,
-    };
+fn write_manual_settings_snapshot(state: &AppState, dir: &str) -> Result<(), io::Error> {
+    let current_settings = state
+        .settings
+        .read()
+        .map_err(|_| io::Error::other("settings lock poisoned"))?
+        .clone();
+    let history = state
+        .setting_history
+        .read()
+        .map_err(|_| io::Error::other("setting history lock poisoned"))?
+        .clone();
 
     let snapshot = ManualRecordingSettingsSnapshot {
         mode: "manual",
@@ -1271,20 +1316,26 @@ fn write_manual_settings_snapshot(state: &AppState, dir: &str) {
         history,
     };
 
-    if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
-        let _ = std::fs::write(format!("{dir}/settings.json"), json);
-    }
+    let json = serde_json::to_string_pretty(&snapshot)
+        .map_err(|e| io::Error::other(format!("serialize settings: {e}")))?;
+    std::fs::write(format!("{dir}/settings.json"), json)
 }
 
-fn write_pattern_settings_snapshot(state: &AppState, dir: &str, pattern: &PatternInfo) {
-    let current_settings = match state.settings.read() {
-        Ok(settings) => settings.clone(),
-        Err(_) => return,
-    };
-    let history = match state.setting_history.read() {
-        Ok(history) => history.clone(),
-        Err(_) => return,
-    };
+fn write_pattern_settings_snapshot(
+    state: &AppState,
+    dir: &str,
+    pattern: &PatternInfo,
+) -> Result<(), io::Error> {
+    let current_settings = state
+        .settings
+        .read()
+        .map_err(|_| io::Error::other("settings lock poisoned"))?
+        .clone();
+    let history = state
+        .setting_history
+        .read()
+        .map_err(|_| io::Error::other("setting history lock poisoned"))?
+        .clone();
     let snapshot = PatternRecordingSettingsSnapshot {
         mode: "pattern",
         recording_dir: dir.to_string(),
@@ -1292,40 +1343,146 @@ fn write_pattern_settings_snapshot(state: &AppState, dir: &str, pattern: &Patter
         pattern: pattern.clone(),
         history,
     };
-    if let Ok(json) = serde_json::to_string_pretty(&snapshot) {
-        let _ = std::fs::write(format!("{dir}/settings.json"), json);
-    }
+    let json = serde_json::to_string_pretty(&snapshot)
+        .map_err(|e| io::Error::other(format!("serialize settings: {e}")))?;
+    std::fs::write(format!("{dir}/settings.json"), json)
 }
 
-fn persist_recording_settings(state: &AppState) {
+fn persist_recording_settings(state: &AppState) -> Result<(), io::Error> {
     let dir = match state.record_dir.read() {
         Ok(dir) if !dir.is_empty() => dir.clone(),
-        _ => return,
+        Ok(_) => return Ok(()),
+        Err(_) => return Err(io::Error::other("recording directory lock poisoned")),
     };
     let kind = match state.recording_session_kind.read() {
         Ok(kind) => kind.clone(),
-        Err(_) => return,
+        Err(_) => return Err(io::Error::other("recording session lock poisoned")),
     };
-    match kind {
+    let result = match kind {
         RecordingSessionKind::Manual => write_manual_settings_snapshot(state, &dir),
         RecordingSessionKind::Pattern(pattern) => write_pattern_settings_snapshot(state, &dir, &pattern),
+    };
+    result
+}
+
+fn disable_recording_on_error<E: std::fmt::Display>(state: &AppState, context: &str, error: E) {
+    eprintln!("Recording disabled after {context} error: {error}");
+    state.recording.store(false, Ordering::Relaxed);
+}
+
+fn save_recording_rotation(
+    state: &AppState,
+    spokes: &[Spoke],
+    pixels: &[u8],
+) -> Result<(), io::Error> {
+    validate_recording_root(&state.recording_root)?;
+    let dir = state
+        .record_dir
+        .read()
+        .map_err(|_| io::Error::other("recording directory lock poisoned"))?
+        .clone();
+    if dir.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "recording is enabled but no recording directory is active",
+        ));
+    }
+    let ts = timestamp_compact();
+    let csv_dir = Path::new(&dir).join("csv");
+    let png_dir = Path::new(&dir).join("png");
+    std::fs::create_dir_all(&csv_dir)?;
+    std::fs::create_dir_all(&png_dir)?;
+    let settings = state
+        .settings
+        .read()
+        .map_err(|_| io::Error::other("settings lock poisoned"))?
+        .clone();
+    write_echo_csv(&csv_dir.join(format!("rotation_{ts}.csv")).display().to_string(), spokes, &settings)?;
+    let png_bytes = render::encode_png_bytes(pixels, PPI_SIZE, PPI_SIZE);
+    std::fs::write(png_dir.join(format!("rotation_{ts}.png")), png_bytes)
+}
+
+fn resolve_recording_root() -> RecordingRoot {
+    match env::var_os("FURUNO_RECORDING_ROOT") {
+        Some(raw) => {
+            let raw_path = PathBuf::from(raw);
+            let empty_configured = raw_path.as_os_str().is_empty();
+            let path = if raw_path.is_absolute() {
+                raw_path
+            } else {
+                env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(raw_path)
+            };
+            RecordingRoot {
+                path,
+                configured: true,
+                empty_configured,
+            }
+        }
+        None => RecordingRoot {
+            path: env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join("recordings"),
+            configured: false,
+            empty_configured: false,
+        },
     }
 }
 
-fn create_recording_dir(tag: Option<&str>) -> Result<String, std::io::Error> {
+fn validate_recording_root(root: &RecordingRoot) -> Result<(), io::Error> {
+    if root.empty_configured {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "FURUNO_RECORDING_ROOT is empty",
+        ));
+    }
+    if !root.path.exists() {
+        if root.configured {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("configured recording root does not exist: {}", root.path.display()),
+            ));
+        }
+        std::fs::create_dir_all(&root.path)?;
+    }
+    let metadata = std::fs::metadata(&root.path)?;
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            format!("recording root is not a directory: {}", root.path.display()),
+        ));
+    }
+
+    let probe = root.path.join(format!(
+        ".furuno_write_probe_{}_{}",
+        std::process::id(),
+        timestamp_compact()
+    ));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)?;
+    drop(file);
+    std::fs::remove_file(&probe)?;
+    Ok(())
+}
+
+fn create_recording_dir(root: &RecordingRoot, tag: Option<&str>) -> Result<String, io::Error> {
+    validate_recording_root(root)?;
     let ts = timestamp_compact();
     let base = match tag {
-        Some(tag) => format!("recordings/{ts}_{tag}"),
-        None => format!("recordings/{ts}"),
+        Some(tag) => root.path.join(format!("{ts}_{tag}")),
+        None => root.path.join(ts),
     };
     let mut dir = base.clone();
     let mut suffix = 1usize;
-    while std::path::Path::new(&dir).exists() {
-        dir = format!("{base}_{suffix:02}");
+    while dir.exists() {
+        dir = PathBuf::from(format!("{}_{suffix:02}", base.display()));
         suffix += 1;
     }
     std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+    Ok(dir.display().to_string())
 }
 
 fn sanitize_pattern_label(label: &str) -> String {
@@ -1350,7 +1507,13 @@ fn sanitize_pattern_label(label: &str) -> String {
 }
 
 fn start_manual_recording_session(state: &AppState) -> Result<String, std::io::Error> {
-    let dir = create_recording_dir(None)?;
+    let dir = match create_recording_dir(&state.recording_root, None) {
+        Ok(dir) => dir,
+        Err(e) => {
+            state.recording.store(false, Ordering::Relaxed);
+            return Err(e);
+        }
+    };
     if let Ok(mut record_dir) = state.record_dir.write() {
         *record_dir = dir.clone();
     }
@@ -1360,7 +1523,10 @@ fn start_manual_recording_session(state: &AppState) -> Result<String, std::io::E
     if let Ok(mut kind) = state.recording_session_kind.write() {
         *kind = RecordingSessionKind::Manual;
     }
-    persist_recording_settings(state);
+    if let Err(error) = persist_recording_settings(state) {
+        disable_recording_on_error(state, "manual settings output", &error);
+        return Err(error);
+    }
     Ok(dir)
 }
 
@@ -1369,7 +1535,13 @@ fn start_pattern_recording_session(
     pattern: PatternInfo,
     tag: Option<&str>,
 ) -> Result<String, std::io::Error> {
-    let dir = create_recording_dir(tag)?;
+    let dir = match create_recording_dir(&state.recording_root, tag) {
+        Ok(dir) => dir,
+        Err(e) => {
+            state.recording.store(false, Ordering::Relaxed);
+            return Err(e);
+        }
+    };
     if let Ok(mut record_dir) = state.record_dir.write() {
         *record_dir = dir.clone();
     }
@@ -1379,7 +1551,10 @@ fn start_pattern_recording_session(
     if let Ok(mut kind) = state.recording_session_kind.write() {
         *kind = RecordingSessionKind::Pattern(pattern);
     }
-    persist_recording_settings(state);
+    if let Err(error) = persist_recording_settings(state) {
+        disable_recording_on_error(state, "pattern settings output", &error);
+        return Err(error);
+    }
     Ok(dir)
 }
 
@@ -1489,7 +1664,12 @@ fn execute_pattern(
             }
             apply_pattern_step_to_settings(&state, step);
             if state.recording.load(Ordering::Relaxed) {
-                persist_recording_settings(&state);
+                if let Err(error) = persist_recording_settings(&state) {
+                    disable_recording_on_error(&state, "pattern settings output", &error);
+                    if let Ok(mut status) = state.pattern_status.write() {
+                        *status = format!("Recording disabled: {error}");
+                    }
+                }
             }
 
             // Wait for the specified number of rotations
@@ -1674,7 +1854,12 @@ async fn handle_run_pattern_queue(
                     }
                     apply_pattern_step_to_settings(&st, step);
                     if st.recording.load(Ordering::Relaxed) {
-                        persist_recording_settings(&st);
+                        if let Err(error) = persist_recording_settings(&st) {
+                            disable_recording_on_error(&st, "queued pattern settings output", &error);
+                            if let Ok(mut status) = st.pattern_status.write() {
+                                *status = format!("Recording disabled: {error}");
+                            }
+                        }
                     }
                     let start_rot = st.rotation_count.load(Ordering::Relaxed);
                     let target_rot = start_rot + step.repeat as u64;
@@ -1792,10 +1977,10 @@ fn parse_cpu_times() -> Vec<(u64, u64)> {
     cores
 }
 
-fn parse_net_bytes() -> (u64, u64) {
+fn parse_net_bytes() -> Option<(u64, u64)> {
     let content = match std::fs::read_to_string("/proc/net/dev") {
         Ok(c) => c,
-        Err(_) => return (0, 0),
+        Err(_) => return None,
     };
     let mut rx_total = 0u64;
     let mut tx_total = 0u64;
@@ -1808,24 +1993,24 @@ fn parse_net_bytes() -> (u64, u64) {
             tx_total += parts[9].parse::<u64>().unwrap_or(0);
         }
     }
-    (rx_total, tx_total)
+    Some((rx_total, tx_total))
 }
 
-fn read_system_metrics() -> SystemMetrics {
+fn read_system_metrics(storage_path: &Path) -> SystemMetrics {
     let mut metrics = SystemMetrics {
-        cpu_cores: vec![],
-        cpu_load: 0.0,
-        memory_used: 0.0,
-        storage_used: 0.0,
-        storage_path: "/".into(),
-        network_rx_mbps: 0.0,
-        network_tx_mbps: 0.0,
-        temperature_c: 0.0,
+        cpu_cores: None,
+        cpu_load: None,
+        memory_used: None,
+        storage_used: None,
+        storage_path: storage_path.display().to_string(),
+        network_rx_mbps: None,
+        network_tx_mbps: None,
+        temperature_c: None,
     };
 
     // Per-core CPU usage from /proc/stat delta
     let cur_cpu = parse_cpu_times();
-    let (cur_rx, cur_tx) = parse_net_bytes();
+    let net_sample = parse_net_bytes();
     let now = Instant::now();
 
     if let Ok(mut prev) = get_prev_sample().lock() {
@@ -1842,25 +2027,25 @@ fn read_system_metrics() -> SystemMetrics {
                     core_usage.push(0.0);
                 }
             }
-            metrics.cpu_load = if core_usage.is_empty() { 0.0 } else {
+            metrics.cpu_load = Some(if core_usage.is_empty() { 0.0 } else {
                 core_usage.iter().sum::<f64>() / core_usage.len() as f64
-            };
-            metrics.cpu_cores = core_usage;
-        } else if !cur_cpu.is_empty() {
-            metrics.cpu_cores = vec![0.0; cur_cpu.len()];
+            });
+            metrics.cpu_cores = Some(core_usage);
         }
 
         // Network throughput
-        if elapsed > 0.05 && prev.net_rx > 0 {
-            let d_rx = cur_rx.saturating_sub(prev.net_rx) as f64;
-            let d_tx = cur_tx.saturating_sub(prev.net_tx) as f64;
-            metrics.network_rx_mbps = (d_rx / elapsed) / (1024.0 * 1024.0);
-            metrics.network_tx_mbps = (d_tx / elapsed) / (1024.0 * 1024.0);
+        if let Some((cur_rx, cur_tx)) = net_sample {
+            if elapsed > 0.05 && prev.net_rx > 0 {
+                let d_rx = cur_rx.saturating_sub(prev.net_rx) as f64;
+                let d_tx = cur_tx.saturating_sub(prev.net_tx) as f64;
+                metrics.network_rx_mbps = Some((d_rx / elapsed) / (1024.0 * 1024.0));
+                metrics.network_tx_mbps = Some((d_tx / elapsed) / (1024.0 * 1024.0));
+            }
+            prev.net_rx = cur_rx;
+            prev.net_tx = cur_tx;
         }
 
         prev.cpu_times = cur_cpu;
-        prev.net_rx = cur_rx;
-        prev.net_tx = cur_tx;
         prev.timestamp = now;
     }
 
@@ -1876,21 +2061,21 @@ fn read_system_metrics() -> SystemMetrics {
             }
         }
         if total > 0 {
-            metrics.memory_used = 1.0 - (available as f64 / total as f64);
+            metrics.memory_used = Some(1.0 - (available as f64 / total as f64));
         }
     }
 
     // Storage
-    if let Ok(stat) = nix_statvfs("/") {
+    if let Ok(stat) = nix_statvfs(storage_path) {
         if stat.total > 0 {
-            metrics.storage_used = 1.0 - (stat.available as f64 / stat.total as f64);
+            metrics.storage_used = Some(1.0 - (stat.available as f64 / stat.total as f64));
         }
     }
 
     // Temperature
     if let Ok(content) = std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp") {
         if let Ok(millic) = content.trim().parse::<f64>() {
-            metrics.temperature_c = millic / 1000.0;
+            metrics.temperature_c = Some(millic / 1000.0);
         }
     }
 
@@ -1909,9 +2094,9 @@ struct StatVfs {
     available: u64,
 }
 
-fn nix_statvfs(path: &str) -> Result<StatVfs, ()> {
+fn nix_statvfs(path: &Path) -> Result<StatVfs, ()> {
     use std::ffi::CString;
-    let c_path = CString::new(path).map_err(|_| ())?;
+    let c_path = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| ())?;
     unsafe {
         let mut stat: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
@@ -1925,7 +2110,7 @@ fn nix_statvfs(path: &str) -> Result<StatVfs, ()> {
     }
 }
 
-fn read_memory_abs() -> (u64, u64) {
+fn read_memory_abs() -> (Option<u64>, Option<u64>) {
     if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
         let mut total_kb = 0u64;
         let mut available_kb = 0u64;
@@ -1938,19 +2123,23 @@ fn read_memory_abs() -> (u64, u64) {
         }
         let total_mb = total_kb / 1024;
         let used_mb = total_mb.saturating_sub(available_kb / 1024);
-        (total_mb, used_mb)
+        if total_mb > 0 {
+            (Some(total_mb), Some(used_mb))
+        } else {
+            (None, None)
+        }
     } else {
-        (0, 0)
+        (None, None)
     }
 }
 
-fn read_storage_abs() -> (f64, f64) {
-    if let Ok(stat) = nix_statvfs("/") {
+fn read_storage_abs(path: &Path) -> (Option<f64>, Option<f64>) {
+    if let Ok(stat) = nix_statvfs(path) {
         let total_gb = stat.total as f64 / (1024.0 * 1024.0 * 1024.0);
         let used_gb = total_gb - (stat.available as f64 / (1024.0 * 1024.0 * 1024.0));
-        (total_gb, used_gb)
+        (Some(total_gb), Some(used_gb))
     } else {
-        (0.0, 0.0)
+        (None, None)
     }
 }
 
@@ -1991,35 +2180,30 @@ fn timestamp_compact() -> String {
     format!("{y:04}{:02}{d:02}_{hours:02}{minutes:02}{seconds:02}", m + 1)
 }
 
-fn write_echo_csv(path: &str, spokes: &[Spoke], settings: &CurrentSettings) {
+fn write_echo_csv(path: &str, spokes: &[Spoke], settings: &CurrentSettings) -> Result<(), io::Error> {
     use std::io::Write;
     let mut f = std::io::BufWriter::new(
-        match std::fs::File::create(path) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("Failed to create CSV {path}: {e}");
-                return;
-            }
-        },
+        std::fs::File::create(path)?,
     );
 
     // Write metadata header as comment lines
-    let _ = writeln!(f, "# range_index,{}", settings.range_index);
-    let _ = writeln!(f, "# gain_auto,{}", settings.gain_auto);
-    let _ = writeln!(f, "# gain_value,{}", settings.gain_value);
-    let _ = writeln!(f, "# pulse_width,{}", settings.pulse_width);
-    let _ = writeln!(f, "# sea_clutter,{}", settings.sea_clutter);
-    let _ = writeln!(f, "# rain_clutter,{}", settings.rain_clutter);
-    let _ = writeln!(f, "# rezboost,{}", settings.rezboost);
-    let _ = writeln!(f, "# interference_rejection,{}", settings.interference_rejection);
-    let _ = writeln!(f, "# bird_mode,{}", settings.bird_mode);
-    let _ = writeln!(f, "# doppler,{}", settings.doppler);
-    let _ = writeln!(f, "# antenna_speed,{}", settings.antenna_speed);
-    let _ = writeln!(f, "# main_bang,{}", settings.main_bang);
-    let _ = writeln!(f, "# near_stc,{}", settings.near_stc);
-    let _ = writeln!(f, "# middle_stc,{}", settings.middle_stc);
-    let _ = writeln!(f, "# far_stc,{}", settings.far_stc);
-    let _ = writeln!(f, "Status\tScale\tRange\tGain\tAngle\tEchoValues");
+    writeln!(f, "# settings_verified,false")?;
+    writeln!(f, "# range_index,{}", settings.range_index)?;
+    writeln!(f, "# gain_auto,{}", settings.gain_auto)?;
+    writeln!(f, "# gain_value,{}", settings.gain_value)?;
+    writeln!(f, "# pulse_width,{}", settings.pulse_width)?;
+    writeln!(f, "# sea_clutter,{}", settings.sea_clutter)?;
+    writeln!(f, "# rain_clutter,{}", settings.rain_clutter)?;
+    writeln!(f, "# rezboost,{}", settings.rezboost)?;
+    writeln!(f, "# interference_rejection,{}", settings.interference_rejection)?;
+    writeln!(f, "# bird_mode,{}", settings.bird_mode)?;
+    writeln!(f, "# doppler,{}", settings.doppler)?;
+    writeln!(f, "# antenna_speed,{}", settings.antenna_speed)?;
+    writeln!(f, "# main_bang,{}", settings.main_bang)?;
+    writeln!(f, "# near_stc,{}", settings.near_stc)?;
+    writeln!(f, "# middle_stc,{}", settings.middle_stc)?;
+    writeln!(f, "# far_stc,{}", settings.far_stc)?;
+    writeln!(f, "Status\tScale\tRange\tGain\tAngle\tEchoValues")?;
 
     let gain = ((settings.gain_value as u32 * 100) / 255) as u16;
     let scale = settings.range_index;
@@ -2032,11 +2216,67 @@ fn write_echo_csv(path: &str, spokes: &[Spoke], settings: &CurrentSettings) {
             .map(|value| value.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        let _ = writeln!(
+        writeln!(
             f,
             "0\t{scale}\t{range}\t{gain}\t{}\t{}",
             spoke.angle_ticks.min(8191),
             echo_values
-        );
+        )?;
+    }
+    f.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configured_recording_root_refuses_missing_path() {
+        let path = env::temp_dir().join(format!(
+            "furuno-missing-recording-root-{}-{}",
+            std::process::id(),
+            timestamp_compact()
+        ));
+        let root = RecordingRoot {
+            path: path.clone(),
+            configured: true,
+            empty_configured: false,
+        };
+
+        let error = create_recording_dir(&root, None)
+            .expect_err("missing configured root must fail");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        assert!(!path.exists(), "configured validation must not recreate the root");
+    }
+
+    #[test]
+    fn configured_empty_recording_root_is_rejected() {
+        let root = RecordingRoot {
+            path: env::current_dir().expect("current directory"),
+            configured: true,
+            empty_configured: true,
+        };
+
+        let error = validate_recording_root(&root).expect_err("empty configured root must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn configured_recording_root_refuses_file_path() {
+        let path = env::temp_dir().join(format!(
+            "furuno-recording-root-file-{}-{}",
+            std::process::id(),
+            timestamp_compact()
+        ));
+        std::fs::write(&path, b"not a directory").expect("create test path");
+        let root = RecordingRoot {
+            path: path.clone(),
+            configured: true,
+            empty_configured: false,
+        };
+
+        let error = create_recording_dir(&root, None).expect_err("file root must fail");
+        assert_eq!(error.kind(), io::ErrorKind::NotADirectory);
+        std::fs::remove_file(path).expect("remove test path");
     }
 }

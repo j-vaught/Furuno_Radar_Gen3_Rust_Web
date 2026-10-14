@@ -970,14 +970,15 @@ pub fn generate_pattern(
 
 // --- Network interface detection ---
 
-/// Represents a local network interface with IPv4 address and broadcast.
+/// Represents a local network interface with IPv4 address, netmask, and broadcast.
 pub struct NetInterface {
     pub name: String,
     pub ip: Ipv4Addr,
+    pub netmask: Ipv4Addr,
     pub broadcast: Ipv4Addr,
 }
 
-/// Detect all IPv4 network interfaces with broadcast addresses.
+/// Detect all non-loopback IPv4 addresses with their netmasks and broadcasts.
 /// Uses the `if-addrs` crate for cross-platform support (Linux, macOS, Windows).
 pub fn detect_interfaces() -> Vec<NetInterface> {
     let addrs = match if_addrs::get_if_addrs() {
@@ -996,15 +997,24 @@ pub fn detect_interfaces() -> Vec<NetInterface> {
             _ => continue,
         };
 
-        // Broadcast — use provided or fall back to 255.255.255.255
+        let netmask = match iface.addr {
+            if_addrs::IfAddr::V4(ref v4) => v4.netmask,
+            _ => continue,
+        };
+
+        // Some interfaces do not report a broadcast address. Derive it from
+        // the actual netmask rather than treating the address as a /0 network.
         let broadcast = match iface.addr {
-            if_addrs::IfAddr::V4(ref v4) => v4.broadcast.unwrap_or(Ipv4Addr::BROADCAST),
-            _ => Ipv4Addr::BROADCAST,
+            if_addrs::IfAddr::V4(ref v4) => v4.broadcast.unwrap_or_else(|| {
+                Ipv4Addr::from(u32::from(ip) | !u32::from(netmask))
+            }),
+            _ => continue,
         };
 
         interfaces.push(NetInterface {
             name: iface.name.clone(),
             ip,
+            netmask,
             broadcast,
         });
     }
@@ -1016,18 +1026,24 @@ pub fn detect_interfaces() -> Vec<NetInterface> {
 /// Tries each network interface's broadcast address.
 /// Returns (radar_ip, host_ip) if found.
 pub fn discover_radar(timeout_secs: u64) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    discover_radar_on_interface(timeout_secs, None)
+}
+
+/// Discover a radar, optionally restricting probes to one named interface.
+/// Each probe socket is bound to the interface IPv4 address so the operating
+/// system cannot silently select a different default route.
+pub fn discover_radar_on_interface(
+    timeout_secs: u64,
+    interface_name: Option<&str>,
+) -> Option<(Ipv4Addr, Ipv4Addr)> {
     use std::net::{SocketAddr, UdpSocket};
     use std::time::{Duration, Instant};
 
-    let interfaces = detect_interfaces();
+    let interfaces = selected_interfaces(interface_name)?;
     if interfaces.is_empty() {
         eprintln!("No network interfaces found for discovery");
         return None;
     }
-
-    let sock = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0))).ok()?;
-    sock.set_broadcast(true).ok()?;
-    sock.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
 
     println!("Scanning for radar on {} interface(s)...", interfaces.len());
 
@@ -1042,43 +1058,55 @@ pub fn discover_radar(timeout_secs: u64) -> Option<(Ipv4Addr, Ipv4Addr)> {
         attempt += 1;
 
         for iface in &interfaces {
+            let sock = match UdpSocket::bind(SocketAddr::from((iface.ip, 0))) {
+                Ok(sock) => sock,
+                Err(e) => {
+                    eprintln!("  {} — cannot bind {}: {e}", iface.name, iface.ip);
+                    continue;
+                }
+            };
+            if let Err(e) = sock.set_broadcast(true) {
+                eprintln!("  {} — cannot enable broadcast: {e}", iface.name);
+                continue;
+            }
+            if let Err(e) = sock.set_read_timeout(Some(Duration::from_millis(500))) {
+                eprintln!("  {} — cannot set receive timeout: {e}", iface.name);
+                continue;
+            }
+
             let dest = SocketAddr::from((iface.broadcast, FURUNO_BEACON_PORT));
-            let _ = sock.send_to(&BEACON_ANNOUNCE, dest);
-            let _ = sock.send_to(&BEACON_REQUEST, dest);
-        }
+            if sock.send_to(&BEACON_ANNOUNCE, dest).is_err()
+                || sock.send_to(&BEACON_REQUEST, dest).is_err()
+            {
+                eprintln!("  {} — broadcast probe failed", iface.name);
+                continue;
+            }
 
-        // Also try the known Furuno subnet broadcast
-        let furuno_dest = SocketAddr::from((FURUNO_BEACON_BROADCAST, FURUNO_BEACON_PORT));
-        let _ = sock.send_to(&BEACON_ANNOUNCE, furuno_dest);
-        let _ = sock.send_to(&BEACON_REQUEST, furuno_dest);
+            // Also try the known Furuno subnet broadcast from this interface.
+            let furuno_dest = SocketAddr::from((FURUNO_BEACON_BROADCAST, FURUNO_BEACON_PORT));
+            let _ = sock.send_to(&BEACON_ANNOUNCE, furuno_dest);
+            let _ = sock.send_to(&BEACON_REQUEST, furuno_dest);
 
-        // Listen for responses
-        let listen_until = Instant::now() + Duration::from_secs(1);
-        let mut buf = [0u8; 512];
-
-        while Instant::now() < listen_until {
-            match sock.recv_from(&mut buf) {
-                Ok((len, src)) => {
+            let listen_until = Instant::now() + Duration::from_secs(1);
+            let mut buf = [0u8; 512];
+            while Instant::now() < listen_until
+                && start.elapsed() < Duration::from_secs(timeout_secs)
+            {
+                if let Ok((len, src)) = sock.recv_from(&mut buf) {
                     let src_ip: Ipv4Addr = match src.ip() {
                         std::net::IpAddr::V4(ip) => ip,
                         _ => continue,
                     };
 
-                    // Skip our own packets
-                    if interfaces.iter().any(|i| i.ip == src_ip) { continue; }
+                    if src_ip == iface.ip {
+                        continue;
+                    }
 
                     if let Some(info) = parse_beacon_report(&buf[..len], src_ip) {
-                        // Find which interface can reach this radar
-                        let host_ip = interfaces.iter()
-                            .find(|i| same_subnet(i.ip, src_ip, i.broadcast))
-                            .map(|i| i.ip)
-                            .unwrap_or(interfaces[0].ip);
-
-                        println!("Radar found: {} at {} (via host {})", info.name, src_ip, host_ip);
-                        return Some((src_ip, host_ip));
+                        println!("Radar found: {} at {} (via host {})", info.name, src_ip, iface.ip);
+                        return Some((src_ip, iface.ip));
                     }
                 }
-                Err(_) => {}
             }
         }
 
@@ -1091,39 +1119,46 @@ pub fn discover_radar(timeout_secs: u64) -> Option<(Ipv4Addr, Ipv4Addr)> {
 }
 
 /// Check if two IPs are on the same subnet.
-/// Uses the interface IP and broadcast to derive the network mask.
-fn same_subnet(iface_ip: Ipv4Addr, other_ip: Ipv4Addr, broadcast: Ipv4Addr) -> bool {
+/// Uses the interface's actual IPv4 netmask.
+fn same_subnet(iface_ip: Ipv4Addr, other_ip: Ipv4Addr, netmask: Ipv4Addr) -> bool {
     let ip = u32::from(iface_ip);
     let other = u32::from(other_ip);
-    let brd = u32::from(broadcast);
-    // mask = ip ^ broadcast gives host bits, invert for network mask
-    let host_bits = ip ^ brd;
-    let mask = !host_bits;
+    let mask = u32::from(netmask);
     (ip & mask) == (other & mask)
 }
 
 /// Detect the host IP address for a given radar IP by finding the interface
 /// on the same subnet.
 pub fn detect_host_ip(radar_ip: Ipv4Addr) -> Option<Ipv4Addr> {
-    let interfaces = detect_interfaces();
+    detect_host_ip_on_interface(radar_ip, None)
+}
+
+/// Detect a host address on the radar subnet, optionally restricting the
+/// search to one named interface.
+pub fn detect_host_ip_on_interface(
+    radar_ip: Ipv4Addr,
+    interface_name: Option<&str>,
+) -> Option<Ipv4Addr> {
+    let interfaces = selected_interfaces(interface_name)?;
     for iface in &interfaces {
-        if same_subnet(iface.ip, radar_ip, iface.broadcast) {
+        if same_subnet(iface.ip, radar_ip, iface.netmask) {
             return Some(iface.ip);
         }
     }
     None
 }
 
-/// Ensure the host can reach the radar's subnet. If no interface is on the
-/// same subnet as the radar, automatically add a secondary IP alias using
-/// the appropriate platform command (Linux: ip, macOS: ifconfig, Windows: netsh).
-///
-/// Returns the host IP to use for communicating with the radar.
-/// Falls back to fallback_host if auto-configuration fails.
-pub fn ensure_subnet_reachable(radar_ip: Ipv4Addr, fallback_host: Ipv4Addr) -> Ipv4Addr {
+/// Ensure the host can reach the radar's subnet. Alias creation requires an
+/// explicit interface and the opt-in configuration flag.
+pub fn ensure_subnet_reachable(
+    radar_ip: Ipv4Addr,
+    fallback_host: Ipv4Addr,
+    interface_name: Option<&str>,
+    configure_network: bool,
+) -> Result<Ipv4Addr, String> {
     // First check if we already have an interface on the radar's subnet
-    if let Some(hip) = detect_host_ip(radar_ip) {
-        return hip;
+    if let Some(hip) = detect_host_ip_on_interface(radar_ip, interface_name) {
+        return Ok(hip);
     }
 
     // No interface on the radar's subnet — try to add one
@@ -1132,117 +1167,170 @@ pub fn ensure_subnet_reachable(radar_ip: Ipv4Addr, fallback_host: Ipv4Addr) -> I
     let f = fallback_host.octets();
     let alias_ip = Ipv4Addr::new(r[0], r[1], f[2], f[3]);
 
-    // Find a physical ethernet interface to attach to
-    let interfaces = detect_interfaces();
-    let eth_iface = find_ethernet_interface(&interfaces);
-
-    let iface_name = match eth_iface {
-        Some(i) => i.name.clone(),
+    let iface_name = match interface_name {
+        Some(name) => name,
         None => {
-            eprintln!("No network interface found to add alias");
-            print_manual_instructions(alias_ip, "eth0");
-            return fallback_host;
+            return Err(format!(
+                "No interface on the radar subnet. Provide --host-ip, or select an interface with --interface NAME and use --configure-network.\n{}",
+                manual_instructions(alias_ip, None)
+            ));
         }
     };
 
-    // Check if this alias already exists via detect_interfaces (cross-platform)
-    let fresh = detect_interfaces();
-    if fresh.iter().any(|i| i.ip == alias_ip) {
+    let iface = find_interface(iface_name).ok_or_else(|| {
+        format!(
+            "Interface {iface_name:?} has no detected IPv4 address. Check that it is connected and active.\n{}",
+            manual_instructions(alias_ip, Some(iface_name))
+        )
+    })?;
+
+    if same_subnet(iface.ip, radar_ip, iface.netmask) {
+        return Ok(iface.ip);
+    }
+
+    if !configure_network {
+        return Err(format!(
+            "Automatic network configuration is disabled.\n{}",
+            manual_instructions(alias_ip, Some(iface_name))
+        ));
+    }
+
+    if detect_interfaces()
+        .iter()
+        .any(|i| i.name == iface_name && i.ip == alias_ip)
+    {
         println!("Alias {alias_ip} already exists");
-        return alias_ip;
+        return Ok(alias_ip);
     }
 
     println!("No interface on radar subnet — adding {alias_ip} to {iface_name}...");
 
-    let success = add_ip_alias(&iface_name, alias_ip);
-
-    if success {
-        println!("Added {alias_ip} to {iface_name}");
-        alias_ip
-    } else {
-        print_manual_instructions(alias_ip, &iface_name);
-        fallback_host
+    match add_ip_alias(iface_name, alias_ip) {
+        Ok(()) => {
+            if detect_host_ip_on_interface(radar_ip, Some(iface_name)) == Some(alias_ip) {
+                println!("Added {alias_ip} to {iface_name}");
+                Ok(alias_ip)
+            } else {
+                Err(format!(
+                    "The alias command succeeded but {alias_ip} is not visible on {iface_name}.\n{}",
+                    manual_instructions(alias_ip, Some(iface_name))
+                ))
+            }
+        }
+        Err(error) => Err(format!(
+            "Could not configure {iface_name}: {error}\n{}",
+            manual_instructions(alias_ip, Some(iface_name))
+        )),
     }
 }
 
-/// Find a physical ethernet interface, preferring wired adapters.
-fn find_ethernet_interface(interfaces: &[NetInterface]) -> Option<&NetInterface> {
-    // Linux: eth*, end*, enp*, ens*
-    // macOS: en0, en1, etc.
-    // Windows: "Ethernet", "Local Area Connection", etc.
-    interfaces.iter()
-        .find(|i| {
-            let n = i.name.to_lowercase();
-            n.starts_with("eth") || n.starts_with("end") || n.starts_with("enp")
-                || n.starts_with("ens") || n == "en0" || n == "en1"
-                || n.contains("ethernet") || n.contains("local area")
-        })
-        .or_else(|| interfaces.first())
+fn selected_interfaces(interface_name: Option<&str>) -> Option<Vec<NetInterface>> {
+    let interfaces = detect_interfaces();
+    match interface_name {
+        Some(name) => {
+            let selected: Vec<_> = interfaces.into_iter().filter(|i| i.name == name).collect();
+            if selected.is_empty() {
+                eprintln!("Interface {name:?} has no detected IPv4 address");
+                None
+            } else {
+                Some(selected)
+            }
+        }
+        None => Some(interfaces),
+    }
 }
 
-/// Add an IP alias to a network interface. Returns true on success.
+fn find_interface(name: &str) -> Option<NetInterface> {
+    detect_interfaces().into_iter().find(|iface| iface.name == name)
+}
+
+/// Add an IP alias to a network interface.
 #[cfg(target_os = "linux")]
-fn add_ip_alias(iface: &str, ip: Ipv4Addr) -> bool {
+fn add_ip_alias(iface: &str, ip: Ipv4Addr) -> Result<(), String> {
     let result = std::process::Command::new("sudo")
-        .args(["ip", "addr", "add", &format!("{ip}/16"), "dev", iface])
+        .args(["-n", "ip", "addr", "add", &format!("{ip}/16"), "dev", iface])
         .output();
     match result {
-        Ok(out) if out.status.success() => true,
+        Ok(out) if out.status.success() => Ok(()),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("File exists") { true }
-            else { eprintln!("Failed to add alias: {stderr}"); false }
+            if stderr.contains("File exists") { Ok(()) }
+            else { Err(stderr.trim().to_string()) }
         }
-        Err(e) => { eprintln!("Could not run sudo: {e}"); false }
+        Err(e) => Err(e.to_string()),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn add_ip_alias(iface: &str, ip: Ipv4Addr) -> bool {
+fn add_ip_alias(iface: &str, ip: Ipv4Addr) -> Result<(), String> {
     let result = std::process::Command::new("sudo")
-        .args(["ifconfig", iface, "alias", &ip.to_string(), "255.255.0.0"])
+        .args(["-n", "ifconfig", iface, "alias", &ip.to_string(), "255.255.0.0"])
         .output();
     match result {
-        Ok(out) if out.status.success() => true,
+        Ok(out) if out.status.success() => Ok(()),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            eprintln!("Failed to add alias: {stderr}");
-            false
+            Err(stderr.trim().to_string())
         }
-        Err(e) => { eprintln!("Could not run sudo: {e}"); false }
+        Err(e) => Err(e.to_string()),
     }
 }
 
 #[cfg(target_os = "windows")]
-fn add_ip_alias(iface: &str, ip: Ipv4Addr) -> bool {
+fn add_ip_alias(iface: &str, ip: Ipv4Addr) -> Result<(), String> {
     let result = std::process::Command::new("netsh")
         .args(["interface", "ip", "add", "address", iface, &ip.to_string(), "255.255.0.0"])
         .output();
     match result {
-        Ok(out) if out.status.success() => true,
+        Ok(out) if out.status.success() => Ok(()),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            eprintln!("Failed to add alias: {stderr}");
-            false
+            Err(stderr.trim().to_string())
         }
-        Err(e) => { eprintln!("Could not run netsh: {e}"); false }
+        Err(e) => Err(e.to_string()),
     }
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn add_ip_alias(_iface: &str, _ip: Ipv4Addr) -> bool {
-    eprintln!("Auto-alias not supported on this platform");
-    false
+fn add_ip_alias(_iface: &str, _ip: Ipv4Addr) -> Result<(), String> {
+    Err("auto-alias is not supported on this platform".into())
 }
 
-/// Print platform-specific manual instructions for adding the alias.
-fn print_manual_instructions(ip: Ipv4Addr, iface: &str) {
-    eprintln!("Please manually add {ip}/16 to your network interface:");
+/// Return platform-specific manual instructions for adding the alias.
+fn manual_instructions(ip: Ipv4Addr, iface: Option<&str>) -> String {
+    let iface = iface.unwrap_or("<interface>");
+    let mut instructions = format!("Add {ip}/16 to {iface} manually.");
     if cfg!(target_os = "linux") {
-        eprintln!("  sudo ip addr add {ip}/16 dev {iface}");
+        instructions.push_str(&format!("\n  sudo ip addr add {ip}/16 dev {iface}"));
     } else if cfg!(target_os = "macos") {
-        eprintln!("  sudo ifconfig {iface} alias {ip} 255.255.0.0");
+        instructions.push_str(&format!("\n  sudo ifconfig {iface} alias {ip} 255.255.0.0"));
     } else if cfg!(target_os = "windows") {
-        eprintln!("  netsh interface ip add address \"{iface}\" {ip} 255.255.0.0");
+        instructions.push_str(&format!("\n  netsh interface ip add address \"{iface}\" {ip} 255.255.0.0"));
+    }
+    instructions
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    #[test]
+    fn subnet_matching_uses_the_netmask() {
+        let iface = Ipv4Addr::new(192, 168, 10, 12);
+        let same = Ipv4Addr::new(192, 168, 10, 240);
+        let other = Ipv4Addr::new(192, 168, 11, 1);
+        let mask = Ipv4Addr::new(255, 255, 255, 0);
+
+        assert!(same_subnet(iface, same, mask));
+        assert!(!same_subnet(iface, other, mask));
+    }
+
+    #[test]
+    fn missing_broadcast_is_derived_from_the_netmask() {
+        let ip = Ipv4Addr::new(172, 31, 1, 100);
+        let mask = Ipv4Addr::new(255, 255, 0, 0);
+        let broadcast = Ipv4Addr::from(u32::from(ip) | !u32::from(mask));
+
+        assert_eq!(broadcast, Ipv4Addr::new(172, 31, 255, 255));
     }
 }

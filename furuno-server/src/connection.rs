@@ -90,8 +90,7 @@ impl RadarConnection {
         let addr = SocketAddr::from((self.radar_ip, protocol::FURUNO_BEACON_PORT));
         println!("Connecting to {addr} for auth...");
 
-        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-            .map_err(|e| RadarError::ConnectionFailed(format!("{e}")))?;
+        let mut stream = connect_from_host(self.host_ip, addr, Duration::from_secs(5))?;
 
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
 
@@ -128,8 +127,7 @@ impl RadarConnection {
         let addr = SocketAddr::from((self.radar_ip, protocol::FURUNO_CONTROL_PORT));
         println!("Connecting control channel to {addr}...");
 
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-            .map_err(|e| RadarError::ConnectionFailed(format!("{e}")))?;
+        let stream = connect_from_host(self.host_ip, addr, Duration::from_secs(5))?;
 
         stream.set_read_timeout(Some(Duration::from_millis(500)))?;
         stream.set_nodelay(true)?;
@@ -220,17 +218,8 @@ impl RadarConnection {
         }
 
         println!("Sending TX ON...");
-        self.send_command("$S69,2,0,0,0,0,0\r\n")?;
-        self.send_command("$S85,0\r\n")?;
-        self.send_command("$S86,0\r\n")?;
-        self.send_command("$S87,0\r\n")?;
-        let responses = self.read_responses(Duration::from_secs(3));
-        for resp in &responses {
-            if let RadarResponse::RegisterValue { id, values } = resp {
-                println!("  <- $N{id},{}", values.join(","));
-            }
-        }
-        println!("TX ON sent.");
+        self.confirm_tx_command(2)?;
+        println!("TX ON acknowledged.");
         self.state = ConnectionState::Transmitting;
         Ok(())
     }
@@ -244,19 +233,21 @@ impl RadarConnection {
         }
 
         println!("Sending TX OFF...");
-        self.send_command("$S69,1,0,0,0,0,0\r\n")?;
-        self.send_command("$S85,0\r\n")?;
-        self.send_command("$S86,0\r\n")?;
-        self.send_command("$S87,0\r\n")?;
-        let responses = self.read_responses(Duration::from_secs(3));
-        for resp in &responses {
-            if let RadarResponse::RegisterValue { id, values } = resp {
-                println!("  <- $N{id},{}", values.join(","));
-            }
-        }
-        println!("TX OFF sent.");
+        self.confirm_tx_command(1)?;
+        println!("TX OFF acknowledged.");
         self.state = ConnectionState::Initialized;
         Ok(())
+    }
+
+    fn confirm_tx_command(&mut self, desired: u16) -> Result<(), RadarError> {
+        let command = protocol::cmd_tx_state(desired);
+        let (acknowledged, line) = self.send_and_read_ack(
+            &command, "$N69,", Duration::from_secs(3),
+        )?;
+        if !acknowledged {
+            return Err(RadarError::Timeout);
+        }
+        validate_tx_ack(&line, desired)
     }
 
     pub fn connect_full(&mut self) -> Result<(), RadarError> {
@@ -438,43 +429,111 @@ fn parse_response_line(line: &str) -> RadarResponse {
 
 // --- Echo socket helper ---
 
+fn validate_tx_ack(line: &str, desired: u16) -> Result<(), RadarError> {
+    let mut fields = line.trim().split(',');
+    let register = fields.next();
+    let observed = fields.next().and_then(|value| value.trim().parse::<u16>().ok());
+    if register != Some("$N69") || observed != Some(desired) {
+        return Err(RadarError::ProtocolError(format!(
+            "TX state {desired} was not confirmed by radar response {line:?}"
+        )));
+    }
+    Ok(())
+}
+
 pub fn create_echo_socket(host_ip: Ipv4Addr) -> UdpSocket {
+    try_create_echo_socket(host_ip).expect("Failed to configure echo socket")
+}
+
+fn connect_from_host(
+    host_ip: Ipv4Addr,
+    destination: SocketAddr,
+    timeout: Duration,
+) -> Result<TcpStream, RadarError> {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    socket.bind(&SocketAddr::from((host_ip, 0)).into()).map_err(|e| {
+        RadarError::ConnectionFailed(format!("Cannot bind host address {host_ip}: {e}"))
+    })?;
+    socket.connect_timeout(&destination.into(), timeout).map_err(|e| {
+        RadarError::ConnectionFailed(format!("Cannot reach {destination} from {host_ip}: {e}"))
+    })?;
+    Ok(socket.into())
+}
+
+pub fn try_create_echo_socket(host_ip: Ipv4Addr) -> Result<UdpSocket, RadarError> {
     let sock = socket2::Socket::new(
         socket2::Domain::IPV4,
         socket2::Type::DGRAM,
         Some(socket2::Protocol::UDP),
-    )
-    .expect("Failed to create echo socket");
+    )?;
 
-    sock.set_reuse_address(true).unwrap();
+    sock.set_reuse_address(true)?;
     unsafe {
         let optval: i32 = 1;
-        libc::setsockopt(
+        let result = libc::setsockopt(
             sock.as_raw_fd(),
             libc::SOL_SOCKET,
             libc::SO_REUSEPORT,
             &optval as *const _ as *const libc::c_void,
             std::mem::size_of::<i32>() as u32,
         );
+        if result != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
     }
 
-    let bind_result = sock.bind(
+    sock.bind(
         &SocketAddr::from((Ipv4Addr::UNSPECIFIED, protocol::FURUNO_DATA_PORT)).into(),
-    );
-    if bind_result.is_err() {
-        sock.bind(
-            &SocketAddr::from((protocol::FURUNO_MULTICAST, protocol::FURUNO_DATA_PORT)).into(),
-        )
-        .expect("Failed to bind echo socket");
-    }
+    )?;
 
     let echo_socket: UdpSocket = sock.into();
     echo_socket
         .join_multicast_v4(&protocol::FURUNO_MULTICAST, &host_ip)
-        .expect("Failed to join multicast group");
+        .map_err(|e| RadarError::ConnectionFailed(format!(
+            "Cannot join radar multicast on host address {host_ip}: {e}"
+        )))?;
     echo_socket
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .unwrap();
+        .set_read_timeout(Some(Duration::from_millis(500)))?;
 
-    echo_socket
+    Ok(echo_socket)
+}
+
+#[cfg(test)]
+mod socket_tests {
+    use super::*;
+
+    #[test]
+    fn control_socket_uses_requested_local_address() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let stream = connect_from_host(
+            Ipv4Addr::LOCALHOST,
+            listener.local_addr().unwrap(),
+            Duration::from_secs(1),
+        ).unwrap();
+        assert_eq!(stream.local_addr().unwrap().ip(), Ipv4Addr::LOCALHOST);
+    }
+
+    #[test]
+    fn missing_local_address_fails_before_connection() {
+        let result = connect_from_host(
+            Ipv4Addr::new(192, 0, 2, 254),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            Duration::from_secs(1),
+        );
+        assert!(matches!(result, Err(RadarError::ConnectionFailed(message))
+            if message.contains("Cannot bind host address")));
+    }
+
+    #[test]
+    fn tx_ack_requires_the_requested_device_state() {
+        assert!(validate_tx_ack("$N69,1,0,0,0,0,0", 1).is_ok());
+        assert!(validate_tx_ack("$N69,2,0,0,0,0,0", 2).is_ok());
+        assert!(validate_tx_ack("$N69,1,0,0,0,0,0", 2).is_err());
+        assert!(validate_tx_ack("$N69,", 1).is_err());
+        assert!(validate_tx_ack("$N63,1,0,0,80,0", 1).is_err());
+    }
 }
