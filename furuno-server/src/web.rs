@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -230,6 +231,76 @@ struct RecordingRoot {
     empty_configured: bool,
 }
 
+struct RotationWriteJob {
+    spokes: Vec<Spoke>,
+    settings: CurrentSettings,
+    readback: SettingsReadback,
+    boundary: RecordingBoundary,
+    recording_dir: String,
+    generation: u64,
+    persist: bool,
+}
+
+struct RotationWriter {
+    sender: SyncSender<RotationWriteJob>,
+    pending: Mutex<usize>,
+    drained: Condvar,
+}
+
+impl RotationWriter {
+    fn new(sender: SyncSender<RotationWriteJob>) -> Self {
+        Self {
+            sender,
+            pending: Mutex::new(0),
+            drained: Condvar::new(),
+        }
+    }
+
+    fn try_enqueue(&self, job: RotationWriteJob) -> Result<(), String> {
+        let mut pending = self
+            .pending
+            .lock()
+            .map_err(|_| "rotation writer pending lock poisoned".to_string())?;
+        *pending += 1;
+        drop(pending);
+
+        match self.sender.try_send(job) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => {
+                self.complete();
+                Err("rotation output queue is full; recording stopped before this rotation could be persisted".into())
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.complete();
+                Err("rotation output writer is unavailable; recording stopped before this rotation could be persisted".into())
+            }
+        }
+    }
+
+    fn complete(&self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            *pending = pending.saturating_sub(1);
+            if *pending == 0 {
+                self.drained.notify_all();
+            }
+        }
+    }
+
+    fn wait_for_drain(&self, timeout: Duration) -> bool {
+        let pending = match self.pending.lock() {
+            Ok(pending) => pending,
+            Err(_) => return false,
+        };
+        let result = self
+            .drained
+            .wait_timeout_while(pending, timeout, |pending| *pending != 0);
+        match result {
+            Ok((pending, _)) => *pending == 0,
+            Err(_) => false,
+        }
+    }
+}
+
 pub struct AppState {
     conn: Mutex<RadarConnection>,
     latest_png: RwLock<Vec<u8>>,
@@ -249,9 +320,11 @@ pub struct AppState {
     host_ip: Ipv4Addr,
     settings: RwLock<CurrentSettings>,
     settings_readback: RwLock<SettingsReadback>,
+    recording_snapshot_lock: Mutex<()>,
     readback_generation: AtomicU64,
     readback_last_refresh: Mutex<Instant>,
     recording_boundary: RwLock<RecordingBoundary>,
+    rotation_writer: Arc<RotationWriter>,
     start_time: Instant,
 }
 
@@ -281,6 +354,13 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         recording_root.path.display()
     );
 
+    // A decoded rotation is several megabytes. Sixteen queued rotations cover
+    // the observed ~25 s native output stall at 24 rpm while keeping memory
+    // bounded to the expected few tens of megabytes. Saturation remains a
+    // recorded failure that stops recording rather than silently dropping data.
+    let (rotation_sender, rotation_receiver) = mpsc::sync_channel(ROTATION_WRITER_CAPACITY);
+    let rotation_writer = Arc::new(RotationWriter::new(rotation_sender));
+
     let state = Arc::new(AppState {
         conn: Mutex::new(conn),
         latest_png: RwLock::new(Vec::new()),
@@ -300,9 +380,11 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
         host_ip,
         settings: RwLock::new(CurrentSettings::default()),
         settings_readback: RwLock::new(SettingsReadback::empty(radar_ip, host_ip)),
+        recording_snapshot_lock: Mutex::new(()),
         readback_generation: AtomicU64::new(0),
         readback_last_refresh: Mutex::new(Instant::now()),
         recording_boundary: RwLock::new(RecordingBoundary::default()),
+        rotation_writer: rotation_writer.clone(),
         start_time: Instant::now(),
     });
 
@@ -314,6 +396,10 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
 
     let readback_state = state.clone();
     thread::spawn(move || settings_readback_worker(readback_state));
+
+    let writer_state = state.clone();
+    let writer_handle = rotation_writer.clone();
+    thread::spawn(move || rotation_writer_loop(writer_state, rotation_receiver, writer_handle));
 
     // Start echo listener thread
     let echo_state = state.clone();
@@ -371,6 +457,7 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
 
 const SETTINGS_READBACK_TTL: Duration = Duration::from_secs(5);
 const SETTINGS_READBACK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+const ROTATION_WRITER_CAPACITY: usize = 16;
 
 fn readback_query_age_exceeded(readback: &SettingsReadback) -> bool {
     let now = std::time::SystemTime::now()
@@ -412,6 +499,113 @@ fn settings_readback_worker(state: Arc<AppState>) {
             }
         }
     }
+}
+
+fn rotation_writer_loop(
+    state: Arc<AppState>,
+    receiver: Receiver<RotationWriteJob>,
+    writer: Arc<RotationWriter>,
+) {
+    while let Ok(job) = receiver.recv() {
+        let generation = job.generation;
+        if let Err(error) = write_recording_rotation_job(&state, job) {
+            record_setting_change(
+                &state,
+                "rotation_output_failed",
+                serde_json::json!({
+                    "generation": generation,
+                    "error": error.to_string(),
+                }),
+            );
+            disable_recording_on_error(&state, "rotation output", &error);
+        }
+        writer.complete();
+    }
+}
+
+fn readback_valid_now(readback: &SettingsReadback) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    readback.verified
+        && readback
+            .valid_until
+            .as_deref()
+            .and_then(|value| value.strip_prefix("unix_ms:"))
+            .and_then(|value| value.parse::<u128>().ok())
+            .is_some_and(|valid_until| now <= valid_until)
+}
+
+fn rotation_capture_error(readback: &SettingsReadback, generation: u64, reason: &str) -> String {
+    let failures = readback
+        .fields
+        .iter()
+        .filter(|(_, field)| !field.verified)
+        .map(|(name, field)| format!("{name}: {}", field.error.as_deref().unwrap_or("unverified")))
+        .collect::<Vec<_>>();
+    format!(
+        "rotation capture rejected: {reason}; expected_generation={generation}; readback_generation={}; verified={}; captured_at={}; valid_until={}; source={}; failures=[{}]",
+        readback.transition_id,
+        readback.verified,
+        readback.captured_at,
+        readback.valid_until.as_deref().unwrap_or("none"),
+        readback.source,
+        failures.join(" | "),
+    )
+}
+
+fn capture_rotation_write_job(
+    state: &AppState,
+    spokes: Vec<Spoke>,
+    generation: u64,
+    persist: bool,
+) -> Result<RotationWriteJob, String> {
+    let _snapshot_guard = state
+        .recording_snapshot_lock
+        .lock()
+        .map_err(|_| "recording snapshot lock poisoned".to_string())?;
+    let settings = state
+        .settings
+        .read()
+        .map_err(|_| "settings lock poisoned".to_string())?
+        .clone();
+    let readback = state
+        .settings_readback
+        .read()
+        .map_err(|_| "settings readback lock poisoned".to_string())?
+        .clone();
+    if persist && !readback.verified {
+        return Err(rotation_capture_error(&readback, generation, "settings readback is unverified"));
+    }
+    if persist && readback.transition_id != generation {
+        return Err(rotation_capture_error(&readback, generation, "settings generation changed"));
+    }
+    if persist && !readback_valid_now(&readback) {
+        return Err(rotation_capture_error(&readback, generation, "settings readback validity interval expired"));
+    }
+    let recording_dir = state
+        .record_dir
+        .read()
+        .map_err(|_| "recording directory lock poisoned".to_string())?
+        .clone();
+    if persist && recording_dir.is_empty() {
+        return Err("rotation capture rejected: recording directory is empty".into());
+    }
+    let boundary = state
+        .recording_boundary
+        .read()
+        .map_err(|_| "recording boundary lock poisoned".to_string())?
+        .clone();
+    Ok(RotationWriteJob {
+        spokes,
+        settings,
+        readback,
+        boundary,
+        recording_dir,
+        generation,
+        persist,
+    })
 }
 
 // --- Echo listener thread ---
@@ -463,7 +657,14 @@ fn echo_listener(state: Arc<AppState>) {
         }
 
         if !state.tx_active.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(100));
+            // Drain stale multicast packets while in standby. Leaving them
+            // queued lets the first post-TX packet reseed a partial rotation.
+            if echo_socket.recv_from(&mut buf).is_ok() {
+                spokes.clear();
+                prev_spoke_data.clear();
+                prev_az = None;
+                rotation_generation = None;
+            }
             continue;
         }
 
@@ -485,18 +686,48 @@ fn echo_listener(state: Arc<AppState>) {
                                 discard_recording_boundary_rotation = false;
                             }
                             if complete_generation == current_generation {
-                                let pixels = render::render_ppi(&spokes);
-                                let png_bytes = render::encode_png_bytes(&pixels, PPI_SIZE, PPI_SIZE);
-                                if let Ok(mut png) = state.latest_png.write() {
-                                    *png = png_bytes;
-                                }
-
-                                // Save CSV + PNG only when the whole rotation
-                                // belongs to one confirmed settings transition
-                                // and starts after the recording boundary.
-                                if !crosses_recording_boundary && state.recording.load(Ordering::Relaxed) {
-                                    if let Err(e) = save_recording_rotation(&state, &spokes, &pixels, complete_generation) {
-                                        disable_recording_on_error(&state, "rotation output", e);
+                                let persist = !crosses_recording_boundary
+                                    && state.recording.load(Ordering::Relaxed);
+                                let spokes_for_writer = std::mem::take(&mut spokes);
+                                match capture_rotation_write_job(
+                                    &state,
+                                    spokes_for_writer,
+                                    complete_generation,
+                                    persist,
+                                ) {
+                                    Ok(job) => {
+                                        let spoke_count = job.spokes.len();
+                                        if let Err(error) = state.rotation_writer.try_enqueue(job) {
+                                            record_setting_change(
+                                                &state,
+                                                "rotation_output_queue_failed",
+                                                serde_json::json!({
+                                                    "generation": complete_generation,
+                                                    "spokes": spoke_count,
+                                                    "error": error,
+                                                }),
+                                            );
+                                            if persist {
+                                                disable_recording_on_error(&state, "rotation output queue", &error);
+                                            } else {
+                                                eprintln!("Rotation render queue failed: {error}");
+                                            }
+                                        }
+                                    }
+                                    Err(error) => {
+                                        record_setting_change(
+                                            &state,
+                                            "rotation_capture_rejected",
+                                            serde_json::json!({
+                                                "generation": complete_generation,
+                                                "error": error,
+                                            }),
+                                        );
+                                        if persist {
+                                            disable_recording_on_error(&state, "rotation capture", &error);
+                                        } else {
+                                            eprintln!("Rotation capture rejected: {error}");
+                                        }
                                     }
                                 }
                             } else if state.recording.load(Ordering::Relaxed) {
@@ -834,6 +1065,10 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
         .filter(|(_, field)| !field.verified)
         .map(|(name, field)| format!("{name}: {}", field.error.as_deref().unwrap_or("unverified")))
         .collect::<Vec<_>>();
+    let _snapshot_guard = state
+        .recording_snapshot_lock
+        .lock()
+        .map_err(|_| "recording snapshot lock poisoned".to_string())?;
     *state.settings.write().map_err(|_| "settings lock poisoned".to_string())? = settings;
     *state.settings_readback.write().map_err(|_| "readback lock poisoned".to_string())? = readback;
     if let Ok(mut refreshed) = state.readback_last_refresh.lock() {
@@ -2003,14 +2238,19 @@ async fn handle_toggle_recording(
             format!("Recording started. Saving to {dir}/")
         }
         "off" | "stop" => {
-            if state.recording.load(Ordering::Relaxed) && state.connected.load(Ordering::Relaxed) {
+            let was_recording = state.recording.swap(false, Ordering::Relaxed);
+            let drained = state.rotation_writer.wait_for_drain(Duration::from_secs(30));
+            if was_recording && state.connected.load(Ordering::Relaxed) {
                 let _ = refresh_settings_from_radar(&state, "recording_stop");
                 finish_recording_boundary(&state);
                 let _ = persist_recording_settings(&state);
             }
-            state.recording.store(false, Ordering::Relaxed);
             let dir = state.record_dir.read().map(|d| d.clone()).unwrap_or_default();
-            format!("Recording stopped. Files in {dir}/")
+            if drained {
+                format!("Recording stopped. Files in {dir}/")
+            } else {
+                format!("Recording stopped, but rotation output drain is incomplete. Files in {dir}/ may still be receiving queued output.")
+            }
         }
         _ => "Unknown mode (use start/stop)".into(),
     }
@@ -2350,18 +2590,21 @@ fn disable_recording_on_error<E: std::fmt::Display>(state: &AppState, context: &
     state.recording.store(false, Ordering::Relaxed);
 }
 
-fn save_recording_rotation(
+fn write_recording_rotation_job(
     state: &AppState,
-    spokes: &[Spoke],
-    pixels: &[u8],
-    generation: u64,
+    job: RotationWriteJob,
 ) -> Result<(), io::Error> {
+    let pixels = render::render_ppi(&job.spokes);
+    let png_bytes = render::encode_png_bytes(&pixels, PPI_SIZE, PPI_SIZE);
+    if let Ok(mut png) = state.latest_png.write() {
+        *png = png_bytes.clone();
+    }
+    if !job.persist {
+        return Ok(());
+    }
+
     validate_recording_root(&state.recording_root)?;
-    let dir = state
-        .record_dir
-        .read()
-        .map_err(|_| io::Error::other("recording directory lock poisoned"))?
-        .clone();
+    let dir = job.recording_dir;
     if dir.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -2373,40 +2616,13 @@ fn save_recording_rotation(
     let png_dir = Path::new(&dir).join("png");
     std::fs::create_dir_all(&csv_dir)?;
     std::fs::create_dir_all(&png_dir)?;
-    let settings = state
-        .settings
-        .read()
-        .map_err(|_| io::Error::other("settings lock poisoned"))?
-        .clone();
-    let settings_readback = state
-        .settings_readback
-        .read()
-        .map_err(|_| io::Error::other("settings readback lock poisoned"))?
-        .clone();
-    let readback_fresh = state
-        .readback_last_refresh
-        .lock()
-        .map(|last| last.elapsed() <= SETTINGS_READBACK_TTL)
-        .unwrap_or(false);
-    if !readback_fresh || !settings_readback.verified || settings_readback.transition_id != generation {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("settings readback is stale, changed, or incomplete for rotation generation {generation}; rotation was not persisted"),
-        ));
-    }
-    let boundary = state
-        .recording_boundary
-        .read()
-        .map_err(|_| io::Error::other("recording boundary lock poisoned"))?
-        .clone();
     write_echo_csv(
         &csv_dir.join(format!("rotation_{ts}.csv")).display().to_string(),
-        spokes,
-        &settings,
-        &settings_readback,
-        &boundary,
+        &job.spokes,
+        &job.settings,
+        &job.readback,
+        &job.boundary,
     )?;
-    let png_bytes = render::encode_png_bytes(pixels, PPI_SIZE, PPI_SIZE);
     std::fs::write(png_dir.join(format!("rotation_{ts}.png")), png_bytes)
 }
 
@@ -3439,6 +3655,44 @@ mod tests {
         let error = create_recording_dir(&root, None).expect_err("file root must fail");
         assert_eq!(error.kind(), io::ErrorKind::NotADirectory);
         std::fs::remove_file(path).expect("remove test path");
+    }
+
+    fn test_rotation_job(persist: bool) -> RotationWriteJob {
+        RotationWriteJob {
+            spokes: Vec::new(),
+            settings: CurrentSettings::default(),
+            readback: SettingsReadback::empty(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST),
+            boundary: RecordingBoundary::default(),
+            recording_dir: String::new(),
+            generation: 1,
+            persist,
+        }
+    }
+
+    #[test]
+    fn rotation_writer_is_bounded_and_reports_saturation() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let writer = RotationWriter::new(sender);
+        writer.try_enqueue(test_rotation_job(false)).expect("first job fits");
+        let error = writer
+            .try_enqueue(test_rotation_job(false))
+            .expect_err("second job must report a full bounded queue");
+        assert!(error.contains("queue is full"));
+        assert_eq!(writer.pending.lock().unwrap().to_owned(), 1);
+
+        let _queued = receiver.try_recv().expect("first job remains queued");
+        writer.complete();
+        assert!(writer.wait_for_drain(Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn readback_validity_interval_is_checked_at_capture() {
+        let mut readback = SettingsReadback::empty(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST);
+        readback.verified = true;
+        readback.valid_until = Some(timestamp_precise_after(Duration::from_secs(1)));
+        assert!(readback_valid_now(&readback));
+        readback.valid_until = Some("unix_ms:0".into());
+        assert!(!readback_valid_now(&readback));
     }
 
     fn synthetic_read(register: &str, values: &[&str]) -> RegisterReadback {
