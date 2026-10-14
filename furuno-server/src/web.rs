@@ -245,6 +245,9 @@ struct RotationWriter {
     sender: SyncSender<RotationWriteJob>,
     pending: Mutex<usize>,
     drained: Condvar,
+    active: AtomicU64,
+    completed: AtomicU64,
+    failed: AtomicU64,
 }
 
 impl RotationWriter {
@@ -253,6 +256,9 @@ impl RotationWriter {
             sender,
             pending: Mutex::new(0),
             drained: Condvar::new(),
+            active: AtomicU64::new(0),
+            completed: AtomicU64::new(0),
+            failed: AtomicU64::new(0),
         }
     }
 
@@ -267,10 +273,12 @@ impl RotationWriter {
         match self.sender.try_send(job) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
+                self.failed.fetch_add(1, Ordering::Relaxed);
                 self.complete();
                 Err("rotation output queue is full; recording stopped before this rotation could be persisted".into())
             }
             Err(TrySendError::Disconnected(_)) => {
+                self.failed.fetch_add(1, Ordering::Relaxed);
                 self.complete();
                 Err("rotation output writer is unavailable; recording stopped before this rotation could be persisted".into())
             }
@@ -298,6 +306,16 @@ impl RotationWriter {
             Ok((pending, _)) => *pending == 0,
             Err(_) => false,
         }
+    }
+
+    fn metrics(&self) -> (usize, u64, u64, u64) {
+        let pending = self.pending.lock().map(|pending| *pending).unwrap_or(usize::MAX);
+        (
+            pending,
+            self.active.load(Ordering::Relaxed),
+            self.completed.load(Ordering::Relaxed),
+            self.failed.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -458,6 +476,7 @@ pub async fn start_server(radar_ip: Ipv4Addr, host_ip: Ipv4Addr, web_dir: &str, 
 const SETTINGS_READBACK_TTL: Duration = Duration::from_secs(5);
 const SETTINGS_READBACK_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const ROTATION_WRITER_CAPACITY: usize = 16;
+const ROTATION_WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(45);
 
 fn readback_query_age_exceeded(readback: &SettingsReadback) -> bool {
     let now = std::time::SystemTime::now()
@@ -507,18 +526,26 @@ fn rotation_writer_loop(
     writer: Arc<RotationWriter>,
 ) {
     while let Ok(job) = receiver.recv() {
+        writer.active.fetch_add(1, Ordering::Relaxed);
         let generation = job.generation;
-        if let Err(error) = write_recording_rotation_job(&state, job) {
-            record_setting_change(
-                &state,
-                "rotation_output_failed",
-                serde_json::json!({
-                    "generation": generation,
-                    "error": error.to_string(),
-                }),
-            );
-            disable_recording_on_error(&state, "rotation output", &error);
+        match write_recording_rotation_job(&state, job) {
+            Ok(()) => {
+                writer.completed.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(error) => {
+                writer.failed.fetch_add(1, Ordering::Relaxed);
+                record_setting_change(
+                    &state,
+                    "rotation_output_failed",
+                    serde_json::json!({
+                        "generation": generation,
+                        "error": error.to_string(),
+                    }),
+                );
+                disable_recording_on_error(&state, "rotation output", &error);
+            }
         }
+        writer.active.fetch_sub(1, Ordering::Relaxed);
         writer.complete();
     }
 }
@@ -1000,6 +1027,13 @@ fn readback_is_newer_or_equal(candidate: &SettingsReadback, current: &SettingsRe
 
 fn invalidate_settings_readback(state: &AppState, source: &str, error: &str) {
     let transition_id = state.readback_generation.fetch_add(1, Ordering::Relaxed) + 1;
+    let _snapshot_guard = match state.recording_snapshot_lock.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            eprintln!("Unable to invalidate settings readback: snapshot lock poisoned");
+            return;
+        }
+    };
     if let Ok(mut readback) = state.settings_readback.write() {
         readback.verified = false;
         readback.transition_id = transition_id;
@@ -2239,7 +2273,33 @@ async fn handle_toggle_recording(
         }
         "off" | "stop" => {
             let was_recording = state.recording.swap(false, Ordering::Relaxed);
-            let drained = state.rotation_writer.wait_for_drain(Duration::from_secs(30));
+            let drain_started = Instant::now();
+            let drain_before = state.rotation_writer.metrics();
+            let writer = state.rotation_writer.clone();
+            let drained = tokio::task::spawn_blocking(move || {
+                writer.wait_for_drain(ROTATION_WRITER_DRAIN_TIMEOUT)
+            })
+            .await
+            .unwrap_or(false);
+            let drain_after = state.rotation_writer.metrics();
+            record_setting_change(
+                &state,
+                "rotation_output_drain",
+                serde_json::json!({
+                    "was_recording": was_recording,
+                    "drained": drained,
+                    "elapsed_ms": drain_started.elapsed().as_millis(),
+                    "pending_before": drain_before.0,
+                    "active_before": drain_before.1,
+                    "completed_before": drain_before.2,
+                    "failed_before": drain_before.3,
+                    "pending_after": drain_after.0,
+                    "active_after": drain_after.1,
+                    "completed_after": drain_after.2,
+                    "failed_after": drain_after.3,
+                    "timeout_seconds": ROTATION_WRITER_DRAIN_TIMEOUT.as_secs(),
+                }),
+            );
             if was_recording && state.connected.load(Ordering::Relaxed) {
                 let _ = refresh_settings_from_radar(&state, "recording_stop");
                 finish_recording_boundary(&state);
@@ -2247,9 +2307,9 @@ async fn handle_toggle_recording(
             }
             let dir = state.record_dir.read().map(|d| d.clone()).unwrap_or_default();
             if drained {
-                format!("Recording stopped. Files in {dir}/")
+                format!("Recording stopped. Files in {dir}/; rotation output drained.")
             } else {
-                format!("Recording stopped, but rotation output drain is incomplete. Files in {dir}/ may still be receiving queued output.")
+                format!("Recording stopped, but rotation output drain is incomplete after {} s. Files in {dir}/ may still be receiving queued output.", ROTATION_WRITER_DRAIN_TIMEOUT.as_secs())
             }
         }
         _ => "Unknown mode (use start/stop)".into(),
@@ -3679,10 +3739,32 @@ mod tests {
             .expect_err("second job must report a full bounded queue");
         assert!(error.contains("queue is full"));
         assert_eq!(writer.pending.lock().unwrap().to_owned(), 1);
+        assert_eq!(writer.metrics().3, 1);
 
         let _queued = receiver.try_recv().expect("first job remains queued");
         writer.complete();
         assert!(writer.wait_for_drain(Duration::from_millis(10)));
+    }
+
+    #[test]
+    fn rotation_writer_drain_waits_for_queued_job_without_locking_history() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let writer = Arc::new(RotationWriter::new(sender));
+        writer.try_enqueue(test_rotation_job(false)).expect("job fits");
+        let worker = writer.clone();
+        let handle = std::thread::spawn(move || {
+            worker.active.fetch_add(1, Ordering::Relaxed);
+            let _job = receiver.recv().expect("queued job");
+            std::thread::sleep(Duration::from_millis(5));
+            worker.completed.fetch_add(1, Ordering::Relaxed);
+            worker.active.fetch_sub(1, Ordering::Relaxed);
+            worker.complete();
+        });
+
+        assert!(writer.wait_for_drain(Duration::from_secs(1)));
+        handle.join().expect("writer worker");
+        let (pending, active, completed, failed) = writer.metrics();
+        assert_eq!((pending, active, completed, failed), (0, 0, 1, 0));
     }
 
     #[test]
