@@ -23,7 +23,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def csv_metrics(path: Path) -> dict[str, Any]:
+def csv_metrics(path: Path, source_path: str | None = None) -> dict[str, Any]:
     rows = 0
     bins: list[int] = []
     angles: list[int] = []
@@ -52,7 +52,8 @@ def csv_metrics(path: Path) -> dict[str, Any]:
         1 for previous, current in zip(angles, angles[1:], strict=False) if current < previous
     )
     return {
-        "csv_path": str(path),
+        "csv_path": source_path or str(path),
+        "analysis_csv_path": str(path),
         "csv_sha256": sha256_file(path),
         "header": header,
         "row_count": rows,
@@ -217,27 +218,90 @@ def write_csv(
         writer.writerows(rows)
 
 
+def parse_path_maps(values: list[str]) -> list[tuple[Path, Path]]:
+    mappings: list[tuple[Path, Path]] = []
+    for value in values:
+        source, separator, destination = value.partition("=")
+        if not separator or not source or not destination:
+            raise SystemExit(f"--path-map must use FROM=TO, got {value!r}")
+        mappings.append((Path(source).expanduser(), Path(destination).expanduser()))
+    return sorted(mappings, key=lambda item: len(str(item[0])), reverse=True)
+
+
+def map_path(path_text: str, mappings: list[tuple[Path, Path]]) -> Path:
+    original = Path(path_text)
+    for source, destination in mappings:
+        try:
+            relative = original.relative_to(source)
+        except ValueError:
+            continue
+        return destination / relative
+    return original
+
+
+def manifest_rotation_paths(
+    manifest: dict[str, Any], path_maps: list[tuple[Path, Path]]
+) -> list[tuple[str, Path, str]]:
+    """Return manifest-declared rotations as (source, local path, phase id)."""
+    declared: list[tuple[str, Path, str]] = []
+    missing_declarations: list[str] = []
+    for phase in manifest.get("phases", []):
+        phase_id = str(phase.get("phase_id", phase.get("id", "unknown")))
+        for source in phase.get("rotation_files", []):
+            source_text = str(source)
+            local = map_path(source_text, path_maps)
+            declared.append((source_text, local, phase_id))
+            if not local.is_file():
+                missing_declarations.append(f"{source_text} -> {local}")
+    if missing_declarations:
+        raise SystemExit(
+            "manifest-declared rotation files are missing; provide --path-map FROM=TO "
+            "for files mirrored to another host:\n" + "\n".join(missing_declarations)
+        )
+    if not declared:
+        raise SystemExit("session manifest declares no rotation files; refusing zero-file analysis")
+    return declared
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--session", type=Path, required=True)
     parser.add_argument("--raw", type=Path)
     parser.add_argument("--rotations", type=Path)
+    parser.add_argument(
+        "--path-map",
+        action="append",
+        default=[],
+        metavar="FROM=TO",
+        help="Map a recorded absolute path prefix to its local mirror; may be repeated",
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument(
         "--geometry-measurements", type=Path, help="Optional measured target detections JSON"
     )
     args = parser.parse_args()
-    args.out.mkdir(parents=True, exist_ok=True)
-    raw_path = args.raw or args.session / "raw_udp_payloads.jsonl"
-    rotation_root = args.rotations or args.session
-    rotations = sorted(rotation_root.glob("**/*.csv"))
-    metrics = [csv_metrics(path) for path in rotations]
-    replay = (
-        replay_raw(raw_path) if raw_path.exists() else {"raw_path": str(raw_path), "missing": True}
-    )
     manifest_path = args.session / "session_manifest.json"
     manifest = (
         json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    )
+    path_maps = parse_path_maps(args.path_map)
+    args.out.mkdir(parents=True, exist_ok=True)
+    raw_path = args.raw or args.session / "raw_udp_payloads.jsonl"
+    if args.rotations:
+        if args.rotations.is_file():
+            rotation_specs = [(str(args.rotations), args.rotations, "unknown")]
+        else:
+            rotation_specs = [
+                (str(path), path, "unknown") for path in sorted(args.rotations.glob("**/*.csv"))
+            ]
+            if not rotation_specs:
+                raise SystemExit(f"--rotations contains no CSV files: {args.rotations}")
+    else:
+        rotation_specs = manifest_rotation_paths(manifest, path_maps)
+    metrics = [csv_metrics(path, source) for source, path, _phase_id in rotation_specs]
+    phase_by_file = {str(path): phase_id for _source, path, phase_id in rotation_specs}
+    replay = (
+        replay_raw(raw_path) if raw_path.exists() else {"raw_path": str(raw_path), "missing": True}
     )
     summary = {
         "schema_version": "paper1-analysis-1.0",
@@ -259,26 +323,23 @@ def main() -> int:
     figure_dir.mkdir(exist_ok=True)
     session_id = manifest.get("session_id", args.session.name)
     experiment_id = manifest.get("experiment_id", "unknown")
-    phase_by_file = {}
-    for phase in manifest.get("phases", []):
-        for item in phase.get("rotation_files", []):
-            phase_by_file[str(item)] = phase.get("phase_id")
     figure_rows = []
     for index, item in enumerate(metrics):
         readback = {}
         for phase in manifest.get("phases", []):
-            if phase.get("phase_id") == phase_by_file.get(item["csv_path"]):
+            if phase.get("phase_id") == phase_by_file.get(item["analysis_csv_path"]):
                 readback = phase.get("device_readback", {}) or {}
         figure_rows.append(
             {
                 "session_id": session_id,
                 "experiment_id": experiment_id,
-                "phase_id": phase_by_file.get(item["csv_path"], "unknown"),
+                "phase_id": phase_by_file.get(item["analysis_csv_path"], "unknown"),
                 "settings_hash": hashlib.sha256(
                     json.dumps(readback, sort_keys=True).encode()
                 ).hexdigest(),
                 "rotation_index": index,
                 "csv_path": item["csv_path"],
+                "analysis_csv_path": item["analysis_csv_path"],
                 "csv_sha256": item["csv_sha256"],
                 "raw_packet_count": replay.get("packet_count", 0),
                 "spoke_count": item["row_count"],

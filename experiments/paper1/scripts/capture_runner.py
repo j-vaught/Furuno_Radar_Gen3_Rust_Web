@@ -121,13 +121,29 @@ def provenance() -> dict[str, Any]:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return {"git_error": repr(exc), "git_commit": None, "git_dirty": None, "files": {}}
+    binary_candidates: list[Path] = []
+    if os.environ.get("FURUNO_SERVER_BINARY"):
+        binary_candidates.append(Path(os.environ["FURUNO_SERVER_BINARY"]))
+    binary_candidates.extend(
+        [
+            source_root / "furuno-server/target/release/furuno-server",
+            source_root / "runtime/macos/furuno-server",
+            source_root / "macos/furuno-server",
+            source_root.parent / "runtime/macos/furuno-server",
+            source_root.parent / "macos/furuno-server",
+        ]
+    )
+    binary_path = next(
+        (path for path in binary_candidates if path.is_file()),
+        source_root / "furuno-server/target/release/furuno-server",
+    )
     file_paths = {
         "runner": Path(__file__).resolve(),
         "analyzer": Path(__file__).with_name("analyze_capture.py").resolve(),
         "plan": source_root / "experiments/paper1/plans/paper1_experiments.json",
         "settings_schema": source_root / "experiments/paper1/schemas/settings_readback.schema.json",
         "figure_schema": source_root / "experiments/paper1/schemas/figure_data_contract.json",
-        "binary": source_root / "furuno-server/target/release/furuno-server",
+        "binary": binary_path,
     }
     hashes: dict[str, Any] = {}
     for name, path in file_paths.items():
@@ -424,6 +440,19 @@ def require_success(status: int, body: str, context: str) -> None:
         raise RuntimeError(f"{context} failed: HTTP {status}; response={body!r}")
 
 
+def parse_system_info(status: int, body: str, context: str) -> dict[str, Any]:
+    """Parse the controller status response without treating JSON ``error:null`` as failure."""
+    if status < 200 or status >= 300:
+        raise RuntimeError(f"{context} failed: HTTP {status}")
+    try:
+        info = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{context} was not JSON") from exc
+    if not isinstance(info, dict):
+        raise RuntimeError(f"{context} JSON root was not an object")
+    return info
+
+
 def inspect_recording_output(record_dir: Path, expected_rotations: int) -> dict[str, Any]:
     """Check recording count and lightweight furuno-web-2 CSV metadata."""
     if not record_dir.is_dir():
@@ -518,7 +547,12 @@ def mounted_and_writable(root: Path) -> tuple[bool, str]:
 
 
 def receive_raw(
-    path: Path, bind: str, multicast: str | None, peer: str | None, fp: Any
+    path: Path,
+    bind: str,
+    multicast: str | None,
+    peer: str | None,
+    fp: Any,
+    receive_interface: str | None = None,
 ) -> tuple[threading.Thread, dict[str, int]]:
     host, port_text = bind.rsplit(":", 1)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
@@ -527,10 +561,11 @@ def receive_raw(
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
     sock.bind((host, int(port_text)))
     if multicast:
+        membership_interface = receive_interface or "0.0.0.0"
         sock.setsockopt(
             socket.IPPROTO_IP,
             socket.IP_ADD_MEMBERSHIP,
-            socket.inet_aton(multicast) + socket.inet_aton("0.0.0.0"),
+            socket.inet_aton(multicast) + socket.inet_aton(membership_interface),
         )
     sock.settimeout(0.25)
     counts = {"packets": 0, "bytes": 0, "peer_mismatch": 0}
@@ -564,7 +599,15 @@ def receive_raw(
 
     thread = threading.Thread(target=loop, name="paper1-raw-receiver", daemon=True)
     thread.start()
-    log_event(fp, "raw_receiver_started", path=str(path), bind=bind, multicast=multicast, peer=peer)
+    log_event(
+        fp,
+        "raw_receiver_started",
+        path=str(path),
+        bind=bind,
+        multicast=multicast,
+        peer=peer,
+        receive_interface=receive_interface,
+    )
     return thread, counts
 
 
@@ -1194,6 +1237,234 @@ def _restore_requirements(setting: str) -> set[str]:
     return {"tx_state", setting}
 
 
+def _restore_grouped_baseline(
+    base: str,
+    target: dict[str, Any],
+    fp: Any,
+    timeout: float,
+    context: str,
+) -> dict[str, Any]:
+    """Restore an ordinary phase baseline with minimal full-register writes."""
+    outcomes: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    try:
+        current_result = readback(base, fp, timeout, fresh_required=True)
+    except BaseException as exc:
+        current_result = {"confirmed": False, "fresh": False, "settings": {}}
+        errors.append({"setting": "<initial_readback>", "error": repr(exc)})
+    current = _verified_settings(current_result)
+    if current_result.get("confirmed") is not True or current_result.get("fresh") is not True:
+        errors.append(
+            {
+                "setting": "<initial_readback>",
+                "error": "fresh confirmed readback unavailable",
+            }
+        )
+
+    def record_skip(setting: str, desired: Any, reason: str) -> None:
+        outcome = {
+            "setting": setting,
+            "requested": desired,
+            "outcome": "unchanged",
+            "reason": reason,
+        }
+        outcomes.append(outcome)
+        log_event(fp, "baseline_restore_skipped", context=context, **outcome)
+
+    def perform(
+        setting: str,
+        desired: Any,
+        command_settings: dict[str, Any],
+        required: set[str],
+    ) -> bool:
+        nonlocal current_result, current
+        if current_result.get("confirmed") is not True or current_result.get("fresh") is not True:
+            errors.append({"setting": setting, "error": "fresh readback unavailable"})
+            return False
+        if current.get("tx_state") != 1:
+            errors.append({"setting": setting, "error": "TX state was not verified as standby"})
+            return False
+        missing = sorted(field for field in required if field not in current)
+        if missing:
+            errors.append(
+                {"setting": setting, "error": "missing verified fields", "missing": missing}
+            )
+            return False
+        try:
+            event = issue_setting(
+                base, setting, desired, command_settings, fp, timeout, f"{context}:{setting}"
+            )
+        except BaseException as exc:
+            errors.append({"setting": setting, "error": repr(exc)})
+            outcomes.append(
+                {
+                    "setting": setting,
+                    "requested": desired,
+                    "outcome": "rejected",
+                    "error": repr(exc),
+                }
+            )
+            return False
+        try:
+            current_result = readback(base, fp, timeout, fresh_required=True)
+        except BaseException as exc:
+            current_result = {"confirmed": False, "fresh": False, "settings": {}}
+            errors.append({"setting": setting, "error": repr(exc)})
+        current = _verified_settings(current_result)
+        rejected = event.get("http_status", 500) < 200 or event.get("http_status", 500) >= 300
+        body = event.get("response", "")
+        if isinstance(body, str):
+            rejected = rejected or any(
+                token in body.lower()
+                for token in ("error", "failed", "rejected", "invalid", "noack", "timeout")
+            )
+        actual = current.get(setting)
+        outcome_name = "supported" if not rejected and actual == desired else "rejected"
+        if current_result.get("confirmed") is not True or current_result.get("fresh") is not True:
+            outcome_name = "verification_failed"
+        outcome = {
+            "setting": setting,
+            "requested": desired,
+            "actual": actual,
+            "outcome": outcome_name,
+            "command": event,
+        }
+        outcomes.append(outcome)
+        if outcome_name != "supported":
+            errors.append({"setting": setting, "error": outcome_name, "actual": actual})
+            return False
+        return True
+
+    if current_result.get("confirmed") is True and current_result.get("fresh") is True:
+        if current.get("tx_state") != 1:
+            errors.append({"setting": "<initial_readback>", "error": "TX state was not standby"})
+        else:
+            # Scalar settings are only sent when the verified value differs.
+            for setting in ("range_index", "pulse_width"):
+                if setting in target and current.get(setting) != target[setting]:
+                    if not perform(
+                        setting, target[setting], target, _restore_requirements(setting)
+                    ):
+                        break
+            gain_manual = target.get("gain_manual_value", target.get("gain_value"))
+            gain_auto_value = target.get("gain_auto_value")
+            if (
+                gain_manual is not None
+                and target.get("gain_auto") is not None
+                and (
+                    current.get("gain_auto") != target.get("gain_auto")
+                    or current.get("gain_manual_value") != gain_manual
+                    or current.get("gain_auto_value") != gain_auto_value
+                )
+            ):
+                gain_settings = dict(target)
+                gain_settings["gain_manual_value"] = gain_manual
+                gain_settings["gain_auto_value"] = gain_auto_value
+                if bool(target["gain_auto"]):
+                    perform("gain_auto", True, gain_settings, {"tx_state", "gain_auto"})
+                elif (
+                    current.get("gain_auto") is False
+                    and current.get("gain_auto_value") != gain_auto_value
+                ):
+                    perform("gain_auto", True, gain_settings, {"tx_state", "gain_auto"})
+                    if current_result.get("confirmed") is True:
+                        perform("gain_auto", False, gain_settings, {"tx_state", "gain_auto"})
+                else:
+                    perform("gain_auto", False, gain_settings, {"tx_state", "gain_auto"})
+            else:
+                record_skip(
+                    "gain_register",
+                    target.get("gain_auto"),
+                    "fresh readback matched all gain fields",
+                )
+
+            for prefix, mode_setting, required in (
+                ("sea_clutter", "sea_clutter_auto", {"tx_state", "sea_clutter_auto"}),
+                ("rain_clutter", "rain_clutter_auto", {"tx_state", "rain_clutter_auto"}),
+            ):
+                fields = (
+                    mode_setting,
+                    prefix,
+                    f"{prefix}_auto_value",
+                    f"{prefix}_mode",
+                )
+                if prefix == "rain_clutter":
+                    fields += ("rain_clutter_ftc_mode",)
+                if all(field not in target for field in fields):
+                    continue
+                if any(
+                    current.get(field) != target.get(field) for field in fields if field in target
+                ):
+                    perform(mode_setting, bool(target.get(mode_setting)), dict(target), required)
+                else:
+                    record_skip(
+                        f"{prefix}_register",
+                        target.get(mode_setting),
+                        "fresh readback matched full register",
+                    )
+
+            if any(
+                current.get(field) != target.get(field)
+                for field in ("antenna_speed", "antenna_hi_rpm")
+                if field in target
+            ):
+                perform(
+                    "antenna_speed",
+                    target.get("antenna_speed"),
+                    dict(target),
+                    {"tx_state", "antenna_speed", "antenna_hi_rpm"},
+                )
+            else:
+                record_skip(
+                    "antenna_register",
+                    target.get("antenna_speed"),
+                    "fresh readback matched full register",
+                )
+
+            for setting in (
+                "near_stc",
+                "middle_stc",
+                "far_stc",
+                "rezboost",
+                "interference_rejection",
+                "noise_reduction",
+                "antenna_height_raw",
+                "bird_mode",
+                "doppler",
+                "main_bang",
+            ):
+                if setting in target and current.get(setting) != target[setting]:
+                    if not perform(setting, target[setting], target, {"tx_state", setting}):
+                        break
+
+    try:
+        final = readback(base, fp, timeout, fresh_required=True)
+    except BaseException as exc:
+        final = {"confirmed": False, "fresh": False, "settings": {}}
+        errors.append({"setting": "<final_readback>", "error": repr(exc)})
+    final_values = _verified_settings(final)
+    matches = {
+        field: (final_values.get(field) == expected)
+        if field in final_values and expected is not None
+        else False
+        for field, expected in target.items()
+        if field in REQUIRED_READBACK_FIELDS and expected is not None
+    }
+    complete = (
+        final.get("confirmed") is True
+        and final.get("fresh") is True
+        and not errors
+        and all(matches.values())
+    )
+    return {
+        "final_readback": final,
+        "restore_matches": matches,
+        "restore_complete": complete,
+        "restore_errors": errors,
+        "restore_outcomes": outcomes,
+    }
+
+
 def restore_verified_baseline(
     base: str,
     baseline: dict[str, Any],
@@ -1211,6 +1482,8 @@ def restore_verified_baseline(
     """
     values = baseline.get("settings", baseline)
     target = dict(values) if isinstance(values, dict) else {}
+    if not pulse_states:
+        return _restore_grouped_baseline(base, target, fp, timeout, context)
     outcomes: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     command_order: list[tuple[str, Any]] = []
@@ -1883,6 +2156,14 @@ def parse_args() -> argparse.Namespace:
         help="JSON baseline captured by settings readback, required with --restore-only",
     )
     parser.add_argument("--receive-bind", default="0.0.0.0:10024")
+    parser.add_argument(
+        "--receive-interface",
+        default=None,
+        help=(
+            "IPv4 address of the radar Ethernet interface for multicast membership; "
+            "defaults to metadata radar.host_ip"
+        ),
+    )
     parser.add_argument("--multicast", default="239.255.0.2")
     parser.add_argument("--peer", default=None)
     parser.add_argument("--timeout-per-phase", type=float, default=90.0)
@@ -1992,6 +2273,10 @@ def main() -> int:
             "transmit_requested": args.transmit,
             "physical_ready": args.physical_ready,
             "dry_run": args.dry_run,
+            "receive_bind": args.receive_bind,
+            "receive_interface": args.receive_interface or metadata.get("radar", {}).get("host_ip"),
+            "multicast": args.multicast,
+            "peer": args.peer,
         },
     }
     if characterization_merge is not None:
@@ -2065,8 +2350,14 @@ def main() -> int:
         receiver_thread: threading.Thread | None = None
         receiver_counts: dict[str, int] = {"packets": 0, "bytes": 0, "peer_mismatch": 0}
         if not is_characterization:
+            receive_interface = args.receive_interface or metadata.get("radar", {}).get("host_ip")
             receiver_thread, receiver_counts = receive_raw(
-                raw_path, args.receive_bind, args.multicast, args.peer, events
+                raw_path,
+                args.receive_bind,
+                args.multicast,
+                args.peer,
+                events,
+                receive_interface,
             )
         try:
             campaign_start = time.monotonic()
@@ -2219,13 +2510,9 @@ def main() -> int:
                     status, body = http_request(
                         args.base_url, "/get_system_info", timeout=args.http_timeout
                     )
-                    require_success(status, body, f"phase {phase['id']} recording status")
-                    try:
-                        recording_info = json.loads(body)
-                    except json.JSONDecodeError as exc:
-                        raise RuntimeError(
-                            f"phase {phase['id']} recording status was not JSON"
-                        ) from exc
+                    recording_info = parse_system_info(
+                        status, body, f"phase {phase['id']} recording status"
+                    )
                     if recording_info.get("recording") is not True:
                         raise RuntimeError(
                             f"phase {phase['id']} recording did not become active: {recording_info}"
@@ -2245,13 +2532,9 @@ def main() -> int:
                         status, body = http_request(
                             args.base_url, "/get_system_info", timeout=args.http_timeout
                         )
-                        require_success(status, body, f"phase {phase['id']} recording status poll")
-                        try:
-                            info = json.loads(body)
-                        except json.JSONDecodeError as exc:
-                            raise RuntimeError(
-                                f"phase {phase['id']} recording status poll was not JSON"
-                            ) from exc
+                        info = parse_system_info(
+                            status, body, f"phase {phase['id']} recording status poll"
+                        )
                         if info.get("recording") is False:
                             raise RuntimeError(
                                 f"phase {phase['id']} recording stopped unexpectedly"
@@ -2332,6 +2615,10 @@ def main() -> int:
                 phase_record["raw_packet_count"] = receiver_counts.get("packets", 0) - phase_record[
                     "raw_receiver_start"
                 ].get("packets", 0)
+                if int(phase_record["raw_packet_count"]) <= 0:
+                    raise RuntimeError(
+                        f"phase {phase['id']} received no raw UDP packets during its capture window"
+                    )
                 manifest["phases"].append(phase_record)
                 manifest.pop("active_phase", None)
             manifest["raw_receiver"] = receiver_counts

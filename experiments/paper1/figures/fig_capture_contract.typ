@@ -19,29 +19,33 @@
       align(center + horizon, block(width: (width - 0.10) * 1cm, label)))
   }
 
-  // Control state timeline.
-  node("standby_a", 1.10, 3.00, 1.45, [Standby])
-  node("readback", 3.35, 3.00, 1.75, [Readback])
-  node("tx_on", 5.90, 3.00, 1.45, [TX on ACK])
-  node("tx_off", 8.45, 3.00, 1.45, [TX off ACK])
-  node("standby_b", 11.00, 3.00, 1.55, [Standby])
-  for (a, b) in (("standby_a", "readback"), ("readback", "tx_on"),
-    ("tx_on", "tx_off"), ("tx_off", "standby_b")) {
+  // Control state timeline. The recording window begins only after the
+  // post-activation readback and settle interval.
+  node("standby_a", 1.00, 3.00, 1.35, [Standby])
+  node("settings", 3.10, 3.00, 1.45, [Settings])
+  node("tx_on", 5.45, 3.00, 1.65, [TX on ACK])
+  node("readback", 7.90, 3.00, 1.65, [Readback])
+  node("record", 10.35, 3.00, 1.45, [Record])
+  node("standby_b", 12.75, 3.00, 1.55, [Standby])
+  line("standby_a.east", "settings.west", stroke: edge, mark: arrow)
+  line("settings.east", "tx_on.west", stroke: (paint: garnet, thickness: 0.85pt), mark: tx-arrow)
+  for (a, b) in (("tx_on", "readback"), ("readback", "record"),
+    ("record", "standby_b")) {
     line(a + ".east", b + ".west", stroke: edge, mark: arrow)
   }
 
   // Independent dataflow branches.
-  node("udp", 5.90, 1.00, 1.35, [UDP])
-  node("raw", 8.15, 1.55, 1.65, [Raw archive])
-  node("decode", 5.90, 0.05, 1.35, [Decode])
-  node("save", 8.50, 0.05, 1.55, [CSV + PNG])
-  node("metadata", 4.25, 2.10, 1.55, [Metadata])
+  node("udp", 10.35, 1.00, 1.35, [UDP])
+  node("raw", 12.30, 1.65, 1.65, [Raw archive])
+  node("decode", 10.35, 0.05, 1.35, [Decode])
+  node("save", 12.30, 0.05, 1.55, [CSV + PNG])
+  node("metadata", 7.90, 1.00, 1.55, [Metadata])
   line("udp.east", "raw.west", stroke: edge, mark: arrow)
   line("udp.south", "decode.north", stroke: edge, mark: arrow)
   line("decode.east", "save.west", stroke: edge, mark: arrow)
-  line("tx_on.south", "udp.north", stroke: (paint: garnet, thickness: 0.85pt), mark: tx-arrow)
+  line("record.south", "udp.north", stroke: edge, mark: arrow)
   line("readback.south", "metadata.north", stroke: edge, mark: arrow)
-  line("metadata.east", (10.20, 2.10), stroke: edge)
-  line((10.20, 2.10), (10.20, 0.80), stroke: edge)
-  line((10.20, 0.80), "save.east", stroke: edge, mark: arrow)
+  line("metadata.south", (7.90, -0.55), stroke: edge)
+  line((7.90, -0.55), (12.30, -0.55), stroke: edge)
+  line((12.30, -0.55), "save.south", stroke: edge, mark: arrow)
 }))

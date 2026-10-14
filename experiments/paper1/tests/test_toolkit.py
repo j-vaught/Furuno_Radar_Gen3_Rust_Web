@@ -19,6 +19,7 @@ from scripts.capture_runner import (
     inspect_recording_output,
     merge_characterization_reports,
     parse_settings_response,
+    parse_system_info,
     readback,
     require_confirmed_readback,
     require_transmitting_readback,
@@ -27,6 +28,19 @@ from scripts.capture_runner import (
 
 
 class ToolkitTests(unittest.TestCase):
+    def test_system_info_json_error_null_is_not_a_failure(self) -> None:
+        info = parse_system_info(
+            200,
+            json.dumps({"recording": True, "connected": True, "error": None}),
+            "recording status",
+        )
+        self.assertTrue(info["recording"])
+        self.assertIsNone(info["error"])
+
+    def test_system_info_rejects_http_failure_without_dumping_payload(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
+            parse_system_info(500, '{"error":null}', "recording status")
+
     def test_recording_output_requires_verified_furuno_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             record_dir = Path(tmp) / "recording"
@@ -469,6 +483,13 @@ class ToolkitTests(unittest.TestCase):
             }
         )
         state = dict(baseline_values)
+        state.update(
+            {
+                "gain_manual_value": 0,
+                "gain_value": 0,
+                "antenna_hi_rpm": False,
+            }
+        )
 
         def fake_readback(_base, _fp, _timeout, fresh_required=False):
             del fresh_required
@@ -481,7 +502,30 @@ class ToolkitTests(unittest.TestCase):
             }
 
         def fake_issue(_base, setting, value, _settings, _fp, _timeout, context):
-            state[setting] = value
+            _path, params = capture_runner.setting_requests(setting, value, state)
+            if setting == "sea_clutter_auto":
+                state["sea_clutter_auto"] = bool(value)
+                state["sea_clutter"] = params["manual"]
+                state["sea_clutter_auto_value"] = params["auto"]
+                state["sea_clutter_mode"] = params["mode"]
+            elif setting == "rain_clutter_auto":
+                state["rain_clutter_auto"] = bool(value)
+                state["rain_clutter"] = params["manual"]
+                state["rain_clutter_auto_value"] = params["auto"]
+                state["rain_clutter_ftc_mode"] = params["ftcMode"]
+                state["rain_clutter_mode"] = params["rainMode"]
+            elif setting == "gain_auto":
+                state["gain_auto"] = bool(value)
+                state["gain_manual_value"] = params["manualValue"]
+                state["gain_auto_value"] = params["autoValue"]
+                state["gain_value"] = (
+                    state["gain_auto_value"] if bool(value) else state["gain_manual_value"]
+                )
+            elif setting == "antenna_speed":
+                state["antenna_speed"] = params["rollSpeed"]
+                state["antenna_hi_rpm"] = bool(params["hiRpm"])
+            else:
+                state[setting] = value
             return {
                 "setting": setting,
                 "requested": value,
@@ -580,6 +624,17 @@ class ToolkitTests(unittest.TestCase):
             }
         )
         state = dict(baseline_values)
+        state.update(
+            {
+                "gain_auto": False,
+                "gain_manual_value": 1,
+                "gain_value": 1,
+                "sea_clutter": 4,
+                "rain_clutter": 4,
+                "antenna_speed": 1,
+                "antenna_hi_rpm": False,
+            }
+        )
         readback_count = 0
         commands: list[tuple[str, Any, dict[str, Any], dict[str, Any]]] = []
 
@@ -601,15 +656,25 @@ class ToolkitTests(unittest.TestCase):
             commands.append((setting, value, dict(settings), params))
             if setting == "gain_auto":
                 state["gain_auto"] = bool(value)
+                state["gain_manual_value"] = params["manualValue"]
+                state["gain_auto_value"] = params["autoValue"]
                 state["gain_value"] = (
                     state["gain_auto_value"] if bool(value) else state["gain_manual_value"]
                 )
-            elif setting in {"gain_value", "gain_auto_value"}:
-                state[setting] = value
-                if setting == "gain_value":
-                    state["gain_manual_value"] = value
-            elif setting == "antenna_hi_rpm":
-                state["antenna_hi_rpm"] = bool(value)
+            elif setting == "sea_clutter_auto":
+                state["sea_clutter_auto"] = bool(value)
+                state["sea_clutter"] = params["manual"]
+                state["sea_clutter_auto_value"] = params["auto"]
+                state["sea_clutter_mode"] = params["mode"]
+            elif setting == "rain_clutter_auto":
+                state["rain_clutter_auto"] = bool(value)
+                state["rain_clutter"] = params["manual"]
+                state["rain_clutter_auto_value"] = params["auto"]
+                state["rain_clutter_ftc_mode"] = params["ftcMode"]
+                state["rain_clutter_mode"] = params["rainMode"]
+            elif setting == "antenna_speed":
+                state["antenna_speed"] = params["rollSpeed"]
+                state["antenna_hi_rpm"] = bool(params["hiRpm"])
             else:
                 state[setting] = value
             return {"http_status": 200, "response": "ok", "setting": setting}
@@ -625,25 +690,30 @@ class ToolkitTests(unittest.TestCase):
                 )
         self.assertTrue(report["restore_complete"])
         self.assertGreaterEqual(readback_count, len(commands) + 1)
-        # Payload values come from the baseline, even after the fake device has
-        # moved through the opposite gain mode during staging.
-        gain_payloads = [
-            payload for setting, _value, payload, _params in commands if setting == "gain_auto"
-        ]
-        self.assertTrue(gain_payloads)
-        self.assertTrue(all(payload["gain_value"] == 80 for payload in gain_payloads))
-        gain_manual_commands = [
-            params for setting, _value, _payload, params in commands if setting == "gain_value"
-        ]
-        self.assertEqual(gain_manual_commands[0]["status"], 0)
-        sea_manual_commands = [
-            params for setting, _value, _payload, params in commands if setting == "sea_clutter"
-        ]
-        rain_manual_commands = [
-            params for setting, _value, _payload, params in commands if setting == "rain_clutter"
-        ]
-        self.assertEqual(sea_manual_commands[0]["status"], 0)
-        self.assertEqual(rain_manual_commands[0]["status"], 0)
+        self.assertEqual(
+            [setting for setting, _value, _payload, _params in commands],
+            ["gain_auto", "sea_clutter_auto", "rain_clutter_auto", "antenna_speed"],
+        )
+        gain_params = commands[0][3]
+        self.assertEqual(gain_params["status"], 1)
+        self.assertEqual(gain_params["manualValue"], 7)
+        self.assertEqual(gain_params["autoValue"], 80)
+        commands.clear()
+        with tempfile.TemporaryDirectory() as second_tmp:
+            with (
+                patch("scripts.capture_runner.readback", fake_readback),
+                patch("scripts.capture_runner.issue_setting", fake_issue),
+            ):
+                with (Path(second_tmp) / "events-second.jsonl").open("w", encoding="utf-8") as fp:
+                    unchanged = restore_verified_baseline(
+                        "mock://controller",
+                        {"settings": baseline_values},
+                        fp,
+                        1.0,
+                        "unchanged-test",
+                    )
+        self.assertTrue(unchanged["restore_complete"])
+        self.assertFalse(commands)
 
     def test_baseline_restore_skips_gain_when_mode_field_is_unverified(self) -> None:
         baseline_values = {field: 0 for field in REQUIRED_READBACK_FIELDS}
@@ -692,9 +762,8 @@ class ToolkitTests(unittest.TestCase):
                 )
         self.assertFalse(report["restore_complete"])
         self.assertNotIn("gain_auto", commands)
-        self.assertTrue(
-            any(item.get("setting") == "gain_auto" for item in report["restore_outcomes"])
-        )
+        self.assertFalse(commands)
+        self.assertTrue(report["restore_errors"])
 
 
 if __name__ == "__main__":

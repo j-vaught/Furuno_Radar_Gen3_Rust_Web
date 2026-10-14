@@ -41,8 +41,11 @@ python3 experiments/paper1/scripts/capture_runner.py \
   --metadata /Volumes/MacApplications/Radar_papers/data/paper1-metadata.json \
   --output-root /Volumes/MacApplications/Radar_papers/data/paper1-experiments \
   --session-id 2026-10-14-fixed-scene-01 \
+  --receive-interface 172.31.1.100 \
   --transmit --physical-ready
 ```
+
+The multicast receiver joins `239.255.0.2:10024` on the radar-facing host address. The runner uses `radar.host_ip` from the metadata file when `--receive-interface` is omitted. Set the option explicitly when the Mac has more than one Ethernet interface.
 
 The one-control indoor response campaign is selected with `--experiment E6_indoor_one_control_response` and requires the completed E5 `session_manifest.json` through `--characterization-report`. When a corrective supplement exists, add it with `--characterization-report-supplement` and optionally write the provenance-preserving merged report with `--merged-characterization-report-out`. The runner filters out rejected or unverified controls using the latest outcome per setting and requested value, records every skipped case with a reason, requests a 30 s recording window and six rotations for each retained condition, and enforces both per-phase and whole-campaign wall-clock deadlines.
 
@@ -137,5 +140,7 @@ python3 experiments/paper1/scripts/analyze_capture.py \
 The smoke capture currently yields 1,024 raw UDP payloads, 10,375 replayed spokes, and three CSV rotation files. The analyzer reports one truncated sweep in the raw fixture and separates spoke-start truncation from payload truncation. It follows the Rust decoder's encoding-2 first-sweep seed rule. These values are integrity evidence for the tool path, not a claim of full-scan completeness or calibrated physical performance.
 
 The analyzer writes `figure_data/control_characterization.csv` and a raw JSON companion from the E5 manifest. It also writes `figure_data/raw_replay_summary.csv` with explicit truncation fields. These numeric files are the data contract for the Typst/CeTZ/Lilaq figure sources.
+
+When analysis runs on a compute server, the analyzer reads the manifest's declared rotation files instead of globbing unrelated CSVs. Map the Mac's recorded absolute path to its server mirror with `--path-map`, for example `--path-map /Volumes/MacApplications/Radar_papers/data=/mnt/12TB_Drive/dspire/atlantis-master/jvaught2/radar-papers-20261012/data`. Missing manifest-declared rotations stop analysis so a partial copy cannot silently produce a zero-file or incomplete result. Each output row retains both the original `csv_path` and the local `analysis_csv_path`.
 
 Major analysis belongs on COMECH-2080 or another compute server. Keep only manifests, hashes, compact summaries, and selected review files on the MacApplications volume. The raw UDP and rotation files remain external-volume data.
