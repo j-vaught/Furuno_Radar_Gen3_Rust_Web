@@ -334,6 +334,10 @@ impl RadarConnection {
         expected_prefix: &str,
         timeout: Duration,
     ) -> Result<(bool, String), RadarError> {
+        // Keep the control TCP session alive before every potentially slow
+        // transaction. This runs while callers hold the connection mutex, so
+        // a readback cannot race a heartbeat write on the same stream.
+        self.send_keepalive()?;
         let ctrl = self.ctrl.as_mut()
             .ok_or(RadarError::ConnectionFailed("no control stream".into()))?;
 
@@ -432,10 +436,12 @@ impl RadarConnection {
 
     pub fn send_keepalive(&mut self) -> Result<(), RadarError> {
         if self.last_keepalive.elapsed() > Duration::from_secs(5) {
-            if let Some(ctrl) = self.ctrl.as_mut() {
-                let _ = ctrl.write_all(protocol::KEEPALIVE);
-                self.last_keepalive = Instant::now();
-            }
+            let ctrl = self
+                .ctrl
+                .as_mut()
+                .ok_or(RadarError::ConnectionFailed("no control stream".into()))?;
+            ctrl.write_all(protocol::KEEPALIVE)?;
+            self.last_keepalive = Instant::now();
         }
         Ok(())
     }
@@ -734,5 +740,60 @@ mod socket_tests {
         assert!(validate_setting_ack("$S68,5,0,4,0,0\r\n", "$N68,5,0,4,0,0").is_ok());
         assert!(validate_setting_ack("$S68,5,0,4,0,0\r\n", "$N68,5,0,3,0,0").is_err());
         assert!(validate_setting_ack("$S89,1,1\r\n", "$N89,1,1").is_ok());
+    }
+
+    #[test]
+    fn keepalive_writes_binary_frame_and_updates_clock_after_success() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut conn = RadarConnection::new(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST);
+        conn.ctrl = Some(TcpStream::connect(address).unwrap());
+        conn.last_keepalive = Instant::now() - Duration::from_secs(6);
+        let before = conn.last_keepalive;
+
+        conn.send_keepalive().expect("keepalive write");
+        let (mut peer, _) = listener.accept().unwrap();
+        let mut frame = [0u8; 8];
+        peer.read_exact(&mut frame).unwrap();
+
+        assert_eq!(frame, protocol::KEEPALIVE);
+        assert!(conn.last_keepalive > before);
+    }
+
+    #[test]
+    fn keepalive_failure_does_not_advance_clock() {
+        let mut conn = RadarConnection::new(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST);
+        conn.last_keepalive = Instant::now() - Duration::from_secs(6);
+        let before = conn.last_keepalive;
+
+        assert!(matches!(conn.send_keepalive(), Err(RadarError::ConnectionFailed(_))));
+        assert_eq!(conn.last_keepalive, before);
+    }
+
+    #[test]
+    fn control_transaction_sends_due_keepalive_before_command() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().unwrap();
+            let mut keepalive = [0u8; 8];
+            peer.read_exact(&mut keepalive).unwrap();
+            assert_eq!(keepalive, protocol::KEEPALIVE);
+
+            let mut command = [0u8; 32];
+            let count = peer.read(&mut command).unwrap();
+            assert_eq!(&command[..count], b"$R62,0,0,0\r\n");
+            peer.write_all(b"$N62,4,0,0\r\n").unwrap();
+        });
+
+        let mut conn = RadarConnection::new(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST);
+        conn.ctrl = Some(TcpStream::connect(address).unwrap());
+        conn.last_keepalive = Instant::now() - Duration::from_secs(6);
+        let result = conn
+            .send_and_read_ack("$R62,0,0,0\r\n", "$N62,", Duration::from_secs(1))
+            .unwrap();
+
+        assert_eq!(result, (true, "$N62,4,0,0".to_string()));
+        server.join().unwrap();
     }
 }

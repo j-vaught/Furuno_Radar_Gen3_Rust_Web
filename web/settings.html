@@ -247,13 +247,13 @@
       </div>
       <div class="grid grid--two">
         <div class="stack" data-gain-mode="manual">
-          <label for="gainManual">Manual gain <span class="info-tip" data-tip="Raw receiver gain value sent to the radar. 0 = minimum sensitivity, 255 = maximum. Higher values show weaker echoes but also more noise.">i</span></label>
-          <input type="number" id="gainManual" value="128" min="0" max="255">
+          <label for="gainManual">Manual gain raw control value <span class="info-tip" data-tip="Raw manual gain control value sent to the radar. Standby characterization accepted values from 0 through 100; this is a control value, not a percentage or ADC bit depth.">i</span></label>
+          <input type="number" id="gainManual" value="64" min="0" max="100">
           <button class="secondary" onclick="setGainManual()">Apply manual</button>
         </div>
         <div class="stack" data-gain-mode="auto">
-          <label for="gainAuto">Auto gain <span class="info-tip" data-tip="Automatic gain value sent to the radar. The accepted numeric range is device-specific; record the command and confirmed readback during characterization.">i</span></label>
-          <input type="number" id="gainAuto" value="30" min="0">
+          <label for="gainAuto">Auto gain raw control value <span class="info-tip" data-tip="Raw automatic gain control value sent to the radar. Standby characterization accepted values from 0 through 100; this is a control value, not a percentage.">i</span></label>
+          <input type="number" id="gainAuto" value="30" min="0" max="100">
           <button class="secondary" onclick="setGainAuto()">Apply auto</button>
         </div>
       </div>

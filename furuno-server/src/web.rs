@@ -433,15 +433,33 @@ fn echo_listener(state: Arc<AppState>) {
     let mut prev_az: Option<u16> = None;
     let mut rotation_generation: Option<u64> = None;
     let mut last_keepalive = Instant::now();
+    let mut recording_was_active = false;
+    let mut discard_recording_boundary_rotation = false;
 
     loop {
+        let recording_active = state.recording.load(Ordering::Relaxed);
+        if recording_active && !recording_was_active {
+            // A recording can begin while a rotation is already buffered.
+            // That buffer contains pre-recording spokes and must not become
+            // the first persisted sample for the new session.
+            discard_recording_boundary_rotation = !spokes.is_empty();
+        } else if !recording_active {
+            discard_recording_boundary_rotation = false;
+        }
+        recording_was_active = recording_active;
+
         // Send keepalive every 5s regardless of TX state
         if last_keepalive.elapsed() > Duration::from_secs(5) {
             if let Ok(mut conn) = state.conn.try_lock() {
-                let _ = conn.send_keepalive();
+                let keepalive_result = conn.send_keepalive();
                 conn.drain_control();
+                if keepalive_result.is_ok() {
+                    // Do not postpone a retry when the connection was busy or
+                    // the write failed. The next loop can try again without
+                    // blocking UDP reception.
+                    last_keepalive = Instant::now();
+                }
             }
-            last_keepalive = Instant::now();
         }
 
         if !state.tx_active.load(Ordering::Relaxed) {
@@ -461,6 +479,11 @@ fn echo_listener(state: Arc<AppState>) {
                         if !spokes.is_empty() {
                             let current_generation = state.readback_generation.load(Ordering::Relaxed);
                             let complete_generation = rotation_generation.unwrap_or(current_generation);
+                            let crosses_recording_boundary = discard_recording_boundary_rotation;
+                            if crosses_recording_boundary {
+                                eprintln!("Discarding rotation spanning recording start boundary");
+                                discard_recording_boundary_rotation = false;
+                            }
                             if complete_generation == current_generation {
                                 let pixels = render::render_ppi(&spokes);
                                 let png_bytes = render::encode_png_bytes(&pixels, PPI_SIZE, PPI_SIZE);
@@ -469,8 +492,9 @@ fn echo_listener(state: Arc<AppState>) {
                                 }
 
                                 // Save CSV + PNG only when the whole rotation
-                                // belongs to one confirmed settings transition.
-                                if state.recording.load(Ordering::Relaxed) {
+                                // belongs to one confirmed settings transition
+                                // and starts after the recording boundary.
+                                if !crosses_recording_boundary && state.recording.load(Ordering::Relaxed) {
                                     if let Err(e) = save_recording_rotation(&state, &spokes, &pixels, complete_generation) {
                                         disable_recording_on_error(&state, "rotation output", e);
                                     }
@@ -827,6 +851,217 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
     if verified { Ok(()) } else { Err(failures.join("; ")) }
 }
 
+fn parse_setting_command(command: &str) -> Result<(String, Vec<u16>), String> {
+    let line = command.trim();
+    let body = line
+        .strip_prefix('$')
+        .ok_or_else(|| format!("command is missing '$' prefix: {line}"))?;
+    let mut parts = body.split(',');
+    let register = parts
+        .next()
+        .ok_or_else(|| format!("command has no register: {line}"))?;
+    let register = register
+        .strip_prefix('S')
+        .ok_or_else(|| format!("command is not a setting write: {line}"))?
+        .to_ascii_uppercase();
+    let values = parts
+        .map(|value| {
+            value
+                .parse::<u16>()
+                .map_err(|_| format!("setting {register} contains non-numeric value '{value}'"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((register, values))
+}
+
+fn readback_u16(readback: &SettingsReadback, field_name: &str) -> Result<u16, String> {
+    let field = readback
+        .fields
+        .get(field_name)
+        .ok_or_else(|| format!("fresh readback is missing field {field_name}"))?;
+    if !field.verified {
+        return Err(format!(
+            "fresh readback field {field_name} is unverified: {}",
+            field.error.as_deref().unwrap_or("no value")
+        ));
+    }
+    field
+        .value
+        .as_ref()
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| format!("fresh readback field {field_name} is not a numeric value"))
+}
+
+fn readback_bool(readback: &SettingsReadback, field_name: &str) -> Result<bool, String> {
+    let field = readback
+        .fields
+        .get(field_name)
+        .ok_or_else(|| format!("fresh readback is missing field {field_name}"))?;
+    if !field.verified {
+        return Err(format!(
+            "fresh readback field {field_name} is unverified: {}",
+            field.error.as_deref().unwrap_or("no value")
+        ));
+    }
+    field
+        .value
+        .as_ref()
+        .and_then(serde_json::Value::as_bool)
+        .ok_or_else(|| format!("fresh readback field {field_name} is not a boolean value"))
+}
+
+fn expect_readback_u16(
+    readback: &SettingsReadback,
+    field_name: &str,
+    requested: u16,
+) -> Result<(), String> {
+    let observed = readback_u16(readback, field_name)?;
+    if observed == requested {
+        Ok(())
+    } else {
+        Err(format!(
+            "{field_name}: requested {requested}, observed {observed}"
+        ))
+    }
+}
+
+fn expect_readback_bool(
+    readback: &SettingsReadback,
+    field_name: &str,
+    requested: bool,
+) -> Result<(), String> {
+    let observed = readback_bool(readback, field_name)?;
+    if observed == requested {
+        Ok(())
+    } else {
+        Err(format!(
+            "{field_name}: requested {requested}, observed {observed}"
+        ))
+    }
+}
+
+/// Verify that a command's requested mutable values were actually applied.
+///
+/// The immediate N-register response is only an acknowledgement of the wire
+/// transaction. This second check uses the fresh, selector-aware settings
+/// snapshot so a radar that echoes an unapplied command cannot be recorded as
+/// having changed state.
+fn validate_command_against_readback(
+    readback: &SettingsReadback,
+    command: &str,
+) -> Result<(), String> {
+    if !readback.verified {
+        return Err("fresh settings readback is not verified".into());
+    }
+    let (register, values) = parse_setting_command(command)?;
+    let value = |index: usize| {
+        values.get(index).copied().ok_or_else(|| {
+            format!("setting {register} is missing mutable field {index}")
+        })
+    };
+    match register.as_str() {
+        "62" => expect_readback_u16(readback, "range_index", value(0)?)?,
+        "63" => {
+            let auto = value(0)? != 0;
+            expect_readback_bool(readback, "gain_auto", auto)?;
+            if auto {
+                expect_readback_u16(readback, "gain_auto_value", value(3)?)?;
+            } else {
+                expect_readback_u16(readback, "gain_manual_value", value(1)?)?;
+            }
+        }
+        "64" => {
+            let auto = value(0)? != 0;
+            expect_readback_bool(readback, "sea_clutter_auto", auto)?;
+            expect_readback_u16(
+                readback,
+                if auto { "sea_clutter_auto_value" } else { "sea_clutter" },
+                value(if auto { 2 } else { 1 })?,
+            )?;
+            expect_readback_u16(readback, "sea_clutter_mode", value(3)?)?;
+        }
+        "65" => {
+            let auto = value(0)? != 0;
+            expect_readback_bool(readback, "rain_clutter_auto", auto)?;
+            expect_readback_u16(
+                readback,
+                if auto { "rain_clutter_auto_value" } else { "rain_clutter" },
+                value(if auto { 2 } else { 1 })?,
+            )?;
+            expect_readback_u16(readback, "rain_clutter_ftc_mode", value(3)?)?;
+            expect_readback_u16(readback, "rain_clutter_mode", value(4)?)?;
+        }
+        "67" => {
+            let selector = value(1)?;
+            match selector {
+                0 => expect_readback_u16(readback, "interference_rejection_level", value(2)?)?,
+                2 => expect_readback_u16(readback, "noise_reduction_level", value(2)?)?,
+                _ => return Err(format!("unsupported S67 selector {selector}")),
+            }
+        }
+        "68" => {
+            expect_readback_u16(readback, "pulse_width", value(0)?)?;
+            expect_readback_u16(readback, "pulse_range_index", value(2)?)?;
+        }
+        "69" => expect_readback_u16(readback, "tx_state", value(0)?)?,
+        "83" => expect_readback_u16(readback, "main_bang", value(0)?)?,
+        "84" => expect_readback_u16(readback, "antenna_height_raw", value(1)?)?,
+        "85" => expect_readback_u16(readback, "near_stc", value(0)?)?,
+        "86" => expect_readback_u16(readback, "middle_stc", value(0)?)?,
+        "87" => expect_readback_u16(readback, "far_stc", value(0)?)?,
+        "89" => {
+            expect_readback_u16(readback, "antenna_speed", value(0)?)?;
+            expect_readback_bool(readback, "antenna_hi_rpm", value(1)? != 0)?;
+        }
+        "ED" => expect_readback_u16(readback, "bird_mode", value(0)?)?,
+        "EE" => expect_readback_u16(readback, "rezboost", value(0)?)?,
+        "EF" => {
+            let enabled = value(0)?;
+            let wire_mode = value(1)?;
+            let desired = match (enabled, wire_mode) {
+                (0, _) => 0,
+                (1, 0) => 1,
+                (1, 1) => 2,
+                _ => return Err(format!("unsupported SEF mode {enabled},{wire_mode}")),
+            };
+            expect_readback_u16(readback, "doppler", desired)?;
+        }
+        _ => return Err(format!("no post-readback validator for setting S{register}")),
+    }
+    Ok(())
+}
+
+fn validate_command_applied(state: &AppState, command: &str) -> Result<(), String> {
+    let readback = state
+        .settings_readback
+        .read()
+        .map_err(|_| "settings readback lock poisoned".to_string())?;
+    validate_command_against_readback(&readback, command)
+}
+
+fn validate_commands_applied(state: &AppState, commands: &[String]) -> Result<(), String> {
+    for command in commands {
+        validate_command_applied(state, command)
+            .map_err(|error| format!("{command}: {error}"))?;
+    }
+    Ok(())
+}
+
+fn observed_tx_active(state: &AppState) -> Option<bool> {
+    let readback = state.settings_readback.read().ok()?;
+    if !readback.verified {
+        return None;
+    }
+    readback
+        .fields
+        .get("tx_state")
+        .filter(|field| field.verified)
+        .and_then(|field| field.value.as_ref())
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value == 2)
+}
+
 // --- Helper: send a command and return ack text ---
 
 async fn send_cmd(
@@ -849,6 +1084,21 @@ async fn send_cmd(
                 }
                 Ok(()) => match refresh_settings_from_radar(&state, "post_command") {
                 Ok(()) => {
+                    if let Err(error) = validate_command_applied(&state, &cmd) {
+                        record_setting_change(
+                            &state,
+                            "command_not_applied",
+                            serde_json::json!({
+                                "command": cmd,
+                                "ack": line,
+                                "error": error,
+                            }),
+                        );
+                        disable_recording_on_error(&state, "command application", &error);
+                        return format!(
+                            "{success_msg} | {line} | command acknowledged but not applied: {error}"
+                        );
+                    }
                     if state.recording.load(Ordering::Relaxed) {
                         if let Err(error) = persist_recording_settings(&state) {
                             disable_recording_on_error(&state, "post-command settings output", &error);
@@ -1019,11 +1269,30 @@ async fn handle_toggle_echo(
                     Ok(()) => {
                         match refresh_settings_from_radar(&st, "tx_on") {
                             Ok(()) => {
-                                st.tx_active.store(true, Ordering::Relaxed);
-                                "TX ON: Radar is transmitting; settings readback verified".to_string()
+                                match validate_command_applied(&st, &protocol::cmd_tx_state(2)) {
+                                    Ok(()) => {
+                                        st.tx_active.store(true, Ordering::Relaxed);
+                                        "TX ON: Radar is transmitting; settings readback verified".to_string()
+                                    }
+                                    Err(error) => {
+                                        st.tx_active.store(
+                                            observed_tx_active(&st).unwrap_or(false),
+                                            Ordering::Relaxed,
+                                        );
+                                        record_setting_change(
+                                            &st,
+                                            "command_not_applied",
+                                            serde_json::json!({
+                                                "command": protocol::cmd_tx_state(2),
+                                                "error": error,
+                                            }),
+                                        );
+                                        disable_recording_on_error(&st, "TX ON application", &error);
+                                        format!("TX ON acknowledged, but requested state was not applied: {error}")
+                                    }
+                                }
                             }
                             Err(error) => {
-                                st.tx_active.store(false, Ordering::Relaxed);
                                 format!("TX ON acknowledged, but settings readback failed: {error}")
                             }
                         }
@@ -1036,9 +1305,26 @@ async fn handle_toggle_echo(
                     .and_then(|mut conn| conn.tx_off().map_err(|e| e.to_string()));
                 match result {
                     Ok(()) => {
-                        st.tx_active.store(false, Ordering::Relaxed);
                         match refresh_settings_from_radar(&st, "tx_off") {
-                            Ok(()) => "TX OFF: Radar stopped; settings readback verified".to_string(),
+                            Ok(()) => match validate_command_applied(&st, &protocol::cmd_tx_state(1)) {
+                                Ok(()) => "TX OFF: Radar stopped; settings readback verified".to_string(),
+                                Err(error) => {
+                                    st.tx_active.store(
+                                        observed_tx_active(&st).unwrap_or(false),
+                                        Ordering::Relaxed,
+                                    );
+                                    record_setting_change(
+                                        &st,
+                                        "command_not_applied",
+                                        serde_json::json!({
+                                            "command": protocol::cmd_tx_state(1),
+                                            "error": error,
+                                        }),
+                                    );
+                                    disable_recording_on_error(&st, "TX OFF application", &error);
+                                    format!("TX OFF acknowledged, but requested state was not applied: {error}")
+                                }
+                            },
                             Err(error) => format!("TX OFF acknowledged, but settings readback failed: {error}"),
                         }
                     }
@@ -2424,6 +2710,17 @@ fn execute_pattern(
                 state.pattern_running.store(false, Ordering::Relaxed);
                 return;
             }
+            if let Err(error) = validate_commands_applied(&state, &cmds) {
+                record_setting_change(
+                    &state,
+                    "command_not_applied",
+                    serde_json::json!({ "commands": cmds, "error": error }),
+                );
+                disable_recording_on_error(&state, "pattern command application", &error);
+                if let Ok(mut status) = state.pattern_status.write() { *status = format!("Pattern stopped: {error}"); }
+                state.pattern_running.store(false, Ordering::Relaxed);
+                return;
+            }
             if state.recording.load(Ordering::Relaxed) {
                 if let Err(error) = persist_recording_settings(&state) {
                     disable_recording_on_error(&state, "pattern settings output", &error);
@@ -2648,6 +2945,16 @@ async fn handle_run_pattern_queue(
                     if let Err(error) = refresh_settings_from_radar(&st, "queued_pattern_step") {
                         invalidate_settings_readback(&st, "queued_pattern_readback_failed", &error);
                         disable_recording_on_error(&st, "queued pattern readback", &error);
+                        if let Ok(mut status) = st.pattern_status.write() { *status = format!("Queue stopped: {error}"); }
+                        break 'outer;
+                    }
+                    if let Err(error) = validate_commands_applied(&st, &cmds) {
+                        record_setting_change(
+                            &st,
+                            "command_not_applied",
+                            serde_json::json!({ "commands": cmds, "error": error }),
+                        );
+                        disable_recording_on_error(&st, "queued pattern command application", &error);
                         if let Ok(mut status) = st.pattern_status.write() { *status = format!("Queue stopped: {error}"); }
                         break 'outer;
                     }
@@ -3218,6 +3525,31 @@ mod tests {
         assert_eq!(readback.raw_register_responses.len(), 17);
         assert_eq!(readback.raw_register_responses[1].raw.as_deref(), Some("$N63,1,12,0,80,0"));
         assert_eq!(readback.raw_register_responses[3].values.last().map(String::as_str), Some("999"));
+
+        assert!(validate_command_against_readback(
+            &readback,
+            "$S63,1,0,0,80,0\r\n",
+        ).is_ok());
+        assert!(validate_command_against_readback(
+            &readback,
+            "$S63,0,128,0,80,0\r\n",
+        ).is_err(), "an echoed but unapplied gain command must be rejected");
+        assert!(validate_command_against_readback(
+            &readback,
+            "$S67,0,0,2,0\r\n",
+        ).is_ok());
+        assert!(validate_command_against_readback(
+            &readback,
+            "$S67,0,2,1,0\r\n",
+        ).is_ok());
+        assert!(validate_command_against_readback(
+            &readback,
+            "$S68,5,0,4,0,0\r\n",
+        ).is_ok());
+        assert!(validate_command_against_readback(
+            &readback,
+            "$S69,1,0,0,0,0,0\r\n",
+        ).is_ok());
 
         let mut wrong_selector = snapshot.clone();
         let ir = wrong_selector.reads.iter_mut().find(|read| read.register == "$N67").expect("IR readback");
