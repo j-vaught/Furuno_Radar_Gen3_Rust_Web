@@ -589,8 +589,9 @@ pub fn validate_setting_ack(command: &str, response: &str) -> Result<(), RadarEr
         // N67 field 2 is the selected interference-rejection value; fields 0,
         // 1, and 3 are protocol selectors/retained state.
         "S67" => vec![(2, 2)],
-        // Pulse responses echo the range in response field 2.
-        "S68" => vec![(0, 0), (1, 2)],
+        // Pulse responses echo the range in response field 2; S68 field 1 is
+        // the radar/channel selector and remains zero for this controller.
+        "S68" => vec![(0, 0), (2, 2)],
         "S69" => vec![(0, 0)],
         "SEE" => vec![(0, 0)],
         "SEF" => vec![(0, 0), (1, 1)],
@@ -718,8 +719,8 @@ mod socket_tests {
         assert!(validate_setting_ack("$S64,1,23,45,2,0,0\r\n", "$N64,1,99,45,2,0,0").is_ok());
         assert!(validate_setting_ack("$S65,0,34,56,1,2,0\r\n", "$N65,0,35,56,1,2,0").is_err());
         assert!(validate_setting_ack("$S67,0,0,2,0\r\n", "$N67,0,2,2,0").is_ok());
-        assert!(validate_setting_ack("$S68,5,4,0,0,0\r\n", "$N68,5,0,4,0,0").is_ok());
-        assert!(validate_setting_ack("$S68,5,4,0,0,0\r\n", "$N68,5,0,3,0,0").is_err());
+        assert!(validate_setting_ack("$S68,5,0,4,0,0\r\n", "$N68,5,0,4,0,0").is_ok());
+        assert!(validate_setting_ack("$S68,5,0,4,0,0\r\n", "$N68,5,0,3,0,0").is_err());
         assert!(validate_setting_ack("$S89,1,1\r\n", "$N89,1,1").is_ok());
     }
 }

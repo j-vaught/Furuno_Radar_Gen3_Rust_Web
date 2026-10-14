@@ -519,7 +519,9 @@ pub fn cmd_rain_clutter_full(status: bool, manual: u16, auto_val: u16, ftc_mode:
 
 /// Pulse width: 0=S1, 1=S2, 2=M1, 3=M2, 4=M3, 5=L. range_index=wire index.
 pub fn cmd_pulse_width(pulse: u16, range_index: u16) -> String {
-    build_command("68", &[pulse as i32, range_index as i32, 0, 0, 0])
+    // S68 field 1 is the radar/channel selector. The active range is field 2,
+    // matching the N68 readback and acknowledgement response.
+    build_command("68", &[pulse as i32, 0, range_index as i32, 0, 0])
 }
 
 /// Near STC: 0-4
@@ -1332,5 +1334,11 @@ mod network_tests {
         let broadcast = Ipv4Addr::from(u32::from(ip) | !u32::from(mask));
 
         assert_eq!(broadcast, Ipv4Addr::new(172, 31, 255, 255));
+    }
+
+    #[test]
+    fn pulse_and_rain_commands_preserve_confirmed_wire_fields() {
+        assert_eq!(cmd_pulse_width(0, 1), "$S68,0,0,1,0,0\r\n");
+        assert_eq!(cmd_rain_clutter_full(true, 2, 3, 4, 5), "$S65,1,2,3,4,5,0\r\n");
     }
 }

@@ -679,6 +679,19 @@ fn build_settings_readback(
     (settings, readback)
 }
 
+fn raw_readback_signature(readback: &SettingsReadback) -> Vec<(String, Vec<String>, Option<String>, Option<String>)> {
+    readback
+        .raw_register_responses
+        .iter()
+        .map(|response| (
+            response.register.clone(),
+            response.values.clone(),
+            response.raw.clone(),
+            response.error.clone(),
+        ))
+        .collect()
+}
+
 fn invalidate_settings_readback(state: &AppState, source: &str, error: &str) {
     let transition_id = state.readback_generation.fetch_add(1, Ordering::Relaxed) + 1;
     if let Ok(mut readback) = state.settings_readback.write() {
@@ -709,10 +722,15 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
     };
     let (settings, readback) = build_settings_readback(&snapshot, &firmware, radar_ip, host_ip, source);
     let mut readback = readback;
+    let raw_signature = raw_readback_signature(&readback);
     let settings_changed = state.settings.read()
         .map(|previous| *previous != settings)
         .unwrap_or(true);
-    let transition_id = if settings_changed || !readback.verified {
+    let raw_readback_changed = state.settings_readback
+        .read()
+        .map(|previous| raw_readback_signature(&previous) != raw_signature)
+        .unwrap_or(true);
+    let transition_id = if settings_changed || raw_readback_changed || !readback.verified {
         state.readback_generation.fetch_add(1, Ordering::Relaxed) + 1
     } else {
         state.readback_generation.load(Ordering::Relaxed)
@@ -2983,7 +3001,7 @@ mod tests {
                 synthetic_read("$N62", &["4", "0", "0"]),
                 synthetic_read("$N63", &["1", "12", "0", "80", "0"]),
                 synthetic_read("$N64", &["1", "23", "45", "2", "0", "0"]),
-                synthetic_read("$N65", &["0", "34", "56", "1", "2", "0"]),
+                synthetic_read("$N65", &["0", "34", "56", "1", "2", "0", "999"]),
                 synthetic_read("$N68", &["5", "0", "4", "0", "0"]),
                 synthetic_read("$N69", &["1", "0", "0", "0", "0", "0"]),
                 synthetic_read("$N83", &["17", "0"]),
@@ -3025,6 +3043,7 @@ mod tests {
         assert!(readback.valid_until.as_deref().is_some_and(|value| value.starts_with("unix_ms:")));
         assert_eq!(readback.raw_register_responses.len(), 15);
         assert_eq!(readback.raw_register_responses[1].raw.as_deref(), Some("$N63,1,12,0,80,0"));
+        assert_eq!(readback.raw_register_responses[3].values.last().map(String::as_str), Some("999"));
     }
 
     #[test]
@@ -3050,7 +3069,7 @@ mod tests {
             synthetic_read("$N62", &["4", "0", "0"]),
             synthetic_read("$N63", &["0", "12", "0", "80", "0"]),
             synthetic_read("$N64", &["0", "23", "45", "2", "0", "0"]),
-            synthetic_read("$N65", &["0", "34", "56", "1", "2", "0"]),
+            synthetic_read("$N65", &["0", "34", "56", "1", "2", "0", "999"]),
             synthetic_read("$N68", &["5", "0", "3", "0", "0"]),
             synthetic_read("$N69", &["1", "0", "0", "0", "0", "0"]),
             synthetic_read("$N83", &["17", "0"]),
