@@ -1,0 +1,26 @@
+{
+  "status": "preview",
+  "source": "/Volumes/MacApplications/Radar_papers/macos-bringup/logs/tx-test-20261014T042023Z/paper1-analysis-v3/figure_data/setting_transition.csv",
+  "event_index": [],
+  "settle_s": [],
+  "latency_event_index": [],
+  "latency_ms": [],
+  "readback_match": [],
+  "setting_labels": [],
+  "requested_labels": [],
+  "readback_labels": [],
+  "categories": [
+    "accepted",
+    "rejected",
+    "clamped",
+    "deferred",
+    "restored"
+  ],
+  "category_counts": [
+    0,
+    0,
+    0,
+    0,
+    0
+  ]
+}

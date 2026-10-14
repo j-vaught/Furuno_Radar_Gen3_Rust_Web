@@ -1,0 +1,23 @@
+{
+  "status": "ready",
+  "fixture_kind": "compile_test_only",
+  "source": "compile-test fixture; not an empirical result",
+  "conditions": [
+    {
+      "label": "gain/reference",
+      "rotation_index": [0, 1, 2],
+      "zero_fraction": [0.10, 0.11, 0.10],
+      "mean_code": [4.2, 4.1, 4.3],
+      "max_code_fraction": [0.08, 0.09, 0.08],
+      "unique_angle_count": [120, 121, 119]
+    },
+    {
+      "label": "gain/high",
+      "rotation_index": [0, 1, 2],
+      "zero_fraction": [0.09, 0.10, 0.09],
+      "mean_code": [5.2, 5.1, 5.3],
+      "max_code_fraction": [0.11, 0.12, 0.11],
+      "unique_angle_count": [120, 121, 119]
+    }
+  ]
+}

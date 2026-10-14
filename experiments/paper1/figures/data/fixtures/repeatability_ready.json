@@ -1,0 +1,7 @@
+{
+  "status": "ready",
+  "fixture_kind": "compile_test_only",
+  "source": "compile-test fixture; not an empirical result",
+  "runs": [0, 1, 2, 3],
+  "metric": [0.10, 0.12, 0.11, 0.10]
+}

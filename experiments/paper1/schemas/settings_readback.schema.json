@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper1-settings-readback-1.1",
+  "type": "object",
+  "required": ["verified", "transition_id", "captured_at", "source", "fields", "raw_register_responses"],
+  "properties": {
+    "verified": {"type": "boolean"},
+    "transition_id": {"type": "integer"},
+    "captured_at": {"type": "string"},
+    "valid_until": {"type": ["string", "null"]},
+    "source": {"type": "string"},
+    "firmware": {"type": ["string", "null"]},
+    "radar_ip": {"type": ["string", "null"]},
+    "host_ip": {"type": ["string", "null"]},
+    "fields": {"type": "object", "additionalProperties": {"type": "object", "required": ["verified", "value", "register", "raw", "read_at"], "properties": {"verified": {"type": "boolean"}, "value": {}, "register": {"type": "string"}, "raw": {}, "read_at": {"type": "string"}, "error": {"type": ["string", "null"]}}}},
+    "raw_register_responses": {"type": "array"}
+  }
+}

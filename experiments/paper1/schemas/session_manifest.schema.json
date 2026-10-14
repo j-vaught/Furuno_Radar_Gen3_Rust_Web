@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper1-session-manifest-1.0",
+  "type": "object",
+  "required": ["schema_version", "session_id", "experiment_id", "operator", "host", "radar", "scene", "storage", "phases"],
+  "properties": {
+    "schema_version": {"const": "paper1-session-manifest-1.0"},
+    "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]+$"},
+    "experiment_id": {"type": "string"},
+    "operator": {"type": "string", "minLength": 1},
+    "host": {"type": "object", "required": ["name", "os", "clock_utc", "clock_sync"], "properties": {"name": {"type": "string"}, "os": {"type": "string"}, "clock_utc": {"type": "string"}, "clock_sync": {"type": "string"}}},
+    "radar": {"type": "object", "required": ["model", "firmware", "radar_ip", "host_ip", "interface"], "properties": {"model": {"type": "string"}, "serial_number": {"type": "string"}, "firmware": {"type": "string"}, "radar_ip": {"type": "string"}, "host_ip": {"type": "string"}, "interface": {"type": "string"}, "mount_height_m": {"type": ["number", "null"]}, "heading_reference_deg": {"type": ["number", "null"]}}},
+    "scene": {"type": "object", "required": ["description", "weather", "photos"], "properties": {"description": {"type": "string"}, "weather": {"type": "object"}, "photos": {"type": "array", "items": {"type": "object", "required": ["path", "sha256"], "properties": {"path": {"type": "string"}, "sha256": {"type": "string"}, "kind": {"type": "string"}}}}}},
+    "storage": {"type": "object", "required": ["root", "mounted", "writable"], "properties": {"root": {"type": "string"}, "mounted": {"type": "boolean"}, "writable": {"type": "boolean"}}},
+    "provenance": {"type": "object", "required": ["git_commit", "git_dirty", "files"], "properties": {"git_commit": {"type": ["string", "null"]}, "git_dirty": {"type": ["boolean", "null"]}, "files": {"type": "object"}}},
+    "campaign_estimate": {"type": "object", "properties": {"phase_count": {"type": "integer"}, "record_s": {"type": "number"}, "runtime_s": {"type": "number"}, "raw_udp_bytes": {"type": ["number", "null"]}, "basis": {"type": "string"}}},
+    "phases": {"type": "array", "items": {"type": "object", "required": ["phase_id", "requested_settings", "device_readback", "settle_s", "scans"], "properties": {"phase_id": {"type": "string"}, "requested_settings": {"type": "object"}, "device_readback": {"type": ["object", "null"]}, "settle_s": {"type": "number"}, "record_s": {"type": "number", "minimum": 0}, "scans": {"type": "integer", "minimum": 0}, "command_events": {"type": "array"}, "rotation_files": {"type": "array"}, "raw_packet_count": {"type": "integer", "minimum": 0}}}}
+  }
+}

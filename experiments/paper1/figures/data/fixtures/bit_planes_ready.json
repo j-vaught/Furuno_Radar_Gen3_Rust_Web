@@ -1,0 +1,17 @@
+{
+  "status": "ready",
+  "fixture_kind": "compile_test_only",
+  "source": "compile-test fixture; not an empirical result",
+  "pre_shift_values": [0, 8, 20, 28],
+  "pre_shift_counts": [100, 50, 25, 10],
+  "pre_shift_counts_plot": [100, 50, 25, 10],
+  "upper6_values": [0, 2, 5, 7],
+  "upper6_counts": [100, 50, 25, 10],
+  "upper6_counts_plot": [100, 50, 25, 10],
+  "decoded_low2_values": [0, 1, 2, 3],
+  "decoded_low2_counts": [185, 0, 0, 0],
+  "alignment_index": [0, 1, 2],
+  "alignment_fraction": [1.0, 1.0, 1.0],
+  "decoded_value_count": 185,
+  "low2_nonzero_fraction": 0.0
+}

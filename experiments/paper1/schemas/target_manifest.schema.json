@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "paper1-target-manifest-1.0",
+  "type": "object",
+  "required": ["schema_version", "targets"],
+  "properties": {
+    "schema_version": {"const": "paper1-target-manifest-1.0"},
+    "coordinate_reference": {"type": "string"},
+    "targets": {"type": "array", "items": {"type": "object", "required": ["target_id", "range_m", "bearing_deg", "position_reference", "measurement_method", "uncertainty_m", "photo_paths"], "properties": {"target_id": {"type": "string"}, "range_m": {"type": "number", "exclusiveMinimum": 0}, "bearing_deg": {"type": "number"}, "position_reference": {"type": "string"}, "measurement_method": {"type": "string"}, "uncertainty_m": {"type": "number", "minimum": 0}, "uncertainty_bearing_deg": {"type": "number", "minimum": 0}, "photo_paths": {"type": "array", "items": {"type": "string"}}, "notes": {"type": "string"}}}}
+  }
+}
