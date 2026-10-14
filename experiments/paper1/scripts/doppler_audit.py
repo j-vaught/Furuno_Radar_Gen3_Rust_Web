@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "paper1-doppler-bit-audit-1"
+SCHEMA_VERSION = "paper1-doppler-bit-audit-2"
 
 
 @dataclass
@@ -72,6 +72,8 @@ class ReplayState:
     header_flags: Counter[int] = field(default_factory=Counter)
     header_configs: Counter[int] = field(default_factory=Counter)
     packet_sequences: list[int] = field(default_factory=list)
+    sequence_byte0: list[int] = field(default_factory=list)
+    sequence_byte1: list[int] = field(default_factory=list)
     timestamps: list[int] = field(default_factory=list)
     values: Counter[int] = field(default_factory=Counter)
     low2: Counter[int] = field(default_factory=Counter)
@@ -86,6 +88,31 @@ class ReplayState:
 
 def _aligned(value: int) -> int:
     return (value + 3) & ~3
+
+
+def _sequence_continuity(values: list[int], modulus: int = 256) -> dict[str, Any]:
+    """Summarize adjacent raw-byte steps without assuming a vendor layout."""
+
+    steps = [
+        (current - previous) % modulus
+        for previous, current in zip(values, values[1:], strict=False)
+    ]
+    return {
+        "value_count": len(values),
+        "transition_count": len(steps),
+        "unit_steps": sum(step == 1 for step in steps),
+        "non_unit_steps": sum(step != 1 for step in steps),
+        "wraps": sum(
+            current < previous and step == 1
+            for previous, current, step in zip(values, values[1:], steps, strict=False)
+        ),
+        "step_counts": _json_safe_counter(Counter(steps)),
+        "modulus": modulus,
+        "interpretation": (
+            "Adjacent raw header-byte steps in capture order. A wrap is a raw-byte "
+            "1-to-0 modulo step; this does not establish packet loss or a vendor counter."
+        ),
+    }
 
 
 def _decode_sweep(data: bytes, encoding: int, sweep_len: int, previous: list[int]) -> SweepDecode:
@@ -185,6 +212,8 @@ def _packet_metadata(payload: bytes) -> dict[str, Any] | None:
     encoding = (payload[11] & 0x18) >> 3
     return {
         "header_hex": payload[:16].hex(),
+        "header_byte_0": payload[0],
+        "header_byte_1": payload[1],
         "sequence_be": int.from_bytes(payload[0:2], "big"),
         "sequence_le": int.from_bytes(payload[0:2], "little"),
         "timestamp_u32_be": int.from_bytes(payload[8:12], "big"),
@@ -252,6 +281,8 @@ def replay_raw(path: Path) -> tuple[ReplayState, list[dict[str, Any]]]:
             state.header_flags[int(metadata["flags_u16_be"])] += 1
             state.header_configs[int(metadata["config_u16_be"])] += 1
             state.packet_sequences.append(int(metadata["sequence_be"]))
+            state.sequence_byte0.append(int(metadata["header_byte_0"]))
+            state.sequence_byte1.append(int(metadata["header_byte_1"]))
             row: dict[str, Any] = {
                 "line_number": line_number,
                 "packet_index": state.packet_count - 1,
@@ -575,6 +606,42 @@ def build_summary(
             "min": min(state.packet_sequences) if state.packet_sequences else None,
             "max": max(state.packet_sequences) if state.packet_sequences else None,
             "unique": len(set(state.packet_sequences)),
+            "interpretation": (
+                "Legacy two-byte big-endian grouping retained for compatibility; it is "
+                "not treated as a vendor-confirmed monotonic counter."
+            ),
+        },
+        "packet_sequence_host_order_candidates": {
+            "big_endian": {
+                "min": min(state.packet_sequences) if state.packet_sequences else None,
+                "max": max(state.packet_sequences) if state.packet_sequences else None,
+                "unique": len(set(state.packet_sequences)),
+            },
+            "little_endian": {
+                "min": min(((value & 0xFF) << 8) | (value >> 8) for value in state.packet_sequences)
+                if state.packet_sequences
+                else None,
+                "max": max(((value & 0xFF) << 8) | (value >> 8) for value in state.packet_sequences)
+                if state.packet_sequences
+                else None,
+                "unique": len(
+                    {((value & 0xFF) << 8) | (value >> 8) for value in state.packet_sequences}
+                ),
+            },
+            "interpretation": (
+                "Both host-order interpretations are reported as candidates. The raw "
+                "header bytes are analyzed independently because the vendor layout is unconfirmed."
+            ),
+        },
+        "packet_sequence_raw_bytes": {
+            "byte0_counts": _json_safe_counter(Counter(state.sequence_byte0)),
+            "byte1_counts": _json_safe_counter(Counter(state.sequence_byte1)),
+            "byte0_continuity": _sequence_continuity(state.sequence_byte0),
+            "byte1_continuity": _sequence_continuity(state.sequence_byte1),
+            "interpretation": (
+                "Candidate byte counters from header bytes 0 and 1, reported independently "
+                "in capture order."
+            ),
         },
         "timestamp": {
             "count": len(state.timestamps),
@@ -720,6 +787,8 @@ def write_outputs(raw_path: Path, out_dir: Path, csv_paths: list[Path]) -> dict[
             "status",
             "receive_unix_ns",
             "packet_bytes",
+            "header_byte_0",
+            "header_byte_1",
             "sequence_be",
             "sequence_le",
             "timestamp_u32_be",

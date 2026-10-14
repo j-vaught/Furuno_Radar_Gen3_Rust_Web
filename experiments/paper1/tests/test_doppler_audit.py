@@ -7,6 +7,7 @@ from pathlib import Path
 from scripts.doppler_audit import (
     SpokeRecord,
     _decode_sweep,
+    _sequence_continuity,
     capture_design,
     compare_csv,
     remap_csv_paths,
@@ -29,6 +30,12 @@ def packet(encoding: int, sweep_len: int, sweeps: list[tuple[int, int, bytes]]) 
 
 
 class DopplerAuditTests(unittest.TestCase):
+    def test_raw_byte_counter_wrap_is_a_unit_step(self) -> None:
+        summary = _sequence_continuity([254, 255, 0, 1])
+        self.assertEqual(summary["unit_steps"], 3)
+        self.assertEqual(summary["non_unit_steps"], 0)
+        self.assertEqual(summary["wraps"], 1)
+
     def test_capture_design_uses_ef_processing_labels(self) -> None:
         rows = capture_design()
         self.assertEqual(
