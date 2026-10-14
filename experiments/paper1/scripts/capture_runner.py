@@ -432,6 +432,59 @@ def readback(base: str, fp: Any, timeout: float, fresh_required: bool = False) -
     return result
 
 
+def readback_with_retry(
+    base: str,
+    fp: Any,
+    timeout: float,
+    context: str,
+    max_attempts: int = 3,
+    delay_s: float = 0.25,
+) -> tuple[dict[str, Any], list[str]]:
+    """Retry transient fresh-read failures without hiding an unverified result."""
+    failures: list[str] = []
+    result: dict[str, Any] = {
+        "confirmed": False,
+        "fresh": False,
+        "settings": {},
+        "missing_fields": REQUIRED_READBACK_FIELDS,
+    }
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = readback(base, fp, timeout, fresh_required=True)
+        except BaseException as exc:
+            result = {
+                "confirmed": False,
+                "fresh": False,
+                "settings": {},
+                "missing_fields": REQUIRED_READBACK_FIELDS,
+            }
+            reason = repr(exc)
+        else:
+            if result.get("confirmed") is True and result.get("fresh") is True:
+                if failures:
+                    log_event(
+                        fp,
+                        "baseline_restore_readback_recovered",
+                        context=context,
+                        attempts=attempt,
+                        prior_errors=failures,
+                    )
+                return result, failures
+            reason = f"unverified fresh readback; missing={result.get('missing_fields', [])}"
+        failures.append(reason)
+        log_event(
+            fp,
+            "baseline_restore_readback_retry",
+            context=context,
+            attempt=attempt,
+            max_attempts=max_attempts,
+            error=reason,
+        )
+        if attempt < max_attempts:
+            STOP.wait(delay_s * attempt)
+    return result, failures
+
+
 def require_confirmed_readback(readback_result: dict[str, Any], context: str) -> None:
     if readback_result.get("confirmed") is True and readback_result.get("fresh") is True:
         return
@@ -1350,11 +1403,13 @@ def _restore_grouped_baseline(
     """Restore an ordinary phase baseline with minimal full-register writes."""
     outcomes: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    try:
-        current_result = readback(base, fp, timeout, fresh_required=True)
-    except BaseException as exc:
-        current_result = {"confirmed": False, "fresh": False, "settings": {}}
-        errors.append({"setting": "<initial_readback>", "error": repr(exc)})
+    current_result, initial_readback_errors = readback_with_retry(
+        base, fp, timeout, f"{context}:initial_readback"
+    )
+    if initial_readback_errors and current_result.get("confirmed") is not True:
+        errors.extend(
+            {"setting": "<initial_readback>", "error": error} for error in initial_readback_errors
+        )
     current = _verified_settings(current_result)
     if current_result.get("confirmed") is not True or current_result.get("fresh") is not True:
         errors.append(
@@ -1408,11 +1463,11 @@ def _restore_grouped_baseline(
                 }
             )
             return False
-        try:
-            current_result = readback(base, fp, timeout, fresh_required=True)
-        except BaseException as exc:
-            current_result = {"confirmed": False, "fresh": False, "settings": {}}
-            errors.append({"setting": setting, "error": repr(exc)})
+        current_result, readback_errors = readback_with_retry(
+            base, fp, timeout, f"{context}:{setting}:post_command"
+        )
+        if readback_errors and current_result.get("confirmed") is not True:
+            errors.extend({"setting": setting, "error": error} for error in readback_errors)
         current = _verified_settings(current_result)
         rejected = event.get("http_status", 500) < 200 or event.get("http_status", 500) >= 300
         body = event.get("response", "")
@@ -1545,11 +1600,13 @@ def _restore_grouped_baseline(
                 if current.get("doppler") != target_doppler:
                     perform("doppler", target_doppler, target, {"tx_state", "doppler"})
 
-    try:
-        final = readback(base, fp, timeout, fresh_required=True)
-    except BaseException as exc:
-        final = {"confirmed": False, "fresh": False, "settings": {}}
-        errors.append({"setting": "<final_readback>", "error": repr(exc)})
+    final, final_readback_errors = readback_with_retry(
+        base, fp, timeout, f"{context}:final_readback"
+    )
+    if final_readback_errors and final.get("confirmed") is not True:
+        errors.extend(
+            {"setting": "<final_readback>", "error": error} for error in final_readback_errors
+        )
     final_values = _verified_settings(final)
     matches = {
         field: (final_values.get(field) == expected)
@@ -1679,22 +1736,12 @@ def restore_verified_baseline(
 
     active_range: Any = None
     for index, (setting, desired) in enumerate(command_order):
-        try:
-            current_result = readback(base, fp, timeout, fresh_required=True)
-        except BaseException as exc:
-            current_result = {
-                "confirmed": False,
-                "fresh": False,
-                "settings": {},
-                "missing_fields": REQUIRED_READBACK_FIELDS,
-            }
-            errors.append({"setting": setting, "index": index, "error": repr(exc)})
-            log_event(
-                fp,
-                "baseline_restore_readback_error",
-                context=context,
-                setting=setting,
-                error=repr(exc),
+        current_result, readback_errors = readback_with_retry(
+            base, fp, timeout, f"{context}:{index}:{setting}"
+        )
+        if readback_errors and current_result.get("confirmed") is not True:
+            errors.extend(
+                {"setting": setting, "index": index, "error": error} for error in readback_errors
             )
         current = _verified_settings(current_result)
         required = _restore_requirements(setting)
@@ -1816,11 +1863,14 @@ def restore_verified_baseline(
             errors.append({"setting": setting, "index": index, "error": repr(exc)})
             log_event(fp, "baseline_restore_error", context=context, **outcome)
             continue
-        try:
-            after = readback(base, fp, timeout, fresh_required=True)
-        except BaseException as exc:
-            after = {"confirmed": False, "fresh": False, "settings": {}}
-            errors.append({"setting": setting, "index": index, "error": repr(exc)})
+        after, after_readback_errors = readback_with_retry(
+            base, fp, timeout, f"{context}:{index}:{setting}:post_command"
+        )
+        if after_readback_errors and after.get("confirmed") is not True:
+            errors.extend(
+                {"setting": setting, "index": index, "error": error}
+                for error in after_readback_errors
+            )
         actual = _verified_settings(after).get(setting)
         rejected = event.get("http_status", 500) < 200 or event.get("http_status", 500) >= 300
         if isinstance(event.get("response"), str):
@@ -1865,11 +1915,13 @@ def restore_verified_baseline(
         if setting == "range_index" and outcome_name == "supported":
             active_range = desired
 
-    try:
-        final = readback(base, fp, timeout, fresh_required=True)
-    except BaseException as exc:
-        final = {"confirmed": False, "fresh": False, "settings": {}, "error": repr(exc)}
-        errors.append({"setting": "<final_readback>", "error": repr(exc)})
+    final, final_readback_errors = readback_with_retry(
+        base, fp, timeout, f"{context}:final_readback"
+    )
+    if final_readback_errors and final.get("confirmed") is not True:
+        errors.extend(
+            {"setting": "<final_readback>", "error": error} for error in final_readback_errors
+        )
     final_values = _verified_settings(final)
     matches = {
         field: (final_values.get(field) == target.get(field))

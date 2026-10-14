@@ -21,6 +21,7 @@ from scripts.capture_runner import (
     parse_settings_response,
     parse_system_info,
     readback,
+    readback_with_retry,
     require_confirmed_readback,
     require_system_info_settings,
     require_transmitting_readback,
@@ -67,6 +68,27 @@ class ToolkitTests(unittest.TestCase):
     def test_system_info_rejects_http_failure_without_dumping_payload(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "HTTP 500"):
             parse_system_info(500, '{"error":null}', "recording status")
+
+    def test_restore_readback_retry_recovers_transient_failure(self) -> None:
+        responses = iter(
+            [
+                {"confirmed": False, "fresh": False, "missing_fields": ["near_stc"]},
+                {"confirmed": True, "fresh": True, "settings": {"near_stc": 3}},
+            ]
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch(
+                "scripts.capture_runner.readback",
+                side_effect=lambda *args, **kwargs: next(responses),
+            ),
+            (Path(tmp) / "events.jsonl").open("w", encoding="utf-8") as events,
+        ):
+            result, failures = readback_with_retry(
+                "mock://controller", events, 1.0, "retry-test", max_attempts=2, delay_s=0
+            )
+        self.assertTrue(result["confirmed"])
+        self.assertEqual(len(failures), 1)
 
     def test_system_info_rejects_unverified_or_drifted_settings(self) -> None:
         requested = {"gain_auto": True, "gain_value": 80}
