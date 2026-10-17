@@ -160,7 +160,7 @@ def provenance(plan_path: Path | None = None) -> dict[str, Any]:
     source_root = Path(__file__).resolve().parents[3]
     try:
         commit = subprocess.run(
-            ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+            ["git", "--no-optional-locks", "-C", str(source_root), "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
@@ -168,7 +168,7 @@ def provenance(plan_path: Path | None = None) -> dict[str, Any]:
         ).stdout.strip()
         dirty = bool(
             subprocess.run(
-                ["git", "-C", str(source_root), "status", "--porcelain"],
+                ["git", "--no-optional-locks", "-C", str(source_root), "status", "--porcelain"],
                 check=True,
                 capture_output=True,
                 text=True,
