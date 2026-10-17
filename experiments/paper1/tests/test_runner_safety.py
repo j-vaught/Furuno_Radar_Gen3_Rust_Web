@@ -49,6 +49,11 @@ class RunnerSafetyTests(unittest.TestCase):
                 patch.object(capture_runner, "readback", return_value=initial),
                 patch.object(
                     capture_runner,
+                    "receive_raw",
+                    return_value=(_Thread(), {}, None),
+                ),
+                patch.object(
+                    capture_runner,
                     "apply_phase",
                     side_effect=RuntimeError("phase failure after initial readback"),
                 ),

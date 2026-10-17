@@ -156,7 +156,7 @@ def sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
-def provenance() -> dict[str, Any]:
+def provenance(plan_path: Path | None = None) -> dict[str, Any]:
     source_root = Path(__file__).resolve().parents[3]
     try:
         commit = subprocess.run(
@@ -193,10 +193,16 @@ def provenance() -> dict[str, Any]:
         (path for path in binary_candidates if path.is_file()),
         source_root / "furuno-server/target/release/furuno-server",
     )
+    canonical_plan = source_root / "experiments/paper1/plans/paper1_experiments.json"
+    effective_plan = plan_path.expanduser().resolve() if plan_path is not None else canonical_plan
     file_paths = {
         "runner": Path(__file__).resolve(),
         "analyzer": Path(__file__).with_name("analyze_capture.py").resolve(),
-        "plan": source_root / "experiments/paper1/plans/paper1_experiments.json",
+        # Record the plan actually loaded by this invocation. This matters for
+        # reviewable alternate plans such as a 35 s duration variant.
+        "plan": effective_plan,
+        # Retain the repository plan separately for comparison and default compatibility.
+        "canonical_plan": canonical_plan,
         "settings_schema": source_root / "experiments/paper1/schemas/settings_readback.schema.json",
         "figure_schema": source_root / "experiments/paper1/schemas/figure_data_contract.json",
         "binary": binary_path,
@@ -2276,7 +2282,7 @@ def run_restore_only(
             "physical_ready": False,
             "baseline_path": str(args.baseline),
         },
-        "provenance": provenance(),
+        "provenance": provenance(args.plan),
     }
     with events_path.open("w", encoding="utf-8") as events:
         log_event(events, "restore_session_start", baseline_path=str(args.baseline))
@@ -2822,7 +2828,7 @@ def main() -> int:
     if args.restore_only:
         if args.dry_run:
             raise SystemExit("--restore-only cannot be combined with --dry-run")
-        if provenance().get("git_commit") is None:
+        if provenance(args.plan).get("git_commit") is None:
             raise SystemExit("refusing restore without Git provenance")
         return run_restore_only(args, metadata, session_dir, mounted, reason)
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -2864,7 +2870,7 @@ def main() -> int:
     if characterization_merge is not None:
         manifest["characterization_report_merge"] = characterization_merge
     manifest["hardware_record"] = metadata.get("hardware_record", {})
-    manifest["provenance"] = provenance()
+    manifest["provenance"] = provenance(args.plan)
     if not args.dry_run and manifest["provenance"].get("git_commit") is None:
         raise SystemExit("refusing live acquisition without Git provenance")
     estimated_record_s = sum(float(phase.get("record_s", 0)) for phase in experiment["phases"])
