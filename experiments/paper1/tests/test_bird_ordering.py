@@ -83,6 +83,8 @@ def coupled_http(
             state["sea_clutter"] = int(params["manual"])
             state["sea_clutter_auto_value"] = int(params["auto"])
             state["sea_clutter_mode"] = int(params["mode"])
+        elif path == "/set_doppler":
+            state["doppler"] = int(params["mode"])
         return 200, "ACK"
 
     return request
@@ -90,48 +92,50 @@ def coupled_http(
 
 class BirdOrderingTests(unittest.TestCase):
     def test_apply_phase_applies_bird_before_dependent_registers(self) -> None:
-        state = coupled_state(bird=0, gain=64, sea=0)
-        requests: list[tuple[str, dict[str, Any]]] = []
-        phase = {
-            "id": "bird-2",
-            "settings": {
-                "bird_mode": 2,
-                "gain_auto": False,
-                "gain_value": 64,
-                "gain_manual_value": 64,
-                "gain_auto_value": 80,
-                "sea_clutter_auto": False,
-                "sea_clutter": 0,
-                "sea_clutter_auto_value": 10,
-                "sea_clutter_mode": 0,
-            },
-        }
-
-        with (
-            tempfile.TemporaryDirectory() as tmp,
-            patch(
-                "scripts.capture_runner.readback",
-                side_effect=lambda *_args, **_kwargs: readback_result(state),
-            ),
-            patch(
-                "scripts.capture_runner.http_request",
-                side_effect=coupled_http(state, requests),
-            ),
+        for level, expected_paths in (
+            (1, ["/set_bird_mode", "/set_gain"]),
+            (2, ["/set_bird_mode", "/set_gain", "/set_acsea"]),
+            (3, ["/set_bird_mode", "/set_gain", "/set_acsea"]),
         ):
-            with (Path(tmp) / "events.jsonl").open("w", encoding="utf-8") as events:
-                apply_phase("mock://controller", phase, events, 1.0)
+            with self.subTest(level=level):
+                state = coupled_state(bird=0, gain=64, sea=0)
+                requests: list[tuple[str, dict[str, Any]]] = []
+                phase = {
+                    "id": f"bird-{level}",
+                    "settings": {
+                        "bird_mode": level,
+                        "gain_auto": False,
+                        "gain_value": 64,
+                        "gain_manual_value": 64,
+                        "gain_auto_value": 80,
+                        "sea_clutter_auto": False,
+                        "sea_clutter": 0,
+                        "sea_clutter_auto_value": 10,
+                        "sea_clutter_mode": 0,
+                    },
+                }
 
-        self.assertEqual(
-            [path for path, _params in requests],
-            [
-                "/set_bird_mode",
-                "/set_gain",
-                "/set_acsea",
-            ],
-        )
-        self.assertEqual(state["bird_mode"], 2)
-        self.assertEqual(state["gain_value"], 64)
-        self.assertEqual(state["sea_clutter"], 0)
+                with (
+                    tempfile.TemporaryDirectory() as tmp,
+                    patch(
+                        "scripts.capture_runner.readback",
+                        side_effect=lambda *_args, _state=state, **_kwargs: readback_result(_state),
+                    ),
+                    patch(
+                        "scripts.capture_runner.http_request",
+                        side_effect=coupled_http(state, requests),
+                    ),
+                ):
+                    with (Path(tmp) / "events.jsonl").open("w", encoding="utf-8") as events:
+                        apply_phase("mock://controller", phase, events, 1.0)
+
+                self.assertEqual(
+                    [path for path, _params in requests],
+                    expected_paths,
+                )
+                self.assertEqual(state["bird_mode"], level)
+                self.assertEqual(state["gain_value"], 64)
+                self.assertEqual(state["sea_clutter"], 0)
 
     def test_restore_applies_bird_before_dependent_baseline_registers(self) -> None:
         state = coupled_state(bird=2, gain=93, sea=30)
@@ -171,6 +175,47 @@ class BirdOrderingTests(unittest.TestCase):
             ],
         )
         self.assertTrue(result["restore_complete"])
+        self.assertEqual(state["bird_mode"], 0)
+        self.assertEqual(state["gain_value"], 64)
+        self.assertEqual(state["sea_clutter"], 0)
+
+    def test_pulse_state_restore_orders_doppler_bird_then_dependents(self) -> None:
+        state = coupled_state(bird=2, gain=93, sea=30)
+        state["doppler"] = 1
+        requests: list[tuple[str, dict[str, Any]]] = []
+        baseline = {"settings": coupled_state(bird=0, gain=64, sea=0)}
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch(
+                "scripts.capture_runner.readback",
+                side_effect=lambda *_args, **_kwargs: readback_result(state),
+            ),
+            patch(
+                "scripts.capture_runner.http_request",
+                side_effect=coupled_http(
+                    state,
+                    requests,
+                    bird_zero_resets_dependents=True,
+                ),
+            ),
+        ):
+            with (Path(tmp) / "events.jsonl").open("w", encoding="utf-8") as events:
+                result = restore_verified_baseline(
+                    "mock://controller",
+                    baseline,
+                    events,
+                    1.0,
+                    "bird-restore-pulse-state",
+                    pulse_states={"0": {"pulse_width": 0}},
+                )
+
+        paths = [path for path, _params in requests]
+        self.assertLess(paths.index("/set_doppler"), paths.index("/set_bird_mode"))
+        self.assertLess(paths.index("/set_bird_mode"), paths.index("/set_gain"))
+        self.assertLess(paths.index("/set_gain"), paths.index("/set_acsea"))
+        self.assertTrue(result["restore_complete"])
+        self.assertEqual(state["doppler"], 0)
         self.assertEqual(state["bird_mode"], 0)
         self.assertEqual(state["gain_value"], 64)
         self.assertEqual(state["sea_clutter"], 0)
