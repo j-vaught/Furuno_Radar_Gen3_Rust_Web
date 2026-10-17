@@ -2439,6 +2439,40 @@ def expand_control_matrix(experiment: dict[str, Any]) -> dict[str, Any]:
                     str(requested).lower(), value_settings_map.get(str(requested), {})
                 )
                 phase["settings"].update(value_settings)
+                if setting == "bird_mode":
+                    # Bird levels are firmware presets. The live standby probes
+                    # showed that applying Bird rewrites the gain and sea-clutter
+                    # registers, so a condition must leave those dependent
+                    # fields unspecified and retain the observed companions in
+                    # its complete post-command readback. The shared reference
+                    # remains fully specified above.
+                    coupled_fields = [
+                        "gain_auto",
+                        "gain_value",
+                        "gain_manual_value",
+                        "gain_auto_value",
+                        "sea_clutter",
+                        "sea_clutter_auto",
+                        "sea_clutter_auto_value",
+                        "sea_clutter_mode",
+                    ]
+                    for field in coupled_fields:
+                        phase["settings"].pop(field, None)
+                    phase["control"]["comparison_semantics"] = "coupled_preset"
+                    phase["control"]["coupled_register_groups"] = [
+                        "gain_register",
+                        "sea_clutter_register",
+                    ]
+                    phase["control"]["coupled_fields"] = coupled_fields
+                    phase["coupled_preset"] = {
+                        "controller_setting": "bird_mode",
+                        "dependent_register_groups": [
+                            "gain_register",
+                            "sea_clutter_register",
+                        ],
+                        "dependent_fields": coupled_fields,
+                        "companions_from_readback": True,
+                    }
                 active_value_field = entry.get("active_value_field")
                 if active_value_field:
                     phase["settings"][active_value_field] = requested

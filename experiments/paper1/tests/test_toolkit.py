@@ -135,6 +135,88 @@ class ToolkitTests(unittest.TestCase):
         )
         self.assertTrue(all(phase["settings"]["range_index"] == 0 for phase in expanded["phases"]))
 
+    def test_bird_conditions_leave_coupled_registers_to_preset_readback(self) -> None:
+        experiment = {
+            "phases": [
+                {
+                    "id": "reference",
+                    "settings": {
+                        "range_index": 0,
+                        "bird_mode": 0,
+                        "gain_auto": False,
+                        "gain_value": 64,
+                        "sea_clutter_auto": False,
+                        "sea_clutter": 0,
+                    },
+                }
+            ],
+            "control_matrix": [{"setting": "bird_mode", "values": [0, 1, 2, 3]}],
+        }
+        expanded = expand_control_matrix(select_control_family(experiment, "bird_mode"))
+        references = [
+            phase for phase in expanded["phases"] if not phase.get("control")
+        ]
+        conditions = [
+            phase
+            for phase in expanded["phases"]
+            if phase.get("control", {}).get("role") == "condition"
+        ]
+        self.assertEqual(len(references), 5)
+        self.assertEqual(len(conditions), 4)
+        coupled_fields = {
+            "gain_auto",
+            "gain_value",
+            "gain_manual_value",
+            "gain_auto_value",
+            "sea_clutter",
+            "sea_clutter_auto",
+            "sea_clutter_auto_value",
+            "sea_clutter_mode",
+        }
+        self.assertIn("gain_value", references[0]["settings"])
+        self.assertIn("sea_clutter", references[0]["settings"])
+        for phase in conditions:
+            self.assertEqual(set(phase["settings"]) & coupled_fields, set())
+            self.assertEqual(phase["control"]["comparison_semantics"], "coupled_preset")
+            self.assertEqual(
+                phase["control"]["coupled_register_groups"],
+                ["gain_register", "sea_clutter_register"],
+            )
+            self.assertEqual(set(phase["control"]["coupled_fields"]), coupled_fields)
+            self.assertTrue(phase["coupled_preset"]["companions_from_readback"])
+
+    def test_bird_filter_requires_only_strict_bird_outcomes(self) -> None:
+        experiment = {
+            "phases": [
+                {
+                    "id": "reference",
+                    "settings": {"bird_mode": 0, "gain_value": 64, "sea_clutter": 0},
+                }
+            ],
+            "control_matrix": [{"setting": "bird_mode", "values": [0, 1]}],
+        }
+        expanded = expand_control_matrix(select_control_family(experiment, "bird_mode"))
+        filtered, skipped = filter_by_characterization_report(
+            expanded,
+            {
+                "control_characterization": {
+                    "outcomes": [
+                        {"setting": "bird_mode", "requested": 0, "outcome": "supported"},
+                        {"setting": "bird_mode", "requested": 1, "outcome": "supported"},
+                    ]
+                }
+            },
+        )
+        conditions = [
+            phase
+            for phase in filtered["phases"]
+            if phase.get("control", {}).get("role") == "condition"
+        ]
+        self.assertEqual(len(skipped), 0)
+        self.assertEqual([phase["settings"]["bird_mode"] for phase in conditions], [0, 1])
+        self.assertTrue(all("gain_value" not in phase["settings"] for phase in conditions))
+        self.assertTrue(all("sea_clutter" not in phase["settings"] for phase in conditions))
+
     def test_system_info_json_error_null_is_not_a_failure(self) -> None:
         info = parse_system_info(
             200,
