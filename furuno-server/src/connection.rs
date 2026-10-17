@@ -73,6 +73,7 @@ pub struct RegisterReadback {
     pub error: Option<String>,
     pub requested_at: String,
     pub read_at: String,
+    pub query_duration_ms: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -473,7 +474,10 @@ fn append_register_readback(
     prefix: &'static str,
 ) {
     let requested_at = unix_timestamp_millis();
-    match conn.send_and_read_ack(&requested, prefix, Duration::from_secs(3)) {
+    let query_started = Instant::now();
+    let outcome = conn.send_and_read_ack(&requested, prefix, Duration::from_secs(3));
+    let query_duration_ms = query_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    match outcome {
         Ok((true, raw)) => {
             let (register, values) = protocol::parse_response(&raw)
                 .map(|(id, vals)| (
@@ -489,6 +493,7 @@ fn append_register_readback(
                 error: None,
                 requested_at,
                 read_at: unix_timestamp_millis(),
+                query_duration_ms,
             });
         }
         Ok((false, detail)) => result.reads.push(RegisterReadback {
@@ -499,6 +504,7 @@ fn append_register_readback(
             error: Some(if detail.is_empty() { "timeout waiting for register response".into() } else { detail }),
             requested_at,
             read_at: unix_timestamp_millis(),
+            query_duration_ms,
         }),
         Err(error) => result.reads.push(RegisterReadback {
             requested,
@@ -508,6 +514,7 @@ fn append_register_readback(
             error: Some(error.to_string()),
             requested_at,
             read_at: unix_timestamp_millis(),
+            query_duration_ms,
         }),
     }
 }
@@ -794,6 +801,52 @@ mod socket_tests {
             .unwrap();
 
         assert_eq!(result, (true, "$N62,4,0,0".to_string()));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn register_readback_records_missing_connection_duration() {
+        let mut conn = RadarConnection::new(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST);
+        let mut snapshot = CurrentRadarReadback::default();
+        append_register_readback(
+            &mut snapshot,
+            &mut conn,
+            "$R62,0,0,0,0\r\n".into(),
+            "$N62,",
+        );
+
+        let read = &snapshot.reads[0];
+        assert!(read.error.is_some());
+        assert!(read.query_duration_ms < 100);
+    }
+
+    #[test]
+    fn register_readback_records_delayed_ack_duration() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut peer, _) = listener.accept().unwrap();
+            let mut command = [0u8; 32];
+            let count = peer.read(&mut command).unwrap();
+            assert_eq!(&command[..count], b"$R62,0,0,0,0\r\n");
+            std::thread::sleep(Duration::from_millis(75));
+            peer.write_all(b"$N62,4,0,0\r\n").unwrap();
+        });
+
+        let mut conn = RadarConnection::new(Ipv4Addr::LOCALHOST, Ipv4Addr::LOCALHOST);
+        conn.ctrl = Some(TcpStream::connect(address).unwrap());
+        let mut snapshot = CurrentRadarReadback::default();
+        append_register_readback(
+            &mut snapshot,
+            &mut conn,
+            "$R62,0,0,0,0\r\n".into(),
+            "$N62,",
+        );
+
+        let read = &snapshot.reads[0];
+        assert!(read.error.is_none());
+        assert_eq!(read.raw.as_deref(), Some("$N62,4,0,0"));
+        assert!(read.query_duration_ms >= 50);
         server.join().unwrap();
     }
 }

@@ -74,6 +74,7 @@ struct RawRegisterResponse {
     error: Option<String>,
     requested_at: String,
     read_at: String,
+    query_duration_ms: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -493,6 +494,22 @@ fn advance_refresh_schedule(
         skipped_ticks += 1;
     }
     (next_due, skipped_ticks, schedule_lag)
+}
+
+fn log_slowest_readback_if_slow(
+    source: &str,
+    register_query_ms: u128,
+    slowest: Option<(String, u64, bool)>,
+) {
+    if register_query_ms < SETTINGS_READBACK_REFRESH_INTERVAL.as_millis() {
+        return;
+    }
+    if let Some((register, query_duration_ms, failed)) = slowest {
+        let outcome = if failed { "error" } else { "ok" };
+        eprintln!(
+            "settings readback slowest register: source={source} total_query_ms={register_query_ms} register={register} query_ms={query_duration_ms} outcome={outcome}",
+        );
+    }
 }
 
 fn readback_query_age_exceeded(readback: &SettingsReadback) -> bool {
@@ -988,6 +1005,7 @@ fn build_settings_readback(
         error: read.error.clone(),
         requested_at: read.requested_at.clone(),
         read_at: read.read_at.clone(),
+        query_duration_ms: read.query_duration_ms,
     }).collect::<Vec<_>>();
     let verified = fields.values().all(|field| field.verified);
     let settings = CurrentSettings {
@@ -1110,6 +1128,11 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
     let register_query_started = Instant::now();
     let snapshot = conn.read_current_settings();
     let register_query_ms = register_query_started.elapsed().as_millis();
+    let slowest_register = snapshot
+        .reads
+        .iter()
+        .max_by_key(|read| read.query_duration_ms)
+        .map(|read| (read.register.clone(), read.query_duration_ms, read.error.is_some()));
     let firmware = conn.firmware.clone().unwrap_or_default();
     let radar_ip = conn.radar_ip;
     let host_ip = conn.host_ip;
@@ -1131,6 +1154,7 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
         };
         let total_ms = refresh_started.elapsed().as_millis();
         drop(conn);
+        log_slowest_readback_if_slow(source, register_query_ms, slowest_register);
         eprintln!(
             "settings readback timing: source={source} connection_lock_wait_ms={connection_lock_wait_ms} register_query_ms={register_query_ms} publication_ms=0 total_ms={total_ms} outcome=older_snapshot",
         );
@@ -1189,6 +1213,7 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
     let total_ms = refresh_started.elapsed().as_millis();
     drop(conn);
     drop(_snapshot_guard);
+    log_slowest_readback_if_slow(source, register_query_ms, slowest_register);
     eprintln!(
         "settings readback timing: source={source} connection_lock_wait_ms={connection_lock_wait_ms} register_query_ms={register_query_ms} publication_ms={publication_ms} total_ms={total_ms} verified={verified}",
     );
@@ -3919,6 +3944,7 @@ mod tests {
             error: None,
             requested_at: "unix_ms:test".into(),
             read_at: "unix_ms:test".into(),
+            query_duration_ms: 7,
         }
     }
 
@@ -3990,6 +4016,9 @@ mod tests {
         assert_eq!(readback.raw_register_responses.len(), 17);
         assert_eq!(readback.raw_register_responses[1].raw.as_deref(), Some("$N63,1,12,0,80,0"));
         assert_eq!(readback.raw_register_responses[3].values.last().map(String::as_str), Some("999"));
+        assert_eq!(readback.raw_register_responses[1].query_duration_ms, 7);
+        let serialized = serde_json::to_value(&readback.raw_register_responses[1]).unwrap();
+        assert_eq!(serialized["query_duration_ms"], 7);
 
         assert!(validate_command_against_readback(
             &readback,
