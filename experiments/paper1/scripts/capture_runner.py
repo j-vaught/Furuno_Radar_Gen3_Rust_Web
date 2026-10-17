@@ -1430,6 +1430,45 @@ def apply_phase(base: str, phase: dict[str, Any], fp: Any, timeout: float) -> li
             )
             current = _verified_settings(current_result)
 
+    # Bird processing can rewrite gain and clutter registers on the installed
+    # firmware. Apply it before those dependent register groups, after Doppler
+    # has been handled and refreshed above.
+    if "bird_mode" in settings:
+        requested_bird = settings.pop("bird_mode")
+        if current.get("bird_mode") == requested_bird:
+            event = {
+                "setting": "bird_mode",
+                "requested": requested_bird,
+                "actual": current.get("bird_mode"),
+                "actual_source": "pre_apply_fresh_readback",
+                "skipped": True,
+                "reason": "fresh readback already matched requested mode",
+                "command_time_utc": utc_now(),
+            }
+            log_event(fp, "setting_skipped", **event)
+            changes.append(event)
+        else:
+            path, params = setting_requests("bird_mode", requested_bird, current)
+            status, body = http_request(base, path, params, timeout)
+            require_success(status, body, f"phase {phase.get('id', '<unknown>')} bird_mode")
+            event = {
+                "setting": "bird_mode",
+                "requested": requested_bird,
+                "request_path": path,
+                "request_params": params,
+                "http_status": status,
+                "response": body,
+                "command_time_utc": utc_now(),
+                "ack_time_utc": utc_now(),
+            }
+            log_event(fp, "setting_command", **event)
+            changes.append(event)
+            current_result = readback(base, fp, timeout, fresh_required=True)
+            require_confirmed_readback(
+                current_result, f"phase {phase.get('id', '<unknown>')} post-bird readback"
+            )
+            current = _verified_settings(current_result)
+
     groups = {
         "gain_register": {"gain_auto", "gain_value", "gain_manual_value", "gain_auto_value"},
         "sea_clutter_register": {
@@ -1767,6 +1806,11 @@ def _restore_grouped_baseline(
             target_doppler = target.get("doppler")
             if target_doppler is not None and current.get("doppler") not in {None, 0}:
                 perform("doppler", 0, target, {"tx_state", "doppler"})
+            # Bird processing can rewrite gain and clutter registers. Restore
+            # Bird first so the dependent baseline writes below are authoritative.
+            target_bird = target.get("bird_mode")
+            if target_bird is not None and current.get("bird_mode") != target_bird:
+                perform("bird_mode", target_bird, target, {"tx_state", "bird_mode"})
             # Scalar settings are only sent when the verified value differs.
             for setting in ("range_index", "pulse_width"):
                 if setting in target and current.get(setting) != target[setting]:
@@ -1857,7 +1901,6 @@ def _restore_grouped_baseline(
                 "interference_rejection",
                 "noise_reduction",
                 "antenna_height_raw",
-                "bird_mode",
                 "main_bang",
             ):
                 if setting in target and current.get(setting) != target[setting]:
@@ -1924,6 +1967,10 @@ def restore_verified_baseline(
         if value is not None:
             command_order.append((setting, value))
 
+    # Bird processing can rewrite gain and clutter registers. Place Bird
+    # before those dependent baseline writes; Doppler is inserted at index zero
+    # below when present, so it remains first.
+    add("bird_mode", target.get("bird_mode"))
     # Mode-sensitive gain restoration stages the hidden value in the opposite
     # mode, then restores the requested mode and visible value.
     desired_gain_auto = target.get("gain_auto")
@@ -1964,7 +2011,6 @@ def restore_verified_baseline(
         "interference_rejection",
         "noise_reduction",
         "antenna_height_raw",
-        "bird_mode",
         "main_bang",
         "antenna_speed",
         "antenna_hi_rpm",
