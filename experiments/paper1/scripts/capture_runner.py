@@ -164,7 +164,7 @@ def provenance(plan_path: Path | None = None) -> dict[str, Any]:
             check=True,
             capture_output=True,
             text=True,
-            timeout=3,
+            timeout=60,
         ).stdout.strip()
         dirty = bool(
             subprocess.run(
@@ -172,7 +172,7 @@ def provenance(plan_path: Path | None = None) -> dict[str, Any]:
                 check=True,
                 capture_output=True,
                 text=True,
-                timeout=3,
+                timeout=60,
             ).stdout.strip()
         )
     except (OSError, subprocess.SubprocessError) as exc:

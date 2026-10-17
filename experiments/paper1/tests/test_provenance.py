@@ -1,15 +1,36 @@
 import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from scripts import capture_runner
 
 
 class ProvenanceTests(unittest.TestCase):
+    def test_provenance_fails_closed_on_slow_git_status(self) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_git(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+            calls.append(kwargs)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(args[0], 0, stdout="abc123\n", stderr="")
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+        with patch.object(capture_runner.subprocess, "run", side_effect=fake_git):
+            result = capture_runner.provenance()
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual([call["timeout"] for call in calls], [60, 60])
+        self.assertIsNone(result["git_commit"])
+        self.assertIsNone(result["git_dirty"])
+        self.assertEqual(result["files"], {})
+        self.assertIn("TimeoutExpired", result["git_error"])
+
     def test_dry_run_records_effective_alternate_plan(self) -> None:
         source_root = Path(__file__).parents[1]
         canonical_plan = source_root / "plans/paper1_experiments.json"
