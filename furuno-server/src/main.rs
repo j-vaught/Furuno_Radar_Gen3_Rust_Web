@@ -26,71 +26,127 @@ pub fn host_ip() -> Ipv4Addr {
     *RESOLVED_HOST_IP.get().unwrap_or(&DEFAULT_HOST_IP)
 }
 
-fn resolve_ips(args: &[String]) {
-    let mut radar_ip: Option<Ipv4Addr> = None;
-    let mut host_ip: Option<Ipv4Addr> = None;
-    let mut i = 0;
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CliOptions {
+    radar_ip: Option<Ipv4Addr>,
+    host_ip: Option<Ipv4Addr>,
+    interface: Option<String>,
+    configure_network: bool,
+    positional: Vec<String>,
+}
+
+fn parse_args(args: &[String]) -> Result<CliOptions, String> {
+    let mut options = CliOptions::default();
+    let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--radar-ip" if i + 1 < args.len() => {
-                radar_ip = args[i + 1].parse().ok();
+            "--radar-ip" | "--host-ip" | "--interface" => {
+                let flag = args[i].as_str();
+                let value = args.get(i + 1).ok_or_else(|| format!("{flag} requires a value"))?;
+                if value.starts_with('-') {
+                    return Err(format!("{flag} requires a value"));
+                }
+                match flag {
+                    "--radar-ip" => {
+                        options.radar_ip = Some(value.parse().map_err(|_| format!("Invalid radar IPv4 address {value:?}"))?);
+                    }
+                    "--host-ip" => {
+                        options.host_ip = Some(value.parse().map_err(|_| format!("Invalid host IPv4 address {value:?}"))?);
+                    }
+                    "--interface" => options.interface = Some(value.clone()),
+                    _ => unreachable!(),
+                }
                 i += 2;
             }
-            "--host-ip" if i + 1 < args.len() => {
-                host_ip = args[i + 1].parse().ok();
-                i += 2;
+            "--configure-network" => {
+                options.configure_network = true;
+                i += 1;
             }
-            _ => { i += 1; }
+            value if value.starts_with("--") => {
+                return Err(format!("Unknown option {value}"));
+            }
+            value => {
+                options.positional.push(value.to_string());
+                i += 1;
+            }
+        }
+    }
+    Ok(options)
+}
+
+fn resolve_ips(options: &CliOptions) -> Result<(), String> {
+    if let Some(interface_name) = options.interface.as_deref() {
+        if protocol::detect_interfaces().iter().all(|iface| iface.name != interface_name) {
+            return Err(format!(
+                "Interface {interface_name:?} has no detected IPv4 address. Connect it and retry, or omit --interface."
+            ));
         }
     }
 
-    if let Some(rip) = radar_ip {
-        let hip = host_ip.unwrap_or_else(|| {
-            protocol::ensure_subnet_reachable(rip, DEFAULT_HOST_IP)
-        });
+    if let Some(rip) = options.radar_ip {
+        let hip = match options.host_ip {
+            Some(hip) => hip,
+            None => protocol::ensure_subnet_reachable(
+                rip,
+                DEFAULT_HOST_IP,
+                options.interface.as_deref(),
+                options.configure_network,
+            )?,
+        };
         let _ = RESOLVED_RADAR_IP.set(rip);
         let _ = RESOLVED_HOST_IP.set(hip);
         println!("Using radar={rip}, host={hip} (from args)");
-        return;
+        return Ok(());
     }
 
     // Try auto-discovery (3 second timeout)
     println!("Auto-discovering radar...");
-    if let Some((rip, hip)) = protocol::discover_radar(3) {
-        let hip = host_ip.unwrap_or(hip);
+    if let Some((rip, discovered_host_ip)) =
+        protocol::discover_radar_on_interface(3, options.interface.as_deref())
+    {
+        let hip = options.host_ip.unwrap_or(discovered_host_ip);
         let _ = RESOLVED_RADAR_IP.set(rip);
         let _ = RESOLVED_HOST_IP.set(hip);
         println!("Using radar={rip}, host={hip} (auto-discovered)");
-        return;
+        return Ok(());
     }
 
-    // Fall back to defaults — ensure we can reach the radar's subnet
+    // Keep the known radar fallback, but require an explicit host address or
+    // an explicitly authorized interface configuration.
     let rip = DEFAULT_RADAR_IP;
-    let hip = host_ip.unwrap_or_else(|| {
-        protocol::ensure_subnet_reachable(rip, DEFAULT_HOST_IP)
-    });
+    let hip = match options.host_ip {
+        Some(hip) => hip,
+        None => protocol::ensure_subnet_reachable(
+            rip,
+            DEFAULT_HOST_IP,
+            options.interface.as_deref(),
+            options.configure_network,
+        )?,
+    };
     let _ = RESOLVED_RADAR_IP.set(rip);
     let _ = RESOLVED_HOST_IP.set(hip);
     println!("Discovery failed. Falling back to radar={rip}, host={hip}");
+    Ok(())
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-
-    // Filter out --radar-ip/--host-ip flags to get positional args
-    let mut positional: Vec<String> = Vec::new();
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--radar-ip" | "--host-ip" => { i += 2; } // skip flag + value
-            _ => { positional.push(args[i].clone()); i += 1; }
+    let options = match parse_args(&args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            eprintln!("Usage: furuno-server [--radar-ip IP] [--host-ip IP] [--interface NAME] [--configure-network] <mode>");
+            std::process::exit(2);
         }
-    }
+    };
 
-    let mode = positional.first().map(|s| s.as_str()).unwrap_or("handshake");
+    let mode = options.positional.first().map(|s| s.as_str()).unwrap_or("handshake");
 
     // Resolve IPs for modes that need the radar
-    resolve_ips(&args);
+    if let Err(error) = resolve_ips(&options) {
+        eprintln!("Startup network configuration failed.\n{error}");
+        std::process::exit(2);
+    }
 
     match mode {
         "handshake" => modes::run_handshake(),
@@ -100,25 +156,58 @@ fn main() {
         "full" => modes::run_full(),
         "command" => modes::run_command_test(),
         "render-live" => {
-            let out_path = positional.get(1).map(|s| s.as_str()).unwrap_or("radar_live.png");
+            let out_path = options.positional.get(1).map(|s| s.as_str()).unwrap_or("radar_live.png");
             modes::run_render_live(out_path);
         }
         "dump-raw" => {
-            let count: usize = positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(5);
+            let count: usize = options.positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(5);
             modes::run_dump_raw(count);
         }
         "test-commands" => testing::run_test_commands(),
         "discover" => modes::run_discover(),
         "validate" => testing::run_validate(),
         "web" => {
-            let port: u16 = positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(8080);
-            let web_dir = positional.get(2).map(|s| s.as_str()).unwrap_or("../web");
+            let port: u16 = options.positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(8080);
+            let web_dir = options.positional.get(2).map(|s| s.as_str()).unwrap_or("../web");
             web::start_server(radar_ip(), host_ip(), web_dir, port);
         }
         _ => {
-            eprintln!("Usage: furuno-server [--radar-ip IP] [--host-ip IP] <mode>");
+            eprintln!("Usage: furuno-server [--radar-ip IP] [--host-ip IP] [--interface NAME] [--configure-network] <mode>");
             eprintln!("Modes: handshake|tx-on|tx-off|echo|full|command|render-live|test-commands|discover|validate|web");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn parses_interface_and_opt_in_network_configuration() {
+        let args = vec![
+            "furuno-server".into(),
+            "--radar-ip".into(),
+            "172.31.3.226".into(),
+            "--host-ip".into(),
+            "172.31.1.100".into(),
+            "--interface".into(),
+            "en5".into(),
+            "--configure-network".into(),
+            "handshake".into(),
+        ];
+        let parsed = parse_args(&args).unwrap();
+
+        assert_eq!(parsed.radar_ip, Some(Ipv4Addr::new(172, 31, 3, 226)));
+        assert_eq!(parsed.host_ip, Some(Ipv4Addr::new(172, 31, 1, 100)));
+        assert_eq!(parsed.interface.as_deref(), Some("en5"));
+        assert!(parsed.configure_network);
+        assert_eq!(parsed.positional, vec!["handshake"]);
+    }
+
+    #[test]
+    fn rejects_missing_interface_value() {
+        let args = vec!["furuno-server".into(), "--interface".into()];
+        assert!(parse_args(&args).is_err());
     }
 }

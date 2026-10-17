@@ -21,10 +21,13 @@
       <h2>Connection</h2>
       <input type="hidden" id="radarNo" value="0">
       <div id="connStatus" class="callout" data-variant="info">Checking connection...</div>
+      <div id="settingsReadbackStatus" class="callout" data-variant="info">Radar settings have not been read back yet.</div>
       <div class="inline-actions">
         <button class="primary" onclick="reconnectRadar()" style="flex: 1;">Reconnect</button>
         <button class="secondary" onclick="refreshConnectionStatus()" style="flex: 1;">Refresh Status</button>
       </div>
+      <button class="secondary" onclick="refreshAllReadbacks()" style="width: 100%;">Read all confirmed settings</button>
+      <p class="small-note">Refresh actions query the radar and update the controls only after a confirmed response. Values shown before a successful read are user inputs or command fields, not measured radar state.</p>
     </section>
 
     <section class="panel">
@@ -151,7 +154,7 @@
         </select>
         <div class="inline-actions">
           <button class="secondary" onclick="setRezBoost()" style="flex: 1;">Apply</button>
-          <button class="secondary" onclick="refreshRezBoost()" style="flex: 1;">Refresh</button>
+          <button class="secondary" onclick="refreshRezBoost()" style="flex: 1;" data-unavailable="true" disabled title="No RezBoost read endpoint is available.">Refresh unavailable</button>
         </div>
       </div>
       <div class="stack">
@@ -172,9 +175,10 @@
         </select>
       </div>
       <div class="inline-actions">
-        <button class="secondary" onclick="applySweepInterp()" style="flex: 1;">Apply</button>
+        <button class="secondary" onclick="applySweepInterp()" style="flex: 1;" data-unavailable="true" disabled title="Sweep count and interpolation endpoints are unavailable.">Apply unavailable</button>
         <button class="secondary" onclick="refreshDisplay()" style="flex: 1;">Refresh</button>
       </div>
+      <p class="small-note">Sweep count and interpolation controls are unavailable until server support is added.</p>
       <div id="rezboostResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
       <div id="displaySweepResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
     </section>
@@ -208,6 +212,31 @@
     </section>
 
     <section class="panel calib-lock-card">
+      <h2>Noise Reduction and Antenna Height</h2>
+      <div class="stack">
+        <label for="noiseReductionMode">Noise reduction <span class="info-tip" data-tip="Protocol S67 noise-reduction selector. The UI records the raw radar state separately from interference rejection.">i</span></label>
+        <select id="noiseReductionMode">
+          <option value="0">Off</option>
+          <option value="1">On</option>
+        </select>
+        <div class="inline-actions">
+          <button class="secondary" onclick="setNoiseReduction()" style="flex: 1;">Apply</button>
+          <button class="secondary" onclick="refreshNoiseReduction()" style="flex: 1;">Refresh</button>
+        </div>
+      </div>
+      <div class="stack">
+        <label for="antennaHeightRaw">Antenna height raw setting <span class="info-tip" data-tip="Numeric S84 antenna-height protocol value. This is the radar setting only and does not document the physical mounting height or units.">i</span></label>
+        <input id="antennaHeightRaw" type="number" value="0" min="0" step="1">
+        <div class="inline-actions">
+          <button class="secondary" onclick="setAntennaHeight()" style="flex: 1;">Apply</button>
+          <button class="secondary" onclick="refreshAntennaHeight()" style="flex: 1;">Refresh</button>
+        </div>
+      </div>
+      <div id="hardwareSettingResult" class="callout callout--compact" style="display:none" role="status" aria-live="polite"></div>
+      <p class="small-note">Physical mounting height, antenna geometry, and installation orientation are experiment metadata and must be recorded separately.</p>
+    </section>
+
+    <section class="panel calib-lock-card">
       <h2>Gain</h2>
       <div class="stack">
         <label for="gainMode">Gain mode <span class="info-tip" data-tip="Manual: set gain directly. Auto: radar adjusts gain automatically with a bias offset.">i</span></label>
@@ -218,12 +247,12 @@
       </div>
       <div class="grid grid--two">
         <div class="stack" data-gain-mode="manual">
-          <label for="gainManual">Manual gain <span class="info-tip" data-tip="Receiver gain level. 0 = minimum sensitivity, 100 = maximum. Higher values show weaker echoes but also more noise.">i</span></label>
-          <input type="number" id="gainManual" value="50" min="0" max="100">
+          <label for="gainManual">Manual gain raw control value <span class="info-tip" data-tip="Raw manual gain control value sent to the radar. Standby characterization accepted values from 0 through 100; this is a control value, not a percentage or ADC bit depth.">i</span></label>
+          <input type="number" id="gainManual" value="64" min="0" max="100">
           <button class="secondary" onclick="setGainManual()">Apply manual</button>
         </div>
         <div class="stack" data-gain-mode="auto">
-          <label for="gainAuto">Auto gain <span class="info-tip" data-tip="Bias offset for automatic gain control. 0–100. Higher values make auto gain more aggressive (shows weaker targets).">i</span></label>
+          <label for="gainAuto">Auto gain raw control value <span class="info-tip" data-tip="Raw automatic gain control value sent to the radar. Standby characterization accepted values from 0 through 100; this is a control value, not a percentage.">i</span></label>
           <input type="number" id="gainAuto" value="30" min="0" max="100">
           <button class="secondary" onclick="setGainAuto()">Apply auto</button>
         </div>
@@ -277,7 +306,7 @@
           </div>
         </div>
         <div class="stack">
-          <label for="birdMode">Bird Mode <span class="info-tip" data-tip="Filters echoes from birds and insects. Off/Low/Medium/High. Higher settings suppress more bird clutter but may also suppress small real targets.">i</span></label>
+          <label for="birdMode">Bird Mode <span class="info-tip" data-tip="Operational small-bird return mode. Off/Low/Medium/High. Record the selected radar level and characterize its effect with controlled captures.">i</span></label>
           <select id="birdMode">
             <option value="0">Off</option>
             <option value="1">Low</option>
@@ -290,11 +319,11 @@
           </div>
         </div>
         <div class="stack">
-          <label for="dopplerMode">Doppler <span class="info-tip" data-tip="Doppler processing to distinguish moving targets. Off = normal echo. Internal heading uses the radar's own heading sensor. External heading requires an external NMEA heading source.">i</span></label>
+          <label for="dopplerMode">Radar processing mode (EF) <span class="info-tip" data-tip="Observed EF register mode. Values 0, 1, and 2 are recorded as numeric radar processing modes; manufacturer semantics are not assigned here.">i</span></label>
           <select id="dopplerMode">
-            <option value="0">Off</option>
-            <option value="1">On (internal heading)</option>
-            <option value="2">On (external heading)</option>
+            <option value="0">0</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
           </select>
           <div class="inline-actions">
             <button class="secondary" onclick="setDoppler()" style="flex: 1;">Apply</button>
@@ -315,12 +344,12 @@
             <option value="auto">Auto</option>
           </select>
           <div data-clutter-mode="sea-manual">
-            <label for="seaMan">A/C SEA manual <span class="info-tip" data-tip="Manual sea clutter rejection level. 0–100. Increase in rough seas to reduce wave returns.">i</span></label>
-            <input id="seaMan" type="number" value="20" min="0" max="100">
+            <label for="seaMan">A/C SEA manual <span class="info-tip" data-tip="Manual radar sea-clutter value. The valid range is device-specific; record the accepted command and readback during characterization.">i</span></label>
+            <input id="seaMan" type="number" value="20" min="0">
           </div>
           <div data-clutter-mode="sea-auto" style="display:none;">
-            <label for="seaAuto">A/C SEA auto <span class="info-tip" data-tip="Bias for automatic sea clutter control. 0–100. Higher values make the filter more aggressive.">i</span></label>
-            <input id="seaAuto" type="number" value="30" min="0" max="100">
+            <label for="seaAuto">A/C SEA auto <span class="info-tip" data-tip="Automatic sea-clutter value. The valid range is device-specific; record the accepted command and readback during characterization.">i</span></label>
+            <input id="seaAuto" type="number" value="30" min="0">
           </div>
           <button class="secondary" onclick="setACSEA()">Apply SEA</button>
         </div>
@@ -331,12 +360,12 @@
             <option value="auto">Auto</option>
           </select>
           <div data-clutter-mode="rain-manual">
-            <label for="rainMan">A/C RAIN manual <span class="info-tip" data-tip="Manual rain clutter rejection level. 0–100. Increase during heavy rain to reduce precipitation returns.">i</span></label>
-            <input id="rainMan" type="number" value="40" min="0" max="100">
+            <label for="rainMan">A/C RAIN manual <span class="info-tip" data-tip="Manual radar rain-clutter value. The valid range is device-specific; record the accepted command and readback during characterization.">i</span></label>
+            <input id="rainMan" type="number" value="40" min="0">
           </div>
           <div data-clutter-mode="rain-auto" style="display:none;">
-            <label for="rainAuto">A/C RAIN auto <span class="info-tip" data-tip="Bias for automatic rain clutter control. 0–100. Higher values make the filter more aggressive.">i</span></label>
-            <input id="rainAuto" type="number" value="50" min="0" max="100">
+            <label for="rainAuto">A/C RAIN auto <span class="info-tip" data-tip="Automatic radar rain-clutter value. The valid range is device-specific; record the accepted command and readback during characterization.">i</span></label>
+            <input id="rainAuto" type="number" value="50" min="0">
           </div>
           <button class="secondary" onclick="setACRAIN()">Apply RAIN</button>
         </div>

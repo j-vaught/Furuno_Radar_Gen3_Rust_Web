@@ -1,0 +1,17 @@
+{
+  "schema_version": "paper1-target-manifest-1.0",
+  "coordinate_reference": "RECORD_REFERENCE_FRAME",
+  "targets": [
+    {
+      "target_id": "T01",
+      "range_m": 0.0,
+      "bearing_deg": 0.0,
+      "position_reference": "RECORD_SURVEY_OR_MEASUREMENT_REFERENCE",
+      "measurement_method": "RECORD_TAPE_GNSS_TOTAL_STATION_OR_OTHER_METHOD",
+      "uncertainty_m": 0.0,
+      "uncertainty_bearing_deg": 0.0,
+      "photo_paths": [],
+      "notes": "Replace every placeholder with an observed value before E4."
+    }
+  ]
+}

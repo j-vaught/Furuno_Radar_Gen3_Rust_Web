@@ -1,0 +1,38 @@
+{
+  "operator": "J.C. Vaught",
+  "clock_sync": "record the observed macOS time synchronization state before the run",
+  "capture_estimate": {"packets_per_second": null, "payload_bytes": null},
+  "timing_estimate": {
+    "control_write_s_per_phase": null,
+    "restoration_s_per_phase": null,
+    "source": "Fill from a measured dry-run or prior completed phase before a long campaign."
+  },
+  "radar": {
+    "model": "Furuno DRS4D-NXT",
+    "serial_number": "RECORD_FROM_LABEL",
+    "firmware": "RECORD_FROM_CONTROLLER",
+    "radar_ip": "172.31.3.226",
+    "host_ip": "172.31.1.100",
+    "interface": "en5",
+    "mount_height_m": null,
+    "antenna_height_raw": null,
+    "heading_reference_deg": null
+  },
+  "scene": {
+    "environment": "indoor",
+    "description": "RECORD_INDOOR_SCENE_AND_OCCLUSIONS",
+    "indoor_location": "RECORD_ROOM_OR_LAB",
+    "weather": {"status": "N/A indoors", "wind_mps": "N/A", "precipitation": "N/A", "visibility_m": "N/A", "sea_state": "N/A"},
+    "position": {"latitude_deg": "N/A indoors", "longitude_deg": "N/A indoors", "coordinate_reference": "N/A for indoor standby characterization"},
+    "photos": [
+      {"path": "PHOTO_PATH", "sha256": "PHOTO_SHA256", "kind": "radar_and_scene"}
+    ]
+  },
+  "hardware_record": {
+    "radar_mount_photo": "PHOTO_PATH",
+    "radar_label_photo": "PHOTO_PATH",
+    "ethernet_photo": "PHOTO_PATH",
+    "network_settings_photo": "PHOTO_PATH",
+    "target_photo_paths": []
+  }
+}

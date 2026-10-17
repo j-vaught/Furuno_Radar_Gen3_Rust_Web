@@ -1,0 +1,13 @@
+{
+  "status": "ready",
+  "fixture_kind": "compile_test_only",
+  "source": "compile-test fixture; not an empirical result",
+  "event_index": [0, 1, 2, 3],
+  "readback_match": [1, 1, 0, 1],
+  "setting_labels": ["gain", "range", "pulse", "clutter"],
+  "requested_labels": ["64", "2", "0", "10"],
+  "readback_labels": ["64", "2", "1", "10"]
+  ,"categories": ["accepted", "rejected", "clamped", "deferred", "restored", "superseded"]
+  ,"category_counts": [2, 1, 0, 0, 1, 0]
+  ,"unclassified_count": 0
+}

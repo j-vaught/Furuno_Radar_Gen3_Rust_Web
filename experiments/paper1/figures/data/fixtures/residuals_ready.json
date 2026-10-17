@@ -1,0 +1,9 @@
+{
+  "status": "ready",
+  "fixture_kind": "compile_test_only",
+  "source": "compile-test fixture; not an empirical result",
+  "range_m": [10, 20, 30, 40],
+  "range_error_m": [0.2, -0.3, 0.1, -0.4],
+  "bearing_deg": [-30, -10, 10, 30],
+  "bearing_error_deg": [1.2, -0.6, 0.4, -1.0]
+}

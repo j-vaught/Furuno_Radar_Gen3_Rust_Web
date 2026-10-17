@@ -1,0 +1,1765 @@
+{
+  "schema_version": "paper1-experiment-plan-1.0",
+  "paper": "Paper 1: acquisition, representation, and provenance of commercial marine radar measurements",
+  "purpose": "Establish live acquisition, settings readback, persistence, settling, repeated-scan, and geometry evidence before any perception study.",
+  "operator_stop_rule": "Stop a run if the radar is not secured, the antenna sector is not clear, the returned setting does not match the requested setting, the output volume is not mounted and writable, or the receiver reports malformed or unexplained packets.",
+  "control_characterization": {
+    "description": "Standby-only write/readback coverage. The values below are wire-level probe points from the current command tables, not claims about the installed unit's accepted range. A live result must classify each point from the command response and subsequent verified readback, then restore every baseline field.",
+    "required_readback_fields": [
+      "tx_state",
+      "range_index",
+      "gain_auto",
+      "gain_value",
+      "gain_manual_value",
+      "gain_auto_value",
+      "sea_clutter",
+      "sea_clutter_auto",
+      "sea_clutter_auto_value",
+      "sea_clutter_mode",
+      "rain_clutter",
+      "rain_clutter_auto",
+      "rain_clutter_auto_value",
+      "rain_clutter_ftc_mode",
+      "rain_clutter_mode",
+      "pulse_width",
+      "pulse_range_index",
+      "main_bang",
+      "near_stc",
+      "middle_stc",
+      "far_stc",
+      "antenna_speed",
+      "antenna_hi_rpm",
+      "bird_mode",
+      "rezboost",
+      "doppler",
+      "interference_rejection",
+      "interference_rejection_level",
+      "noise_reduction",
+      "noise_reduction_level",
+      "antenna_height_raw"
+    ],
+    "restore_all_baseline_fields": true,
+    "controls": [
+      {
+        "id": "range_index",
+        "setting": "range_index",
+        "values": [
+          21,
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          19,
+          15
+        ]
+      },
+      {
+        "id": "pulse_width_by_range",
+        "setting": "pulse_width",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "context": "repeat for every range_index, retaining pulse_range_index and restoring the baseline pulse for each range"
+      },
+      {
+        "id": "gain_manual",
+        "setting": "gain_value",
+        "precondition": {
+          "gain_auto": false
+        },
+        "values": [
+          0,
+          25,
+          50,
+          64,
+          75,
+          100
+        ]
+      },
+      {
+        "id": "gain_auto_mode",
+        "setting": "gain_auto",
+        "values": [
+          false,
+          true
+        ]
+      },
+      {
+        "id": "gain_auto_value",
+        "setting": "gain_auto_value",
+        "precondition": {
+          "gain_auto": true
+        },
+        "values": [
+          0,
+          25,
+          50,
+          75,
+          100
+        ]
+      },
+      {
+        "id": "sea_manual",
+        "setting": "sea_clutter",
+        "precondition": {
+          "sea_clutter_auto": false
+        },
+        "values": [
+          0,
+          1,
+          50,
+          64,
+          100,
+          128,
+          192,
+          254,
+          255
+        ],
+        "source_expected_limits": {
+          "min": 0,
+          "max": 100
+        }
+      },
+      {
+        "id": "sea_auto_mode",
+        "setting": "sea_clutter_auto",
+        "values": [
+          false,
+          true
+        ]
+      },
+      {
+        "id": "sea_auto_value",
+        "setting": "sea_clutter_auto_value",
+        "precondition": {
+          "sea_clutter_auto": true
+        },
+        "values": [
+          0,
+          1,
+          50,
+          100,
+          128,
+          254,
+          255
+        ],
+        "source_expected_limits": {
+          "min": 0,
+          "max": 100
+        }
+      },
+      {
+        "id": "rain_manual",
+        "setting": "rain_clutter",
+        "precondition": {
+          "rain_clutter_auto": false
+        },
+        "values": [
+          0,
+          1,
+          50,
+          64,
+          100,
+          128,
+          192,
+          254,
+          255
+        ],
+        "source_expected_limits": {
+          "min": 0,
+          "max": 100
+        }
+      },
+      {
+        "id": "rain_auto_mode",
+        "setting": "rain_clutter_auto",
+        "values": [
+          false,
+          true
+        ]
+      },
+      {
+        "id": "rain_auto_value",
+        "setting": "rain_clutter_auto_value",
+        "precondition": {
+          "rain_clutter_auto": true
+        },
+        "values": [
+          0,
+          1,
+          50,
+          100,
+          128,
+          254,
+          255
+        ],
+        "source_expected_limits": {
+          "min": 0,
+          "max": 100
+        }
+      },
+      {
+        "id": "rain_ftc_mode",
+        "setting": "rain_clutter_ftc_mode",
+        "values": [
+          0,
+          1,
+          2
+        ]
+      },
+      {
+        "id": "rain_mode",
+        "setting": "rain_clutter_mode",
+        "values": [
+          0,
+          1,
+          2
+        ]
+      },
+      {
+        "id": "sea_mode",
+        "setting": "sea_clutter_mode",
+        "values": [
+          0,
+          1
+        ]
+      },
+      {
+        "id": "near_stc",
+        "setting": "near_stc",
+        "values": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      {
+        "id": "middle_stc",
+        "setting": "middle_stc",
+        "values": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      {
+        "id": "far_stc",
+        "setting": "far_stc",
+        "values": [
+          0,
+          1,
+          2
+        ]
+      },
+      {
+        "id": "rezboost",
+        "setting": "rezboost",
+        "values": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      {
+        "id": "interference_rejection",
+        "setting": "interference_rejection",
+        "values": [
+          false,
+          true
+        ]
+      },
+      {
+        "id": "noise_reduction",
+        "setting": "noise_reduction",
+        "values": [
+          false,
+          true
+        ]
+      },
+      {
+        "id": "antenna_height_raw",
+        "setting": "antenna_height_raw",
+        "values": [
+          0,
+          1,
+          5,
+          10
+        ],
+        "source_expected_units": "protocol raw N84 field 1; physical mount height is recorded separately"
+      },
+      {
+        "id": "bird_mode",
+        "setting": "bird_mode",
+        "values": [
+          0,
+          1,
+          2,
+          3
+        ]
+      },
+      {
+        "id": "doppler",
+        "setting": "doppler",
+        "values": [
+          0,
+          1,
+          2
+        ]
+      },
+      {
+        "id": "main_bang",
+        "setting": "main_bang",
+        "values": [
+          0,
+          1,
+          64,
+          128,
+          254,
+          255
+        ]
+      },
+      {
+        "id": "antenna_speed_and_hi_rpm",
+        "setting": "antenna_speed",
+        "values": [
+          0,
+          1,
+          2
+        ],
+        "companion_setting": "antenna_hi_rpm",
+        "companion_values": [
+          false,
+          true
+        ]
+      }
+    ]
+  },
+  "hardware_record": {
+    "required_photos": [
+      "radar and mounting location with the antenna sector visible",
+      "radar label or serial-number plate",
+      "radar Ethernet connection and host adapter",
+      "host network settings showing the radar interface",
+      "target scene from the radar viewpoint",
+      "each known target with a scale reference or surveyed marker"
+    ],
+    "required_fields": [
+      "session_id",
+      "operator",
+      "utc_start and utc_end",
+      "host_name and operating_system",
+      "host_clock_source and synchronization status",
+      "radar_model, serial_number, firmware",
+      "antenna_mount_height_m and heading_reference_deg",
+      "radar_position_lat_deg, radar_position_lon_deg, and coordinate_reference",
+      "network_interface, host_ip, radar_ip",
+      "weather, sea_state, wind, precipitation, and visibility",
+      "scene_description and occlusions",
+      "photo_paths and file hashes"
+    ]
+  },
+  "source_modes_and_probe_points": {
+    "interpretation": "Protocol/table values used for observation. They do not establish installed-hardware acceptance or manufacturer operating limits; the readback outcome is authoritative.",
+    "range_index_to_label_m": {
+      "21": [
+        "1/16 NM",
+        116
+      ],
+      "0": [
+        "1/8 NM",
+        231
+      ],
+      "1": [
+        "1/4 NM",
+        463
+      ],
+      "2": [
+        "1/2 NM",
+        926
+      ],
+      "3": [
+        "3/4 NM",
+        1389
+      ],
+      "4": [
+        "1 NM",
+        1852
+      ],
+      "5": [
+        "1.5 NM",
+        2778
+      ],
+      "6": [
+        "2 NM",
+        3704
+      ],
+      "7": [
+        "3 NM",
+        5556
+      ],
+      "8": [
+        "4 NM",
+        7408
+      ],
+      "9": [
+        "6 NM",
+        11112
+      ],
+      "10": [
+        "8 NM",
+        14816
+      ],
+      "11": [
+        "12 NM",
+        22224
+      ],
+      "12": [
+        "16 NM",
+        29632
+      ],
+      "13": [
+        "24 NM",
+        44448
+      ],
+      "14": [
+        "32 NM",
+        59264
+      ],
+      "19": [
+        "36 NM",
+        66672
+      ],
+      "15": [
+        "48 NM",
+        88896
+      ]
+    },
+    "pulse_width": {
+      "0": "S1",
+      "1": "S2",
+      "2": "M1",
+      "3": "M2",
+      "4": "M3",
+      "5": "L"
+    },
+    "rezboost": {
+      "0": "off",
+      "1": "low",
+      "2": "medium",
+      "3": "high"
+    },
+    "antenna_speed": {
+      "0": "low",
+      "1": "high",
+      "2": "auto"
+    },
+    "stc_near": {
+      "min": 0,
+      "max": 4
+    },
+    "stc_middle": {
+      "min": 0,
+      "max": 3
+    },
+    "stc_far": {
+      "min": 0,
+      "max": 2
+    },
+    "gain_manual": {
+      "min": 0,
+      "max": 255
+    },
+    "clutter_manual_wire_probe": {
+      "values": [
+        0,
+        1,
+        50,
+        64,
+        100,
+        128,
+        192,
+        254,
+        255
+      ],
+      "source_ui_expected_min": 0,
+      "source_ui_expected_max": 100
+    },
+    "main_bang_wire_probe": {
+      "min": 0,
+      "max": 255,
+      "semantics": "raw wire value"
+    },
+    "bird_mode": {
+      "raw_values": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "semantics": "raw wire level; controller UI describes a bird-detection aid, not a suppression scale"
+    },
+    "doppler": {
+      "raw_values": [
+        0,
+        1,
+        2
+      ],
+      "semantics": "raw wire mode; installed UI meaning is not assumed"
+    },
+    "interference_rejection": {
+      "false": "off",
+      "true": "on",
+      "level_field": "interference_rejection_level"
+    },
+    "noise_reduction": {
+      "false": "off",
+      "true": "on",
+      "level_field": "noise_reduction_level"
+    },
+    "antenna_height_raw": {
+      "field": "N84 field 1",
+      "physical_mount_height_field": "radar.mount_height_m"
+    }
+  },
+  "experiments": [
+    {
+      "id": "E6_indoor_one_control_response",
+      "question": "How does each operational control alter the recorded radar response when one control changes from a confirmed standby baseline?",
+      "transmit": true,
+      "reset_to_baseline": true,
+      "requires_characterization_report": true,
+      "phases_generated_from_control_matrix": true,
+      "control_matrix": [
+        {
+          "setting": "range_index",
+          "values": [
+            21,
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            19,
+            15
+          ]
+        },
+        {
+          "setting": "pulse_width",
+          "values": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5
+          ],
+          "fixed_settings": {
+            "range_index": 0
+          }
+        },
+        {
+          "setting": "gain_value",
+          "values": [
+            0,
+            25,
+            50,
+            64,
+            75,
+            100
+          ],
+          "fixed_settings": {
+            "gain_auto": false,
+            "gain_auto_value": 80
+          },
+          "active_value_field": "gain_manual_value"
+        },
+        {
+          "setting": "gain_auto",
+          "values": [
+            false,
+            true
+          ],
+          "reference_settings": {
+            "gain_auto": false,
+            "gain_value": 64,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80
+          },
+          "value_settings": {
+            "false": {
+              "gain_value": 64,
+              "gain_manual_value": 64,
+              "gain_auto_value": 80
+            },
+            "true": {
+              "gain_value": 80,
+              "gain_manual_value": 64,
+              "gain_auto_value": 80
+            }
+          }
+        },
+        {
+          "setting": "gain_auto_value",
+          "values": [
+            0,
+            25,
+            50,
+            75,
+            100
+          ],
+          "fixed_settings": {
+            "gain_auto": true
+          },
+          "reference_settings": {
+            "gain_auto": true,
+            "gain_value": 80,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80
+          },
+          "active_value_field": "gain_value"
+        },
+        {
+          "setting": "sea_clutter",
+          "values": [
+            0,
+            50,
+            100
+          ]
+        },
+        {
+          "setting": "sea_clutter_auto",
+          "values": [
+            false,
+            true
+          ]
+        },
+        {
+          "setting": "sea_clutter_auto_value",
+          "values": [
+            0,
+            50,
+            100
+          ],
+          "fixed_settings": {
+            "sea_clutter_auto": true
+          },
+          "reference_settings": {
+            "sea_clutter_auto": true,
+            "sea_clutter": 0,
+            "sea_clutter_auto_value": 10
+          }
+        },
+        {
+          "setting": "sea_clutter_mode",
+          "values": [
+            0,
+            1
+          ]
+        },
+        {
+          "setting": "rain_clutter",
+          "values": [
+            0,
+            50,
+            100
+          ]
+        },
+        {
+          "setting": "rain_clutter_auto",
+          "values": [
+            false,
+            true
+          ]
+        },
+        {
+          "setting": "rain_clutter_auto_value",
+          "values": [
+            0,
+            50,
+            100
+          ],
+          "fixed_settings": {
+            "rain_clutter_auto": true
+          },
+          "reference_settings": {
+            "rain_clutter_auto": true,
+            "rain_clutter": 0,
+            "rain_clutter_auto_value": 0
+          }
+        },
+        {
+          "setting": "rain_clutter_ftc_mode",
+          "values": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "setting": "rain_clutter_mode",
+          "values": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "setting": "near_stc",
+          "values": [
+            0,
+            2,
+            4
+          ]
+        },
+        {
+          "setting": "middle_stc",
+          "values": [
+            0,
+            2,
+            3
+          ]
+        },
+        {
+          "setting": "far_stc",
+          "values": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "setting": "rezboost",
+          "values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "setting": "interference_rejection",
+          "values": [
+            false,
+            true
+          ]
+        },
+        {
+          "setting": "noise_reduction",
+          "values": [
+            false,
+            true
+          ]
+        },
+        {
+          "setting": "antenna_height_raw",
+          "values": [
+            0,
+            1,
+            5,
+            10
+          ]
+        },
+        {
+          "setting": "bird_mode",
+          "values": [
+            0,
+            1,
+            2,
+            3
+          ]
+        },
+        {
+          "setting": "doppler",
+          "context_id": "rain_manual_modes_0_1",
+          "values": [
+            0,
+            1
+          ],
+          "reference_settings": {
+            "rain_clutter_auto": false,
+            "rain_clutter": 0,
+            "rain_clutter_auto_value": 0
+          }
+        },
+        {
+          "setting": "doppler",
+          "context_id": "rain_auto_modes_0_2",
+          "values": [
+            0,
+            2
+          ],
+          "reference_settings": {
+            "rain_clutter_auto": true,
+            "rain_clutter": 0,
+            "rain_clutter_auto_value": 0
+          }
+        },
+        {
+          "setting": "main_bang",
+          "values": [
+            0,
+            128,
+            255
+          ]
+        },
+        {
+          "setting": "antenna_speed",
+          "values": [
+            0,
+            1,
+            2
+          ],
+          "companion_setting": "antenna_hi_rpm",
+          "companion_values": [
+            false,
+            true
+          ]
+        }
+      ],
+      "reference_interleave": "run response_reference before and after each control condition; reset to the confirmed baseline after every condition",
+      "weather_control_semantics": "Indoor runs hold physical weather constant. Weather, sea, rain, and Doppler controls are logged as internal processing modes and are not evidence of outdoor weather variation.",
+      "doppler_contexts": "The controller uses provisional wire-mode labels. Modes 0 and 1 are paired under rain manual context, while modes 0 and 2 are paired under rain auto context because the installed firmware couples Doppler mode to rain-auto state. These labels describe observed controller behavior and do not establish manufacturer semantics.",
+      "source_evidence": {
+        "setter_routes": {
+          "range_index": "/set_range?rangeIndex=",
+          "pulse_width": "/set_pulse_width?pulse=&rangeIndex=",
+          "gain": "/set_gain?status=&manualValue=&autoValue=",
+          "sea_clutter": "/set_acsea?status=&manual=&auto=&mode=",
+          "rain_clutter": "/set_acrain?status=&manual=&auto=&ftcMode=&rainMode=",
+          "rezboost": "/set_bearing_resolution?mode=",
+          "antenna": "/set_antenna_revolution?rollSpeed=&hiRpm=",
+          "stc": "/set_near_stc|/set_middle_stc|/set_far_stc?value=",
+          "interference_rejection": "/set_interference_rejection?enabled=",
+          "noise_reduction": "/set_noise_reduction?enabled=",
+          "antenna_height_raw": "/set_antenna_height?value=",
+          "bird_mode": "/set_bird_mode?level=",
+          "doppler": "/set_doppler?mode=",
+          "main_bang": "/set_main_bang?value="
+        },
+        "readback_fields": "get_current ALL fresh settings_readback.fields",
+        "ui_aliases": {
+          "sea_clutter_auto": "A/C SEA status",
+          "rain_clutter_auto": "A/C RAIN status",
+          "rain_clutter_ftc_mode": "FTC mode",
+          "rain_clutter_mode": "rain mode",
+          "doppler": "provisional wire mode label; observed firmware coupling requires paired rain contexts; manufacturer semantics are unverified"
+        }
+      },
+      "baseline_settings": {
+        "range_index": 0,
+        "pulse_width": 0,
+        "gain_auto": false,
+        "gain_value": 64,
+        "rezboost": 0,
+        "antenna_speed": 0,
+        "antenna_hi_rpm": false,
+        "sea_clutter": 0,
+        "sea_clutter_auto": false,
+        "sea_clutter_mode": 0,
+        "rain_clutter": 0,
+        "rain_clutter_auto": false,
+        "rain_clutter_ftc_mode": 0,
+        "rain_clutter_mode": 0,
+        "near_stc": 3,
+        "middle_stc": 0,
+        "far_stc": 1,
+        "interference_rejection": false,
+        "noise_reduction": false,
+        "antenna_height_raw": 0,
+        "bird_mode": 0,
+        "doppler": 0,
+        "main_bang": 0
+      },
+      "phases": [
+        {
+          "id": "response_reference",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "antenna_hi_rpm": false,
+            "sea_clutter": 0,
+            "sea_clutter_auto": false,
+            "sea_clutter_mode": 0,
+            "rain_clutter": 0,
+            "rain_clutter_auto": false,
+            "rain_clutter_ftc_mode": 0,
+            "rain_clutter_mode": 0,
+            "near_stc": 3,
+            "middle_stc": 0,
+            "far_stc": 1,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0,
+            "main_bang": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "range_index_2",
+          "settings": {
+            "range_index": 2
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "pulse_width_1",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 1
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "gain_manual_64",
+          "settings": {
+            "gain_auto": false,
+            "gain_value": 64
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "gain_auto_50",
+          "settings": {
+            "gain_auto": true,
+            "gain_auto_value": 50
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "sea_manual_50",
+          "settings": {
+            "sea_clutter_auto": false,
+            "sea_clutter": 50
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "rain_manual_50",
+          "settings": {
+            "rain_clutter_auto": false,
+            "rain_clutter": 50
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "near_stc_2",
+          "settings": {
+            "near_stc": 2
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "main_bang_64",
+          "settings": {
+            "main_bang": 64
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "interference_rejection_on",
+          "settings": {
+            "interference_rejection": true
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "bird_mode_1",
+          "settings": {
+            "bird_mode": 1
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "rezboost_1",
+          "settings": {
+            "rezboost": 1
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "doppler_mode_1",
+          "settings": {
+            "doppler": 1
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "antenna_high_hirpm",
+          "settings": {
+            "antenna_speed": 1,
+            "antenna_hi_rpm": true
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        }
+      ],
+      "acceptance": [
+        "each condition records at least 30 s after settling",
+        "each phase has a complete verified readback and raw packet interval",
+        "unsupported or clamped settings are recorded and do not cause an unbounded sweep",
+        "the confirmed starting baseline is restored after every condition and at campaign end"
+      ]
+    },
+    {
+      "id": "E5_IR_noise_height_supplement",
+      "question": "What are the corrected standby readback outcomes for interference rejection, noise reduction, and the raw N84 antenna-height field after the selector-query correction?",
+      "transmit": false,
+      "characterize_controls": true,
+      "control_characterization_override": {
+        "description": "Corrective standby supplement. Its outcomes supersede only the original interference-rejection, noise-reduction, and antenna-height entries while preserving the original E5 manifest and provenance.",
+        "controls": [
+          {
+            "id": "interference_rejection_corrected",
+            "setting": "interference_rejection",
+            "values": [
+              false,
+              true
+            ]
+          },
+          {
+            "id": "noise_reduction",
+            "setting": "noise_reduction",
+            "values": [
+              false,
+              true
+            ]
+          },
+          {
+            "id": "antenna_height_raw",
+            "setting": "antenna_height_raw",
+            "values": [
+              0,
+              1,
+              5,
+              10
+            ]
+          }
+        ]
+      },
+      "supersedes": {
+        "setting": "interference_rejection",
+        "reason": "old E5 readback queried selector 2 instead of selector 0",
+        "scope": [
+          "interference_rejection",
+          "noise_reduction",
+          "antenna_height_raw"
+        ]
+      },
+      "merge_policy": "latest supplement outcome per setting and requested value supersedes the original outcome; all original events remain referenced",
+      "phases": [],
+      "acceptance": [
+        "TX remains standby",
+        "every corrected field has a fresh verified readback",
+        "interference rejection boolean and numeric level agree",
+        "noise reduction boolean and numeric level agree",
+        "antenna height raw value is restored",
+        "original E5 report remains retained"
+      ]
+    },
+    {
+      "id": "E5_gain_bounded_supplement",
+      "question": "Which bounded manual and automatic gain values are accepted and persisted by this installed unit?",
+      "transmit": false,
+      "characterize_controls": true,
+      "control_characterization_override": {
+        "description": "Corrective standby supplement for gain values. It preserves the original E5 report and supplies the bounded values required by the E6 response plan.",
+        "controls": [
+          {
+            "id": "gain_manual_bounded",
+            "setting": "gain_value",
+            "precondition": {
+              "gain_auto": false
+            },
+            "values": [
+              0,
+              25,
+              50,
+              64,
+              75,
+              100
+            ]
+          },
+          {
+            "id": "gain_auto_bounded",
+            "setting": "gain_auto_value",
+            "precondition": {
+              "gain_auto": true
+            },
+            "values": [
+              0,
+              25,
+              50,
+              75,
+              100
+            ]
+          }
+        ]
+      },
+      "supersedes": {
+        "setting": "gain_value and gain_auto_value",
+        "reason": "original E5 did not cover the bounded response-plan values",
+        "scope": [
+          "gain_value",
+          "gain_auto_value"
+        ]
+      },
+      "merge_policy": "latest supplement outcome per setting and requested value supersedes the original outcome; all original events remain referenced",
+      "phases": [],
+      "acceptance": [
+        "TX remains standby",
+        "every bounded gain value has a fresh verified readback",
+        "manual and automatic gain modes are restored exactly",
+        "original E5 report remains retained"
+      ]
+    },
+    {
+      "id": "E0_reproducibility_readback",
+      "question": "Does each requested command produce an acknowledged and subsequently readable radar state that is persisted with the recording?",
+      "transmit": false,
+      "phases": [
+        {
+          "id": "reference_standby",
+          "settings": {},
+          "settle_s": 2,
+          "scans": 0,
+          "repeat": 1
+        },
+        {
+          "id": "readback_repeat",
+          "settings": {},
+          "settle_s": 1,
+          "scans": 0,
+          "repeat": 3
+        }
+      ],
+      "acceptance": [
+        "all queried registers have raw responses",
+        "parsed values are not null",
+        "settings.json contains device_readback and command history",
+        "TX remains standby"
+      ]
+    },
+    {
+      "id": "E1_fixed_scene_repeats",
+      "question": "How stable are the same-scene polar measurements and angular support across repeated rotations under a fixed configuration?",
+      "transmit": true,
+      "reference_interleave": "repeat a reference phase before and after each condition block",
+      "phases": [
+        {
+          "id": "reference_A",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "sea_clutter": 0,
+            "rain_clutter": 0,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6,
+          "repeat": 2
+        },
+        {
+          "id": "reference_B",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "sea_clutter": 0,
+            "rain_clutter": 0,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6,
+          "repeat": 2
+        }
+      ],
+      "acceptance": [
+        "at least 3 complete rotations per phase",
+        "readback equality before first and last rotation",
+        "raw payload and CSV hashes recorded"
+      ],
+      "reset_to_baseline": true
+    },
+    {
+      "id": "E2_setting_transition_settling",
+      "question": "How many complete rotations are needed after a setting transition before the recorded response is stable?",
+      "transmit": true,
+      "reference_interleave": "insert the fixed reference phase between every transition block",
+      "phases": [
+        {
+          "id": "reference",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "sea_clutter": 0,
+            "rain_clutter": 0,
+            "interference_rejection": false,
+            "bird_mode": 0,
+            "doppler": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6,
+          "repeat": 1
+        },
+        {
+          "id": "gain_low",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "sea_clutter": 0,
+            "rain_clutter": 0,
+            "interference_rejection": false,
+            "bird_mode": 0,
+            "doppler": 0
+          },
+          "settle_s": 0,
+          "record_s": 30,
+          "scans": 6,
+          "repeat": 1
+        },
+        {
+          "id": "gain_high",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 192,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "sea_clutter": 0,
+            "rain_clutter": 0,
+            "interference_rejection": false,
+            "bird_mode": 0,
+            "doppler": 0
+          },
+          "settle_s": 0,
+          "record_s": 30,
+          "scans": 6,
+          "repeat": 1
+        },
+        {
+          "id": "range_half_nm",
+          "settings": {
+            "range_index": 2,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "sea_clutter": 0,
+            "rain_clutter": 0,
+            "interference_rejection": false,
+            "bird_mode": 0,
+            "doppler": 0
+          },
+          "settle_s": 0,
+          "record_s": 30,
+          "scans": 6,
+          "repeat": 1
+        }
+      ],
+      "acceptance": [
+        "each setting transition has command time, ACK time, readback time, and first stable scan index",
+        "reference phases remain comparable"
+      ],
+      "reset_to_baseline": true
+    },
+    {
+      "id": "E3_receive_persistence_replay",
+      "question": "Does the receiver preserve and replay each raw UDP payload and each decoded rotation without silent loss or schema drift?",
+      "transmit": true,
+      "phases": [
+        {
+          "id": "persistence_smoke",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "sea_clutter": 0,
+            "rain_clutter": 0,
+            "interference_rejection": false,
+            "bird_mode": 0,
+            "doppler": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6,
+          "repeat": 1
+        }
+      ],
+      "acceptance": [
+        "raw JSONL is parseable and base64 decodes",
+        "all payloads have receive timestamps and peer address",
+        "replay packet counts and decoded spoke counts are reported",
+        "CSV and raw summaries identify their hashes"
+      ],
+      "reset_to_baseline": true
+    },
+    {
+      "id": "E7_rotation_writer_validation",
+      "question": "Does the rotation writer preserve verified settings and raw packets across representative baseline, high-gain, and range-transition windows?",
+      "transmit": true,
+      "reset_to_baseline": true,
+      "purpose": "Validate the rotation writer and settings-transition guard with four complete indoor windows before resuming the full E6 family campaign.",
+      "settings_contract": "Every phase supplies the complete strict E6 baseline. The high-gain phase changes only manual gain to 100. The range phase changes only range_index to 6. The final reference returns to manual gain 64 and range_index 0.",
+      "phases": [
+        {
+          "id": "reference_baseline_before",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "antenna_hi_rpm": false,
+            "sea_clutter": 0,
+            "sea_clutter_auto": false,
+            "sea_clutter_auto_value": 10,
+            "sea_clutter_mode": 0,
+            "rain_clutter": 0,
+            "rain_clutter_auto": false,
+            "rain_clutter_auto_value": 0,
+            "rain_clutter_ftc_mode": 0,
+            "rain_clutter_mode": 0,
+            "near_stc": 3,
+            "middle_stc": 0,
+            "far_stc": 1,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0,
+            "main_bang": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "manual_gain_100_range_0",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 100,
+            "gain_manual_value": 100,
+            "gain_auto_value": 80,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "antenna_hi_rpm": false,
+            "sea_clutter": 0,
+            "sea_clutter_auto": false,
+            "sea_clutter_auto_value": 10,
+            "sea_clutter_mode": 0,
+            "rain_clutter": 0,
+            "rain_clutter_auto": false,
+            "rain_clutter_auto_value": 0,
+            "rain_clutter_ftc_mode": 0,
+            "rain_clutter_mode": 0,
+            "near_stc": 3,
+            "middle_stc": 0,
+            "far_stc": 1,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0,
+            "main_bang": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "manual_gain_64_range_6_guard",
+          "settings": {
+            "range_index": 6,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "antenna_hi_rpm": false,
+            "sea_clutter": 0,
+            "sea_clutter_auto": false,
+            "sea_clutter_auto_value": 10,
+            "sea_clutter_mode": 0,
+            "rain_clutter": 0,
+            "rain_clutter_auto": false,
+            "rain_clutter_auto_value": 0,
+            "rain_clutter_ftc_mode": 0,
+            "rain_clutter_mode": 0,
+            "near_stc": 3,
+            "middle_stc": 0,
+            "far_stc": 1,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0,
+            "main_bang": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "reference_baseline_after",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "antenna_hi_rpm": false,
+            "sea_clutter": 0,
+            "sea_clutter_auto": false,
+            "sea_clutter_auto_value": 10,
+            "sea_clutter_mode": 0,
+            "rain_clutter": 0,
+            "rain_clutter_auto": false,
+            "rain_clutter_auto_value": 0,
+            "rain_clutter_ftc_mode": 0,
+            "rain_clutter_mode": 0,
+            "near_stc": 3,
+            "middle_stc": 0,
+            "far_stc": 1,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0,
+            "main_bang": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        }
+      ],
+      "acceptance": [
+        "all four phases record at least 30 s after the 5 s post-TX settling interval",
+        "each phase has a complete verified readback and the required six rotations",
+        "the range_index 6 phase passes the readback guard with the complete manual-gain-64 context",
+        "the final readback and restored baseline match the original strict E6 baseline",
+        "raw UDP and rotation-writer outputs remain settings-verified and nonempty"
+      ]
+    },
+    {
+      "id": "E8_readback_cadence_validation",
+      "question": "Does one-second settings refresh telemetry preserve a complete 30 s capture across a range transition and repeated readback attempt?",
+      "transmit": true,
+      "reset_to_baseline": true,
+      "purpose": "Validate the periodic readback and latency telemetry added after the E7 rotation-writer run, while keeping the strict E6 settings contract immutable during each capture window.",
+      "settings_contract": "Each phase supplies the complete strict E6 baseline. Only range_index changes to 21 in the two middle phases; manual gain remains 64 and the final phase returns to range_index 0.",
+      "readback_cadence_s": 1,
+      "readback_ttl_s": 5,
+      "immutable_capture_settings": true,
+      "refresh_telemetry_required": true,
+      "phases": [
+        {
+          "id": "reference_baseline_before",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "antenna_hi_rpm": false,
+            "sea_clutter": 0,
+            "sea_clutter_auto": false,
+            "sea_clutter_auto_value": 10,
+            "sea_clutter_mode": 0,
+            "rain_clutter": 0,
+            "rain_clutter_auto": false,
+            "rain_clutter_auto_value": 0,
+            "rain_clutter_ftc_mode": 0,
+            "rain_clutter_mode": 0,
+            "near_stc": 3,
+            "middle_stc": 0,
+            "far_stc": 1,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0,
+            "main_bang": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "range_21_attempt_1",
+          "settings": {
+            "range_index": 21,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "antenna_hi_rpm": false,
+            "sea_clutter": 0,
+            "sea_clutter_auto": false,
+            "sea_clutter_auto_value": 10,
+            "sea_clutter_mode": 0,
+            "rain_clutter": 0,
+            "rain_clutter_auto": false,
+            "rain_clutter_auto_value": 0,
+            "rain_clutter_ftc_mode": 0,
+            "rain_clutter_mode": 0,
+            "near_stc": 3,
+            "middle_stc": 0,
+            "far_stc": 1,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0,
+            "main_bang": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "range_21_attempt_2",
+          "settings": {
+            "range_index": 21,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "antenna_hi_rpm": false,
+            "sea_clutter": 0,
+            "sea_clutter_auto": false,
+            "sea_clutter_auto_value": 10,
+            "sea_clutter_mode": 0,
+            "rain_clutter": 0,
+            "rain_clutter_auto": false,
+            "rain_clutter_auto_value": 0,
+            "rain_clutter_ftc_mode": 0,
+            "rain_clutter_mode": 0,
+            "near_stc": 3,
+            "middle_stc": 0,
+            "far_stc": 1,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0,
+            "main_bang": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        },
+        {
+          "id": "reference_baseline_after",
+          "settings": {
+            "range_index": 0,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "gain_manual_value": 64,
+            "gain_auto_value": 80,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "antenna_hi_rpm": false,
+            "sea_clutter": 0,
+            "sea_clutter_auto": false,
+            "sea_clutter_auto_value": 10,
+            "sea_clutter_mode": 0,
+            "rain_clutter": 0,
+            "rain_clutter_auto": false,
+            "rain_clutter_auto_value": 0,
+            "rain_clutter_ftc_mode": 0,
+            "rain_clutter_mode": 0,
+            "near_stc": 3,
+            "middle_stc": 0,
+            "far_stc": 1,
+            "interference_rejection": false,
+            "noise_reduction": false,
+            "antenna_height_raw": 0,
+            "bird_mode": 0,
+            "doppler": 0,
+            "main_bang": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6
+        }
+      ],
+      "acceptance": [
+        "each phase records at least 30 s of raw UDP coverage after the 5 s post-TX settling interval",
+        "each phase produces a complete contiguous CSV rotation set whose rows reconcile with the raw packet interval",
+        "the one-second readback refresh telemetry records timestamps, TTL validity, and request latency without changing capture settings",
+        "all strict E6 settings remain readback-verified throughout each immutable capture window",
+        "the final readback and restored baseline match the initial baseline after every phase"
+      ]
+    },
+    {
+      "id": "E4_known_target_geometry",
+      "question": "What range and bearing errors remain after applying operator-supplied target geometry and sensor pose?",
+      "transmit": true,
+      "requires_operator_fields": [
+        "target_id",
+        "target_range_m",
+        "target_bearing_deg",
+        "target_position_reference",
+        "measurement_method",
+        "survey_uncertainty_m",
+        "target_photo_paths"
+      ],
+      "phases": [
+        {
+          "id": "known_targets",
+          "settings": {
+            "range_index": 2,
+            "pulse_width": 0,
+            "gain_auto": false,
+            "gain_value": 64,
+            "rezboost": 0,
+            "antenna_speed": 0,
+            "sea_clutter": 0,
+            "rain_clutter": 0,
+            "interference_rejection": false,
+            "bird_mode": 0,
+            "doppler": 0
+          },
+          "settle_s": 5,
+          "record_s": 30,
+          "scans": 6,
+          "repeat": 3
+        }
+      ],
+      "acceptance": [
+        "no geometry metric is emitted until target ground truth is complete",
+        "range and bearing residuals retain measurement and survey uncertainty",
+        "target identity and phase are present in figure-data rows"
+      ],
+      "reset_to_baseline": true
+    },
+    {
+      "id": "E5_indoor_standby_control_characterization",
+      "question": "Which standby control values are accepted, rejected, clamped, or deferred by this radar and firmware, with every baseline value restored afterward?",
+      "transmit": false,
+      "characterize_controls": true,
+      "phases": [],
+      "acceptance": [
+        "all required fields are verified before the first write",
+        "every control value and context is logged with command and readback timestamps",
+        "outcomes are classified from response and verified readback",
+        "baseline including auto parameters and pulse per range is restored and verified",
+        "TX remains standby throughout"
+      ]
+    }
+  ]
+}

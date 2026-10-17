@@ -1,0 +1,13 @@
+{
+  "status": "ready",
+  "source": "/Volumes/MacApplications/Radar_papers/macos-bringup/logs/tx-test-20261014T042023Z/report.json",
+  "tx_window_s": 10.008123,
+  "raw_packet_count": 1024,
+  "decoded_rotation_count": 3,
+  "settings_readback_count": 7,
+  "settings_metadata_status": "commanded_cache_unverified",
+  "tx_on_ack": true,
+  "tx_off_ack": true,
+  "standby_readback": true,
+  "metadata_persisted": true
+}

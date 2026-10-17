@@ -36,19 +36,30 @@
     </section>
 
     <section class="panel">
-      <h2>Active Settings</h2>
+      <h2>Radar Settings Readback</h2>
+      <p id="siSettingsNote" class="small-note">No confirmed radar readback has been collected. Values remain unavailable until a read succeeds.</p>
+      <div class="status-row"><span class="status-label">Readback status</span><span id="siSettingsVerified" class="status-val">Unverified</span></div>
+      <div class="status-row"><span class="status-label">Last successful read</span><span id="siSettingsReadAt" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">Range Index</span><span id="siRange" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">Pulse Width</span><span id="siPulse" class="status-val">--</span></div>
-      <div class="status-row"><span class="status-label">Gain</span><span id="siGain" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Pulse Range Index</span><span id="siPulseRange" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Gain Mode</span><span id="siGain" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Gain Manual / Auto</span><span id="siGainValues" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">RezBoost</span><span id="siRezboost" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">Antenna Speed</span><span id="siAntenna" class="status-val">--</span></div>
-      <div class="status-row"><span class="status-label">Doppler</span><span id="siDoppler" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Antenna High RPM</span><span id="siAntennaHiRpm" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Antenna Height Raw Setting</span><span id="siAntennaHeight" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Radar Processing Mode (EF)</span><span id="siDoppler" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">IR</span><span id="siIR" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">IR Raw Level</span><span id="siIRLevel" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Noise Reduction</span><span id="siNoiseReduction" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">Bird Mode</span><span id="siBird" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">Main Bang</span><span id="siMainBang" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">STC (N/M/F)</span><span id="siSTC" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">Sea Clutter</span><span id="siSea" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Sea Mode / Auto</span><span id="siSeaMode" class="status-val">--</span></div>
       <div class="status-row"><span class="status-label">Rain Clutter</span><span id="siRain" class="status-val">--</span></div>
+      <div class="status-row"><span class="status-label">Rain Mode / Auto</span><span id="siRainMode" class="status-val">--</span></div>
     </section>
 
     <section class="panel">
