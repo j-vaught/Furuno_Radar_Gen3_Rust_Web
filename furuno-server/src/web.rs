@@ -480,6 +480,21 @@ const SETTINGS_READBACK_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const ROTATION_WRITER_CAPACITY: usize = 16;
 const ROTATION_WRITER_DRAIN_TIMEOUT: Duration = Duration::from_secs(45);
 
+fn advance_refresh_schedule(
+    scheduled_at: Instant,
+    tick_started: Instant,
+    interval: Duration,
+) -> (Instant, u64, Duration) {
+    let schedule_lag = tick_started.saturating_duration_since(scheduled_at);
+    let mut next_due = scheduled_at + interval;
+    let mut skipped_ticks = 0;
+    while next_due <= tick_started {
+        next_due += interval;
+        skipped_ticks += 1;
+    }
+    (next_due, skipped_ticks, schedule_lag)
+}
+
 fn readback_query_age_exceeded(readback: &SettingsReadback) -> bool {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -496,8 +511,24 @@ fn readback_query_age_exceeded(readback: &SettingsReadback) -> bool {
 }
 
 fn settings_readback_worker(state: Arc<AppState>) {
+    let interval = SETTINGS_READBACK_REFRESH_INTERVAL;
+    let mut next_due = Instant::now() + interval;
     loop {
-        thread::sleep(Duration::from_secs(1));
+        let now = Instant::now();
+        if now < next_due {
+            thread::sleep(next_due - now);
+        }
+        let scheduled_at = next_due;
+        let tick_started = Instant::now();
+        let (following_due, skipped_ticks, schedule_lag) =
+            advance_refresh_schedule(scheduled_at, tick_started, interval);
+        next_due = following_due;
+        if skipped_ticks > 0 || schedule_lag >= interval {
+            eprintln!(
+                "settings readback scheduler overrun: lag_ms={} skipped_ticks={skipped_ticks}",
+                schedule_lag.as_millis(),
+            );
+        }
         if !state.connected.load(Ordering::Relaxed) {
             continue;
         }
@@ -1073,8 +1104,12 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
     // older settings snapshot after a newer setter readback completed.
     let refresh_started = Instant::now();
     let refresh_started_at = timestamp_precise();
+    let connection_lock_started = Instant::now();
     let mut conn = state.conn.lock().map_err(|_| "connection lock poisoned".to_string())?;
+    let connection_lock_wait_ms = connection_lock_started.elapsed().as_millis();
+    let register_query_started = Instant::now();
     let snapshot = conn.read_current_settings();
+    let register_query_ms = register_query_started.elapsed().as_millis();
     let firmware = conn.firmware.clone().unwrap_or_default();
     let radar_ip = conn.radar_ip;
     let host_ip = conn.host_ip;
@@ -1089,11 +1124,17 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
             .filter(|(_, field)| !field.verified)
             .map(|(name, field)| format!("{name}: {}", field.error.as_deref().unwrap_or("unverified")))
             .collect::<Vec<_>>();
-        return if current_readback.verified {
+        let result = if current_readback.verified {
             Ok(())
         } else {
             Err(failures.join("; "))
         };
+        let total_ms = refresh_started.elapsed().as_millis();
+        drop(conn);
+        eprintln!(
+            "settings readback timing: source={source} connection_lock_wait_ms={connection_lock_wait_ms} register_query_ms={register_query_ms} publication_ms=0 total_ms={total_ms} outcome=older_snapshot",
+        );
+        return result;
     }
     let raw_signature = raw_readback_signature(&readback);
     let settings_changed = state.settings.read()
@@ -1117,6 +1158,7 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
         .filter(|(_, field)| !field.verified)
         .map(|(name, field)| format!("{name}: {}", field.error.as_deref().unwrap_or("unverified")))
         .collect::<Vec<_>>();
+    let publication_started = Instant::now();
     let _snapshot_guard = state
         .recording_snapshot_lock
         .lock()
@@ -1129,6 +1171,7 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
     if let Ok(mut refreshed) = state.readback_last_refresh.lock() {
         *refreshed = Instant::now();
     }
+    let publication_ms = publication_started.elapsed().as_millis();
     record_setting_change(
         state,
         "radar_readback",
@@ -1142,7 +1185,14 @@ fn refresh_settings_from_radar(state: &AppState, source: &str) -> Result<(), Str
             "published_valid_until": published_valid_until,
         }),
     );
-    if verified { Ok(()) } else { Err(failures.join("; ")) }
+    let result = if verified { Ok(()) } else { Err(failures.join("; ")) };
+    let total_ms = refresh_started.elapsed().as_millis();
+    drop(conn);
+    drop(_snapshot_guard);
+    eprintln!(
+        "settings readback timing: source={source} connection_lock_wait_ms={connection_lock_wait_ms} register_query_ms={register_query_ms} publication_ms={publication_ms} total_ms={total_ms} verified={verified}",
+    );
+    result
 }
 
 fn parse_setting_command(command: &str) -> Result<(String, Vec<u16>), String> {
@@ -3815,6 +3865,35 @@ mod tests {
         assert!(readback_valid_now(&readback));
         readback.valid_until = Some("unix_ms:0".into());
         assert!(!readback_valid_now(&readback));
+    }
+
+    #[test]
+    fn refresh_scheduler_keeps_one_second_deadline_after_short_query() {
+        let interval = Duration::from_secs(1);
+        let origin = Instant::now();
+        let scheduled_at = origin + interval;
+        let tick_started = scheduled_at + Duration::from_millis(5);
+        let (next_due, skipped_ticks, schedule_lag) =
+            advance_refresh_schedule(scheduled_at, tick_started, interval);
+
+        assert_eq!(next_due, scheduled_at + interval);
+        assert_eq!(skipped_ticks, 0);
+        assert!(schedule_lag < interval);
+        assert!(tick_started + Duration::from_millis(850) < next_due);
+    }
+
+    #[test]
+    fn refresh_scheduler_skips_missed_ticks_after_overrun() {
+        let interval = Duration::from_secs(1);
+        let origin = Instant::now();
+        let scheduled_at = origin + interval;
+        let tick_started = scheduled_at + Duration::from_millis(2400);
+        let (next_due, skipped_ticks, schedule_lag) =
+            advance_refresh_schedule(scheduled_at, tick_started, interval);
+
+        assert_eq!(next_due, scheduled_at + Duration::from_secs(3));
+        assert_eq!(skipped_ticks, 2);
+        assert!(schedule_lag >= Duration::from_secs(2));
     }
 
     #[test]
