@@ -13,6 +13,7 @@ from scripts.analyze_capture import decode_sweep_count, replay_raw
 from scripts.capture_runner import (
     REQUIRED_READBACK_FIELDS,
     RawArchive,
+    _phase_readback_mismatches,
     _valid_until_is_fresh,
     apply_phase,
     characterize_controls,
@@ -184,6 +185,59 @@ class ToolkitTests(unittest.TestCase):
             )
             self.assertEqual(set(phase["control"]["coupled_fields"]), coupled_fields)
             self.assertTrue(phase["coupled_preset"]["companions_from_readback"])
+            self.assertEqual(phase["coupled_preset"]["controller_setting"], "bird_mode")
+
+    def test_deferred_bird_mismatch_cannot_pass_phase_readback_gate(self) -> None:
+        phase = {
+            "settings": {"bird_mode": 1},
+            "control": {"role": "condition", "setting": "bird_mode"},
+            "characterization_deferred_fields": ["bird_mode"],
+        }
+        matches, mismatches = _phase_readback_mismatches(
+            phase,
+            {
+                "settings": {"bird_mode": 0},
+                "confirmed": True,
+                "fresh": True,
+                "verified": True,
+            },
+        )
+        self.assertIs(matches["bird_mode"], False)
+        self.assertEqual(mismatches, ["bird_mode"])
+
+    def test_deferred_bird_outcome_is_skipped_but_other_deferred_controls_remain(self) -> None:
+        experiment = {
+            "phases": [
+                {
+                    "id": "reference",
+                    "settings": {"bird_mode": 0},
+                }
+            ],
+            "control_matrix": [
+                {"setting": "bird_mode", "values": [1]},
+                {"setting": "near_stc", "values": [2]},
+            ],
+        }
+        expanded = expand_control_matrix(experiment)
+        filtered, skipped = filter_by_characterization_report(
+            expanded,
+            {
+                "control_characterization": {
+                    "outcomes": [
+                        {"setting": "bird_mode", "requested": 1, "outcome": "deferred"},
+                        {"setting": "near_stc", "requested": 2, "outcome": "deferred"},
+                    ]
+                }
+            },
+        )
+        condition_ids = [
+            phase["id"]
+            for phase in filtered["phases"]
+            if phase.get("control", {}).get("role") == "condition"
+        ]
+        self.assertNotIn("bird_mode_1", condition_ids)
+        self.assertIn("near_stc_2", condition_ids)
+        self.assertTrue(any(item["setting"] == "bird_mode" for item in skipped))
 
     def test_bird_filter_requires_only_strict_bird_outcomes(self) -> None:
         experiment = {

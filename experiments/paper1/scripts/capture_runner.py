@@ -1092,6 +1092,21 @@ def requested_matches_readback(
     return matches
 
 
+def _phase_readback_mismatches(
+    phase: dict[str, Any], readback_result: dict[str, Any]
+) -> tuple[dict[str, bool | None], list[str]]:
+    matches = requested_matches_readback(phase.get("settings", {}), readback_result)
+    deferred_fields = set(phase.get("characterization_deferred_fields", []))
+    if phase.get("control", {}).get("setting") == "bird_mode":
+        deferred_fields.discard("bird_mode")
+    mismatches = [
+        field
+        for field, matched in matches.items()
+        if matched is not True and field not in deferred_fields
+    ]
+    return matches, mismatches
+
+
 def classify_probe(
     setting: str,
     requested: Any,
@@ -2602,6 +2617,10 @@ def filter_by_characterization_report(
         outcome_name = outcome.get("outcome")
         if outcome_name not in {"supported", "deferred"}:
             continue
+        if outcome_name == "deferred" and outcome.get("setting") == "bird_mode":
+            # Bird presets rewrite dependent registers. A deferred Bird level
+            # has no requested-value condition that can be recorded safely.
+            continue
         key = (
             outcome.get("setting", ""),
             json.dumps(outcome.get("requested"), sort_keys=True),
@@ -3019,6 +3038,7 @@ def main() -> int:
                     "phase_role": phase.get("phase_role")
                     or phase.get("control", {}).get("role", "condition"),
                     "control": phase.get("control", {}),
+                    "coupled_preset": phase.get("coupled_preset"),
                     "reference_context": phase.get("control", {}).get("reference_context"),
                     "requested_settings": phase.get("settings", {}),
                     "device_readback": None,
@@ -3099,6 +3119,7 @@ def main() -> int:
                     "phase_role": phase.get("phase_role")
                     or phase.get("control", {}).get("role", "condition"),
                     "control": phase.get("control", {}),
+                    "coupled_preset": phase.get("coupled_preset"),
                     "reference_context": phase.get("control", {}).get("reference_context"),
                     "requested_settings": phase.get("settings", {}),
                     "settle_s": phase.get("settle_s", 0),
@@ -3120,15 +3141,10 @@ def main() -> int:
                 phase_record["pre_tx_readback"] = pre_tx_readback
                 phase_record["device_readback"] = pre_tx_readback
                 require_confirmed_readback(pre_tx_readback, f"phase {phase['id']} pre-TX readback")
-                phase_record["readback_matches"] = requested_matches_readback(
-                    phase.get("settings", {}), pre_tx_readback
-                )
-                mismatches = [
-                    field
-                    for field, matched in phase_record["readback_matches"].items()
-                    if matched is not True
-                    and field not in phase.get("characterization_deferred_fields", [])
-                ]
+                (
+                    phase_record["readback_matches"],
+                    mismatches,
+                ) = _phase_readback_mismatches(phase, pre_tx_readback)
                 if mismatches:
                     raise RuntimeError(f"phase {phase['id']} readback mismatch for {mismatches}")
                 log_event(
